@@ -1,0 +1,3 @@
+# 清理 Git 钩子导出的 GIT_* 变量，防止临时仓库测试写串主仓。
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_PREFIX GIT_CONFIG_PARAMETERS
+pnpm verify

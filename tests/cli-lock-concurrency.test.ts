@@ -1,0 +1,196 @@
+import assert from 'node:assert/strict';
+import { existsSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { afterEach, describe, it } from 'node:test';
+
+import { importProfile } from '../src/cli/migrate.ts';
+import { getMcpConfigLockPath } from '../src/core/file-lock.ts';
+import {
+  createFakeAgyBin,
+  createTempDirTracker,
+  DIST_CLI,
+  INSTALL_SCRIPT,
+  makeIsolatedEnv,
+  readJson,
+  spawnNodeAsync,
+  waitForFile,
+  writeJson,
+} from './helpers.ts';
+
+const tracker = createTempDirTracker();
+const makeTempDir = (prefix: string): string => tracker.makeTempDir(prefix);
+
+afterEach(() => {
+  tracker.cleanup();
+});
+
+void describe('CLI configure and import-profile cliHomeLock isolation', async () => {
+  await it('blocks import-profile on cliHomeLock during failing install --wire-statusline so rolled-back statusLine is never resurrected', async () => {
+    if (process.platform === 'win32') return;
+
+    const root = makeTempDir('agy-hud-cli-import-lock-');
+    const targetDir = path.join(root, 'installed-plugin');
+    const cliHome = path.join(root, '.gemini', 'antigravity-cli');
+    const settingsPath = path.join(cliHome, 'settings.json');
+    const inDir = path.join(root, 'profile-in');
+    const priorSl = { type: 'command', command: '/prior/user-statusline.py', enabled: true };
+    writeJson(settingsPath, { model: 'Old Model', statusLine: priorSl });
+    writeJson(path.join(inDir, 'settings.template.json'), { model: 'Imported Model' });
+    writeJson(path.join(inDir, 'hud-config.json'), { preset: 'compact', showCost: false });
+
+    const enteredFlag = path.join(root, 'inst-doc.flag');
+    const releaseFlag = path.join(root, 'inst-release.flag');
+    const binFail = createFakeAgyBin(
+      root,
+      'inst-fail-import',
+      `  echo "entered" > ${JSON.stringify(enteredFlag)}
+  while [ ! -f ${JSON.stringify(releaseFlag)} ]; do sleep 0.02; done
+  echo "doctor fail" >&2
+  exit 1`,
+    );
+    const envInstall = makeIsolatedEnv(root, { PATH: `${binFail}${path.delimiter}${process.env.PATH ?? ''}` });
+    const envCli = makeIsolatedEnv(root);
+
+    // install --wire-statusline writes temporary statusLine pointing to targetDir, then pauses in failing doctor.
+    const procInstall = spawnNodeAsync(
+      [INSTALL_SCRIPT, 'install', '--target', targetDir, '--no-enable', '--wire-statusline', '--quiet'],
+      envInstall,
+    );
+    await waitForFile(enteredFlag, procInstall);
+
+    let importSettled = false;
+    const procImport = spawnNodeAsync([DIST_CLI, 'import-profile', '--in', inDir], envCli).then((res) => {
+      importSettled = true;
+      return res;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(importSettled, false, 'import-profile must wait on cliHomeLock while install holds it');
+
+    writeFileSync(releaseFlag, 'go', 'utf8');
+    const [resInstall, resImport] = await Promise.all([procInstall, procImport]);
+    assert.notEqual(resInstall.status, 0);
+    assert.equal(resImport.status, 0, resImport.stderr);
+
+    const finalSettings = readJson(settingsPath);
+    assert.equal(finalSettings.model, 'Imported Model');
+    assert.deepEqual(
+      finalSettings.statusLine,
+      priorSl,
+      'import-profile must see rolled-back statusLine and never resurrect failed install statusLine',
+    );
+  });
+
+  await it('blocks configure write mode on cliHomeLock until concurrent install releases the lock', async () => {
+    if (process.platform === 'win32') return;
+
+    const root = makeTempDir('agy-hud-cli-cfg-lock-');
+    const targetDir = path.join(root, 'installed-plugin');
+    const cliHome = path.join(root, '.gemini', 'antigravity-cli');
+    const hudConfigPath = path.join(cliHome, 'hud-config.json');
+    writeJson(path.join(cliHome, 'settings.json'), { model: 'Gemini 4 Carbon' });
+
+    const enteredFlag = path.join(root, 'cfg-doc.flag');
+    const releaseFlag = path.join(root, 'cfg-release.flag');
+    const binOk = createFakeAgyBin(
+      root,
+      'inst-ok-cfg',
+      `  echo "entered" > ${JSON.stringify(enteredFlag)}
+  while [ ! -f ${JSON.stringify(releaseFlag)} ]; do sleep 0.02; done
+  exit 0`,
+    );
+    const envInstall = makeIsolatedEnv(root, { PATH: `${binOk}${path.delimiter}${process.env.PATH ?? ''}` });
+    const envCli = makeIsolatedEnv(root);
+
+    const procInstall = spawnNodeAsync(
+      [INSTALL_SCRIPT, 'install', '--target', targetDir, '--no-enable', '--wire-statusline', '--quiet'],
+      envInstall,
+    );
+    await waitForFile(enteredFlag, procInstall);
+
+    let cfgSettled = false;
+    const procCfg = spawnNodeAsync(
+      [DIST_CLI, 'configure', '--preset', 'compact', '--set', 'showCost=false'],
+      envCli,
+    ).then((res) => {
+      cfgSettled = true;
+      return res;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(cfgSettled, false, 'configure must wait on cliHomeLock while install holds it');
+
+    // Causal state barrier: write showQuota=false while cliHomeLock is still held, right before releasing install.
+    // configure can only preserve showQuota=false if it read hud-config.json AFTER cliHomeLock was released.
+    writeJson(hudConfigPath, { preset: 'minimal', showCost: true, showQuota: false });
+    writeFileSync(releaseFlag, 'go', 'utf8');
+    const [resInstall, resCfg] = await Promise.all([procInstall, procCfg]);
+    assert.equal(resInstall.status, 0, resInstall.stderr);
+    assert.equal(resCfg.status, 0, resCfg.stderr);
+
+    const persisted = readJson(hudConfigPath);
+    assert.equal(persisted.preset, 'compact');
+    assert.equal(persisted.showCost, false);
+    assert.equal(persisted.showQuota, false, 'configure must merge against post-lock hud-config.json state');
+  });
+
+  await it('validates hud-config upfront without creating cliHome and locks MCP-only import-profile --merge-mcp', async () => {
+    if (process.platform === 'win32') return;
+
+    // 1. Invalid preset in inDir/hud-config.json must fail upfront before creating missing cliHome.
+    const root1 = makeTempDir('agy-hud-imp-precheck-');
+    const inDir1 = path.join(root1, 'bad-bundle');
+    const cliHome1 = path.join(root1, 'fresh-cli-home');
+    const geminiRoot1 = path.join(root1, 'fresh-gemini');
+    writeJson(path.join(inDir1, 'hud-config.json'), { preset: 'invalid-preset' });
+    assert.throws(
+      () => importProfile({ inDir: inDir1, cliHome: cliHome1, geminiRoot: geminiRoot1 }),
+      /Invalid 'preset'/,
+    );
+    assert.equal(existsSync(cliHome1), false, 'failed upfront validation must not create empty cliHome directory');
+
+    // 2. MCP-only import-profile --merge-mcp must acquire the MCP lock and observe post-lock mcp_config.json changes.
+    const root2 = makeTempDir('agy-hud-mcp-lock-');
+    const inDir2 = path.join(root2, 'mcp-bundle');
+    const geminiRoot2 = path.join(root2, '.gemini');
+    const mcpPath2 = path.join(geminiRoot2, 'config', 'mcp_config.json');
+    writeJson(mcpPath2, { mcpServers: { initial: { command: 'node' } } });
+    writeJson(path.join(inDir2, 'mcp_config.template.json'), { mcpServers: { incoming: { command: 'npx' } } });
+
+    const env2 = makeIsolatedEnv(root2);
+    const mcpLock2 = getMcpConfigLockPath(geminiRoot2);
+    const lockEntered = path.join(root2, 'mcp-lock-entered.flag');
+    const lockRelease = path.join(root2, 'mcp-lock-release.flag');
+
+    const holderCode = `import { existsSync, writeFileSync } from 'node:fs';
+import { withFileLocksSync } from './src/core/file-lock.ts';
+const cell = new Int32Array(new SharedArrayBuffer(4));
+withFileLocksSync([${JSON.stringify(mcpLock2)}], () => {
+  writeFileSync(${JSON.stringify(lockEntered)}, 'held', 'utf8');
+  while (!existsSync(${JSON.stringify(lockRelease)})) Atomics.wait(cell, 0, 0, 20);
+  writeFileSync(${JSON.stringify(mcpPath2)}, JSON.stringify({ mcpServers: { initial: { command: 'node' }, concurrent: { command: 'uvx' } } }, null, 2) + '\\n', 'utf8');
+}, 10_000);
+`;
+    const procHolder = spawnNodeAsync(['--input-type=module', '-e', holderCode], env2);
+    await waitForFile(lockEntered, procHolder);
+
+    let mcpImportSettled = false;
+    const procImport = spawnNodeAsync([DIST_CLI, 'import-profile', '--in', inDir2, '--merge-mcp'], env2).then((res) => {
+      mcpImportSettled = true;
+      return res;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(mcpImportSettled, false, 'MCP-only import-profile must block on MCP lock');
+
+    writeFileSync(lockRelease, 'go', 'utf8');
+    const [holderRes, importRes] = await Promise.all([procHolder, procImport]);
+    assert.equal(holderRes.status, 0, holderRes.stderr);
+    assert.equal(importRes.status, 0, importRes.stderr);
+
+    const mergedServers = readJson(mcpPath2).mcpServers as Record<string, unknown>;
+    assert.ok(mergedServers.initial);
+    assert.ok(
+      mergedServers.concurrent,
+      'import-profile --merge-mcp must preserve server written before MCP lock release',
+    );
+    assert.ok(mergedServers.incoming);
+  });
+});

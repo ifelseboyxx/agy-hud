@@ -1,0 +1,88 @@
+{
+  "name": "agy-hud",
+  "version": "0.1.0",
+  "description": "Native ANSI terminal HUD statusline and profile portability toolkit for Antigravity CLI, featuring live model, quota, telemetry metrics, and swarm roster chips.",
+  "keywords": [
+    "agy",
+    "antigravity",
+    "antigravity-cli",
+    "cli",
+    "hud",
+    "plugin",
+    "statusline"
+  ],
+  "homepage": "https://github.com/ifelseboyxx/agy-hud#readme",
+  "bugs": {
+    "url": "https://github.com/ifelseboyxx/agy-hud/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "ifelseboyxx",
+    "url": "https://github.com/ifelseboyxx"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ifelseboyxx/agy-hud.git"
+  },
+  "bin": {
+    "agy-hud": "./dist/cli.mjs"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "scripts/install.mjs",
+    "skills",
+    "plugin.json",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "preinstall": "node scripts/check-env.mts",
+    "prepare": "husky",
+    "build": "vite build",
+    "lint": "oxlint --type-aware --deny-warnings src scripts tests vite.config.ts .commitlintrc.cjs",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import ./scripts/lib/isolate-git-env.mts --test \"src/**/__tests__/*.test.{ts,mts}\" \"tests/**/*.test.{ts,mts}\"",
+    "validate": "node scripts/validate-all.mts",
+    "verify": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm build && pnpm test && pnpm validate",
+    "cz": "czg",
+    "hud:install": "node scripts/install.mjs install --link --no-enable",
+    "hud:wire": "node scripts/install.mjs install --link --no-enable --wire-statusline",
+    "hud:on": "node scripts/install.mjs on",
+    "hud:off": "node scripts/install.mjs off",
+    "hud:doctor": "node scripts/install.mjs doctor",
+    "hud:configure": "node dist/cli.mjs configure",
+    "hud:export": "node dist/cli.mjs export-profile",
+    "hud:import": "node dist/cli.mjs import-profile"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.4",
+    "@types/node": "^22.20.1",
+    "czg": "^1.14.0",
+    "husky": "^9.1.7",
+    "oxc-minify": "^0.159.0",
+    "oxc-parser": "^0.159.0",
+    "oxc-resolver": "^11.24.2",
+    "oxc-transform": "^0.159.0",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2008",
+    "rolldown": "^1.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8"
+  },
+  "engines": {
+    "node": "^22.20.0 || >=24.0.0"
+  },
+  "packageManager": "pnpm@11.1.1"
+}

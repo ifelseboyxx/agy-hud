@@ -1,0 +1,12 @@
+{
+  "name": "agy-hud",
+  "displayName": "agy-hud",
+  "version": "0.1.0",
+  "description": "Native ANSI terminal HUD statusline and profile portability toolkit for Antigravity CLI, featuring live model, quota, telemetry metrics, and swarm roster chips.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Install and wire the agy-hud statusline in my Antigravity CLI settings",
+    "Configure agy-hud display preset and toggle performance capsule or swarm chips",
+    "Export a sanitized Antigravity CLI profile for migration to another machine"
+  ]
+}
