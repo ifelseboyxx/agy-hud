@@ -51,7 +51,7 @@ import {
   YELLOW,
 } from './ansi.ts';
 
-export { formatNamesLine, formatTodosLine, formatToolsLine } from './activity-lines.ts';
+export { type ActivityLineFormatOptions, formatNamesLine, formatTodosLine, formatToolsLine } from './activity-lines.ts';
 
 const CTX_CAPACITY_MIN_WIDTH = 95;
 const SECONDARY_QUOTA_MIN_WIDTH = 120;
@@ -417,28 +417,29 @@ export function renderHudLines(cliHome: string, data: StatusLineData, options?: 
     lines.push(line2);
   }
 
+  const termWidth = isFiniteNum(effectiveData.terminal_width) ? effectiveData.terminal_width : DEFAULT_TERM_WIDTH;
   const skills = activity?.skills ?? [];
   const mcps = activity?.mcps ?? [];
   const tools = activity?.tools ?? [];
 
   if (config.showToolsLine) {
-    const toolsLine = formatToolsLine(tools, skills.length > 0);
+    const toolsLine = formatToolsLine(tools, skills.length > 0, termWidth);
     if (toolsLine.length > 0) {
       lines.push(toolsLine);
     }
   }
   if (config.showSkillsMcpLine) {
-    const skillsLine = formatNamesLine('Skills', skills);
+    const skillsLine = formatNamesLine('Skills', skills, undefined, termWidth);
     if (skillsLine.length > 0) {
       lines.push(skillsLine);
     }
-    const mcpsLine = formatNamesLine('MCPs', mcps);
+    const mcpsLine = formatNamesLine('MCPs', mcps, undefined, termWidth);
     if (mcpsLine.length > 0) {
       lines.push(mcpsLine);
     }
   }
   if (config.showSwarmChips) {
-    const agentsLine = formatAgentsSection(agentsSummary, config.maxAgentChips, nowSec);
+    const agentsLine = formatAgentsSection(agentsSummary, config.maxAgentChips, nowSec, termWidth);
     if (agentsLine.length > 0) {
       lines.push(agentsLine);
     }

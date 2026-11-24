@@ -164,7 +164,7 @@ export const DEFAULT_HUD_CONFIG: HudConfig = {
   showToolsLine: true,
   showSkillsMcpLine: true,
   showTodosLine: true,
-  maxAgentChips: 4,
+  maxAgentChips: 8,
 };
 
 export interface GenMetadataRow {
@@ -214,8 +214,17 @@ export interface TranscriptToolEntry {
   name: string;
   disp: string;
   target: string;
+  fullTarget?: string;
   running: boolean;
   isSkillRead: boolean;
+}
+
+export interface CompletedToolAggregate {
+  disp: string;
+  count: number;
+  latestTarget: string;
+  fullTarget: string;
+  recentTargets: string[];
 }
 
 export interface ActivityAgentEntry {
@@ -231,6 +240,7 @@ export interface TranscriptActivity {
   skills: string[];
   mcps: string[];
   agents: ActivityAgentEntry[];
+  completedTools?: CompletedToolAggregate[];
 }
 
 export interface TodoSummary {

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
+import { stripAnsi } from '../../render/ansi.ts';
 import type { StatusLineData } from '../../types.ts';
 import { DEFAULT_HUD_CONFIG } from '../../types.ts';
 import { BUILTIN_SLASH_CMDS, loadTodos, loadTranscriptActivity } from '../activity.ts';
@@ -334,9 +335,7 @@ void describe('collectors', () => {
     const badge = formatAgentsBadge(summary);
     assert.ok(badge.includes('Swarm') && badge.includes('3') && badge.includes('5'));
 
-    const escRe = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
-    const strip = (s: string): string => s.replace(escRe, '');
-    const badgesWithTodos = formatRuntimeBadges(data, { hasTodosLine: true }).map(strip);
+    const badgesWithTodos = formatRuntimeBadges(data, { hasTodosLine: true }).map(stripAnsi);
     assert.equal(
       badgesWithTodos.some((b) => b.includes('BG 2')),
       false,
@@ -346,7 +345,7 @@ void describe('collectors', () => {
     assert.ok(badgesWithTodos.some((b) => b.includes('! Approval')));
     assert.ok(badgesWithTodos.some((b) => b.includes('Q:4')));
 
-    const badgesNoTodos = formatRuntimeBadges(data, { hasTodosLine: false }).map(strip);
+    const badgesNoTodos = formatRuntimeBadges(data, { hasTodosLine: false }).map(stripAnsi);
     assert.ok(badgesNoTodos.some((b) => b.includes('BG 2')));
   });
 

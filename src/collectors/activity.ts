@@ -1,15 +1,4 @@
-import {
-  closeSync,
-  existsSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import path from 'node:path';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 
 import { isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
 import type {
@@ -20,40 +9,37 @@ import type {
   TranscriptToolEntry,
 } from '../types.ts';
 import {
+  ACTIVITY_CACHE_SCHEMA_VERSION,
+  type ActivityCacheRecord,
+  readActivityCache,
+  writeActivityCache,
+} from './activity-cache.ts';
+import {
+  aggregateCompletedTools,
   extractToolTarget,
   extractUserInputSkills,
   listMcpServers,
   parseMcpTool,
   resolveSkillName,
+  sanitizeFullTarget,
   shortenTarget,
   unwrapArg,
 } from './activity-parse.ts';
 import { resolveCliSubdirFile, resolveConversationId, resolveSafeTranscriptFile } from './safe-path.ts';
 
 export {
+  aggregateCompletedTools,
   BUILTIN_SLASH_CMDS,
   extractToolTarget,
   parseMcpTool,
   resolveSkillName,
+  sanitizeFullTarget,
   shortenTarget,
   unwrapArg,
 } from './activity-parse.ts';
 
-const CACHE_SCHEMA_VERSION = 3;
 const TASK_LINE_RE = /^\s*[-*]\s*\[([ xX/])\]\s+(.+)$/;
 const RUNNING_STATUSES: ReadonlySet<string> = new Set(['RUNNING', 'PENDING', 'IN_PROGRESS', 'GENERATING', 'WAITING']);
-
-interface ActivityCacheRecord {
-  v: number;
-  path: string;
-  ino: number;
-  mtimeMs: number;
-  size: number;
-  stableOffset: number;
-  stableToolsCount: number;
-  stableAgentsCount: number;
-  data: TranscriptActivity;
-}
 
 interface ScanSliceResult {
   activity: TranscriptActivity;
@@ -143,10 +129,12 @@ function recordPlannerToolCall(
     });
   }
 
+  const cleanFullTarget = sanitizeFullTarget(target);
   acc.tools.push({
     name,
     disp: mcpInfo !== null ? `${mcpInfo[0]}:${mcpInfo[1]}` : name,
-    target: target.length > 0 ? shortenTarget(target) : '',
+    target: cleanFullTarget.length > 0 ? shortenTarget(cleanFullTarget) : '',
+    ...(cleanFullTarget.length > 0 ? { fullTarget: cleanFullTarget } : {}),
     running: isRunning,
     isSkillRead: skillName !== null,
   });
@@ -247,7 +235,13 @@ function scanChunkFromOffset(
   }
 
   return {
-    activity: { tools, skills, mcps, agents },
+    activity: {
+      tools,
+      skills,
+      mcps,
+      agents,
+      completedTools: aggregateCompletedTools(tools, skills.length > 0),
+    },
     stableOffset,
     stableToolsCount,
     stableAgentsCount,
@@ -265,97 +259,6 @@ function resolveTranscriptPath(cliHome: string, data: StatusLineData): string | 
   const rawPath = nonEmptyStr(data.transcript_path);
   if (rawPath !== undefined) {
     return resolveSafeTranscriptFile(cliHome, rawPath);
-  }
-  return null;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function parseStringList(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const items: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') return null;
-    items.push(item);
-  }
-  return items;
-}
-
-function isTranscriptToolEntry(value: unknown): value is TranscriptToolEntry {
-  return (
-    isPlainObject(value) &&
-    typeof value.name === 'string' &&
-    typeof value.disp === 'string' &&
-    typeof value.target === 'string' &&
-    typeof value.running === 'boolean' &&
-    typeof value.isSkillRead === 'boolean'
-  );
-}
-
-function isActivityAgentEntry(value: unknown): value is ActivityAgentEntry {
-  return (
-    isPlainObject(value) &&
-    typeof value.name === 'string' &&
-    typeof value.type === 'string' &&
-    typeof value.model === 'string' &&
-    typeof value.running === 'boolean' &&
-    (value.ts === null || isFiniteNumber(value.ts))
-  );
-}
-
-function parseTranscriptActivity(value: unknown): TranscriptActivity | null {
-  if (!isPlainObject(value) || !Array.isArray(value.tools) || !Array.isArray(value.agents)) {
-    return null;
-  }
-  const skills = parseStringList(value.skills);
-  const mcps = parseStringList(value.mcps);
-  if (skills === null || mcps === null) return null;
-  const tools: TranscriptToolEntry[] = [];
-  for (const entry of value.tools) {
-    if (!isTranscriptToolEntry(entry)) return null;
-    tools.push(entry);
-  }
-  const agents: ActivityAgentEntry[] = [];
-  for (const entry of value.agents) {
-    if (!isActivityAgentEntry(entry)) return null;
-    agents.push(entry);
-  }
-  return { tools, skills, mcps, agents };
-}
-
-function readActivityCache(cacheFile: string): ActivityCacheRecord | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(cacheFile, 'utf8'));
-    if (
-      !isPlainObject(parsed) ||
-      parsed.v !== CACHE_SCHEMA_VERSION ||
-      typeof parsed.path !== 'string' ||
-      !isFiniteNumber(parsed.ino) ||
-      !isFiniteNumber(parsed.mtimeMs) ||
-      !isFiniteNumber(parsed.size) ||
-      !isFiniteNumber(parsed.stableOffset) ||
-      !isFiniteNumber(parsed.stableToolsCount) ||
-      !isFiniteNumber(parsed.stableAgentsCount)
-    ) {
-      return null;
-    }
-    const data = parseTranscriptActivity(parsed.data);
-    if (data === null) return null;
-    return {
-      v: parsed.v,
-      path: parsed.path,
-      ino: parsed.ino,
-      mtimeMs: parsed.mtimeMs,
-      size: parsed.size,
-      stableOffset: parsed.stableOffset,
-      stableToolsCount: parsed.stableToolsCount,
-      stableAgentsCount: parsed.stableAgentsCount,
-      data,
-    };
-  } catch {
-    // Ignore missing or corrupt cache.
   }
   return null;
 }
@@ -417,7 +320,7 @@ export function loadTranscriptActivity(cliHome: string, data: StatusLineData): T
   }
 
   const nextRecord: ActivityCacheRecord = {
-    v: CACHE_SCHEMA_VERSION,
+    v: ACTIVITY_CACHE_SCHEMA_VERSION,
     path: transcriptPath,
     ino: st.ino,
     mtimeMs: st.mtimeMs,
@@ -429,12 +332,7 @@ export function loadTranscriptActivity(cliHome: string, data: StatusLineData): T
   };
 
   if (cacheFile !== null) {
-    try {
-      mkdirSync(path.dirname(cacheFile), { recursive: true });
-      writeFileSync(cacheFile, JSON.stringify(nextRecord), 'utf8');
-    } catch {
-      // Best-effort cache write.
-    }
+    writeActivityCache(cacheFile, nextRecord);
   }
 
   return scanned.activity;
