@@ -48,7 +48,7 @@
   "scripts": {
     "preinstall": "node scripts/check-env.mts",
     "prepare": "husky",
-    "build": "vite build",
+    "build": "node scripts/build.mts",
     "lint": "oxlint --type-aware --deny-warnings src scripts tests vite.config.ts .commitlintrc.cjs",
     "format": "oxfmt",
     "format:check": "oxfmt --check",

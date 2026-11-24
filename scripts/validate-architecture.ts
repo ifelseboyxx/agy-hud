@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseSync, Visitor } from 'oxc-parser';
 import { ResolverFactory } from 'oxc-resolver';
 
-import { isMainEntry } from '../src/core/paths.ts';
+import { isMainEntry, toPosixPath } from '../src/core/paths.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
 const SKILL_DESC_MIN = 24;
@@ -31,10 +31,6 @@ const NETWORK_MODULES = new Set([
   'dgram',
   'undici',
 ]);
-
-function toPosix(relPath: string): string {
-  return relPath.split(path.sep).join('/');
-}
 
 function isFenceTarget(relPosix: string): boolean {
   return (
@@ -238,7 +234,7 @@ export function runValidation(
 
   const functionDefs = new Map<string, string[]>();
   for (const fullPath of files) {
-    const relPosix = toPosix(path.relative(rootDir, fullPath));
+    const relPosix = toPosixPath(path.relative(rootDir, fullPath));
     const content = readFileSync(fullPath, 'utf8');
     inspectTypeScriptAst(rootDir, fullPath, relPosix, content, resolver, errors, functionDefs);
   }

@@ -210,7 +210,7 @@ pnpm install
 pnpm verify
 ```
 
-`pnpm verify` 依次执行 `oxlint --type-aware --deny-warnings`、`oxfmt --check`、`tsc --noEmit`、`vite build`（Vite 8 + Rolldown）、隔离环境的 `node --test` 以及全仓工程守卫校验。
+`pnpm verify` 依次执行 `oxlint --type-aware --deny-warnings`、`oxfmt --check`、`tsc --noEmit`、`pnpm build`（Vite 8 + Rolldown）、隔离环境的 `node --test` 以及全仓工程守卫校验。
 
 如需在不触碰日常 Antigravity 环境的前提下隔离演练，可通过 `GEMINI_CLI_HOME=<临时目录>`、`GEMINI_HOME=<临时目录>/.gemini` 与 `--target <临时插件目录>` 指定沙箱路径。
 

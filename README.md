@@ -210,7 +210,7 @@ pnpm install
 pnpm verify
 ```
 
-`pnpm verify` runs `oxlint --type-aware --deny-warnings`, `oxfmt --check`, `tsc --noEmit`, `vite build` (Vite 8 + Rolldown), isolated `node --test` suites, and repository architecture guardrails.
+`pnpm verify` runs `oxlint --type-aware --deny-warnings`, `oxfmt --check`, `tsc --noEmit`, `pnpm build` (Vite 8 + Rolldown), isolated `node --test` suites, and repository architecture guardrails.
 
 To test against an isolated home directory without touching your live Antigravity setup, set `GEMINI_CLI_HOME=<tmp>` and `GEMINI_HOME=<tmp>/.gemini` together with `--target <tmp-plugin-dir>`.
 

@@ -37,7 +37,12 @@ async function emitIsolatedDts(rootDir: string, relSource: string): Promise<stri
   return relSource === 'src/index.ts' ? rewriteTypesImportExtension(result.code) : result.code;
 }
 
-export function oxcIsolatedDtsAndMinifyPlugin(): Plugin {
+export interface OxcBuildPluginOptions {
+  readonly emitDts?: boolean;
+}
+
+export function oxcIsolatedDtsAndMinifyPlugin(options: OxcBuildPluginOptions = {}): Plugin {
+  const shouldEmitDts = options.emitDts ?? true;
   let rootDir = process.cwd();
   let outDir = path.resolve(rootDir, 'dist');
 
@@ -54,7 +59,7 @@ export function oxcIsolatedDtsAndMinifyPlugin(): Plugin {
 
         const codeShebang = item.code.match(SHEBANG_RE)?.[1] ?? '';
         const sourceShebang = item.isEntry ? extractShebangFromFile(item.facadeModuleId) : '';
-        const shebang = codeShebang || sourceShebang;
+        const shebang = codeShebang.length > 0 ? codeShebang : sourceShebang;
         const body = item.code.replace(SHEBANG_RE, '');
 
         const minified = minifySync(fileName, body, { compress: true, mangle: false });
@@ -65,14 +70,14 @@ export function oxcIsolatedDtsAndMinifyPlugin(): Plugin {
         item.code = shebang ? `${shebang}\n${cleaned}` : cleaned;
       }
 
-      if (existsSync(path.join(rootDir, 'src/types.ts'))) {
+      if (shouldEmitDts && existsSync(path.join(rootDir, 'src/types.ts'))) {
         this.emitFile({
           type: 'asset',
           fileName: 'types.d.mts',
           source: await emitIsolatedDts(rootDir, 'src/types.ts'),
         });
       }
-      if (existsSync(path.join(rootDir, 'src/index.ts'))) {
+      if (shouldEmitDts && existsSync(path.join(rootDir, 'src/index.ts'))) {
         this.emitFile({
           type: 'asset',
           fileName: 'index.d.mts',
@@ -81,6 +86,7 @@ export function oxcIsolatedDtsAndMinifyPlugin(): Plugin {
       }
     },
     writeBundle(_options, bundle): void {
+      if (process.platform === 'win32') return;
       for (const fileName of Object.keys(bundle)) {
         if (!EXECUTABLE_BINS.has(fileName)) continue;
         const fullPath = path.join(outDir, fileName);

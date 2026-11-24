@@ -78,6 +78,16 @@ export function toComparePath(p: string): string {
     : path.resolve(p);
 }
 
+export function toPosixPath(relPath: string): string {
+  return relPath.split(path.sep).join('/');
+}
+
+export function isSameOrDescendantPath(ancestorPath: string, candidatePath: string): boolean {
+  if (ancestorPath === candidatePath) return true;
+  const rel = path.relative(ancestorPath, candidatePath);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
 export function realpathExistingPrefixSync(dirPath: string): string {
   const resolved = path.resolve(dirPath);
   const tail: string[] = [];
