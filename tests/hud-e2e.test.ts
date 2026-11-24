@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -221,5 +221,43 @@ void describe('agy-hud built artifacts e2e', async () => {
       { cliHome: path.join(root, '.gemini', 'antigravity-cli') },
     );
     assert.ok(rendered.includes('G4 Carbon'));
+  });
+
+  await it('degrades built dist/cli.mjs -p to one-shot Structured Inspector when piped', () => {
+    const root = makeTempDir('agy-hud-e2e-snap-');
+    const env = makeIsolatedEnv(root);
+    const cacheDir = path.join(root, '.gemini', 'antigravity-cli', 'cache');
+    mkdirSync(cacheDir, { recursive: true });
+    writeJson(path.join(cacheDir, 'agy_hud_snapshot_e2e-11112222.json'), {
+      v: 1,
+      convId: 'e2e-11112222',
+      conversationTitle: 'Built CLI Inspector',
+      agyPid: process.pid,
+      cwd: root,
+      workspaceCurrentDir: root,
+      workspaceProjectDir: root,
+      subagents: [],
+      taskCount: null,
+      mdDigest: null,
+      updatedAtMs: Date.now(),
+    });
+
+    const popupRes = runNodeScript(DIST_CLI, ['-p', '--no-color'], env);
+    assert.equal(popupRes.status, 0, popupRes.stderr);
+    assert.equal(popupRes.stdout.includes('\x1b[?1049h'), false);
+    assert.ok(popupRes.stdout.includes('[CLI] Activity Snapshot'));
+    assert.ok(popupRes.stdout.includes('Built CLI Inspector'));
+  });
+
+  await it('prints all five terminal templates from built dist/cli.mjs --keybindings all', () => {
+    const root = makeTempDir('agy-hud-e2e-kb-');
+    const env = makeIsolatedEnv(root);
+    const kbRes = runNodeScript(DIST_CLI, ['--keybindings', 'all', '--no-color'], env);
+    assert.equal(kbRes.status, 0, kbRes.stderr);
+    assert.ok(kbRes.stdout.includes('display-popup'));
+    assert.ok(kbRes.stdout.includes('launch --type=overlay --cwd=current'));
+    assert.ok(kbRes.stdout.includes('wezterm.action.SplitPane'));
+    assert.ok(kbRes.stdout.includes('text:!agy-hud\\n'));
+    assert.ok(kbRes.stdout.includes('Hotkey Window'));
   });
 });
