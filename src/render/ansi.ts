@@ -29,11 +29,73 @@ const BAD_TTFT_SEC = 15.0;
 const GOOD_CACHE_PCT = 80.0;
 const WARN_CACHE_PCT = 50.0;
 
-// Construct ESC dynamically so oxlint no-control-regex stays clean.
-const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
+// Construct ESC and BEL dynamically so oxlint no-control-regex stays clean.
+const ESC_CHAR = String.fromCharCode(0x1b);
+const BEL_CHAR = String.fromCharCode(0x07);
+const ANSI_ESCAPE_RE = new RegExp(`${ESC_CHAR}(?:\\[[0-9;]*m|\\][\\s\\S]*?(?:${BEL_CHAR}|${ESC_CHAR}\\\\))`, 'g');
+
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE_RE, '');
+}
+
+export function isWideCodePoint(cp: number): boolean {
+  return (
+    cp >= 0x1100 &&
+    (cp <= 0x115f ||
+      cp === 0x2329 ||
+      cp === 0x232a ||
+      (cp >= 0x2e80 && cp <= 0x3247 && cp !== 0x303f) ||
+      (cp >= 0x3250 && cp <= 0x4dbf) ||
+      (cp >= 0x4e00 && cp <= 0xa4c6) ||
+      (cp >= 0xa960 && cp <= 0xa97c) ||
+      (cp >= 0xac00 && cp <= 0xd7a3) ||
+      (cp >= 0xf900 && cp <= 0xfaff) ||
+      (cp >= 0xfe10 && cp <= 0xfe19) ||
+      (cp >= 0xfe30 && cp <= 0xfe6b) ||
+      (cp >= 0xff01 && cp <= 0xff60) ||
+      (cp >= 0xffe0 && cp <= 0xffe6) ||
+      (cp >= 0x1f200 && cp <= 0x3fffd))
+  );
+}
 
 export function visibleLen(text: string): number {
-  return text.replace(ANSI_ESCAPE_RE, '').length;
+  const plain = stripAnsi(text);
+  let cols = 0;
+  for (const ch of plain) {
+    const cp = ch.codePointAt(0) ?? 0;
+    cols += isWideCodePoint(cp) ? 2 : 1;
+  }
+  return cols;
+}
+
+export function truncateToWidth(text: string, maxCols: number): string {
+  const limit = Math.floor(maxCols);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return '';
+  }
+  const plain = stripAnsi(text);
+  if (visibleLen(plain) <= limit) {
+    return text;
+  }
+  if (limit === 1) {
+    return '…';
+  }
+  let out = '';
+  let cols = 0;
+  for (const ch of plain) {
+    const w = isWideCodePoint(ch.codePointAt(0) ?? 0) ? 2 : 1;
+    if (cols + w > limit - 1) {
+      break;
+    }
+    out += ch;
+    cols += w;
+  }
+  return `${out}…`;
+}
+
+export function padEndVisible(text: string, targetCols: number): string {
+  const pad = Math.max(0, Math.floor(targetCols) - visibleLen(text));
+  return pad > 0 ? `${text}${' '.repeat(pad)}` : text;
 }
 
 export function colorForUsedPct(pct: number): string {

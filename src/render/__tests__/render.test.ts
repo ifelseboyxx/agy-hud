@@ -9,15 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { renderHudFromData } from '../../hud-entry.ts';
 import type { AgentsSummary, HudConfig, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
 import { DEFAULT_HUD_CONFIG } from '../../types.ts';
-import { buildPerfSegments, fitPerfCapsule, renderBar, visibleLen } from '../ansi.ts';
+import { buildPerfSegments, fitPerfCapsule, renderBar, stripAnsi, visibleLen } from '../ansi.ts';
 import { buildLine2, buildModeLine, formatToolsLine, resolveEffectiveExceeds200k } from '../lines.ts';
 
-const ESC_PATTERN = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
-
-function stripAnsi(text: string): string {
-  return text.replace(ESC_PATTERN, '');
-}
 
 void describe('render and hud-entry', () => {
   let tmpRoot = '';

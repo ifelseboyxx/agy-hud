@@ -7,12 +7,15 @@ import {
   BRIGHT_WHITE,
   BRIGHT_YELLOW,
   CYAN,
+  DEFAULT_TERM_WIDTH,
   GRAY,
   GREEN,
   MAGENTA,
   RESET,
+  truncateToWidth,
   YELLOW,
 } from '../render/ansi.ts';
+import { type ActivityLineFormatOptions, packActivityLine, type PackableLineItem } from '../render/pack-line.ts';
 import type {
   ActivityAgentEntry,
   AgentEntry,
@@ -26,7 +29,7 @@ import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from '
 
 const AGENT_RETENTION_SECONDS = 60;
 const TAIL_READ_BYTES = 16384;
-const MAX_VISIBLE_AGENTS = 4;
+const MAX_VISIBLE_AGENTS = 8;
 const MAX_AGENT_LABEL_LEN = 28;
 
 const WORKING_STATES: ReadonlySet<string> = new Set([
@@ -384,15 +387,23 @@ export function formatAgentsBadge(summary: AgentsSummary | null | undefined): st
   return `${MAGENTA}Agents ${BRIGHT_YELLOW}${alive}${RESET}`;
 }
 
-function formatMemberChip(entry: AgentEntry): string {
+function makeMemberChipItem(entry: AgentEntry): PackableLineItem {
   const icon = entry.state === 'working' ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`;
-  return `${icon} ${MAGENTA}${entry.name}${RESET}`;
+  return {
+    render: () => `${icon} ${MAGENTA}${entry.name}${RESET}`,
+    renderEllipsized: (maxCols: number) =>
+      maxCols >= 3
+        ? `${icon} ${MAGENTA}${truncateToWidth(entry.name, maxCols - 2)}${RESET}`
+        : `${MAGENTA}${truncateToWidth(entry.name, maxCols)}${RESET}`,
+  };
 }
 
 export function formatAgentsSection(
   summary: AgentsSummary | null | undefined,
   maxAgentChips: number = MAX_VISIBLE_AGENTS,
   nowSec: number = Date.now() / 1000,
+  termWidth: number = DEFAULT_TERM_WIDTH,
+  options?: ActivityLineFormatOptions,
 ): string {
   if (!summary || summary.entries.length === 0 || maxAgentChips <= 0) {
     return '';
@@ -401,29 +412,51 @@ export function formatAgentsSection(
 
   if (alive > 0) {
     const ordered = [...entries.filter((e) => e.state === 'working'), ...entries.filter((e) => e.state === 'waiting')];
-    const shown = ordered.slice(0, maxAgentChips).map(formatMemberChip);
-    if (ordered.length > maxAgentChips) {
-      shown.push(`${GRAY}+${ordered.length - maxAgentChips} more${RESET}`);
-    }
-    if (kind === 'swarm') {
-      const icon = working > 0 ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`;
-      const countText = working === 0 ? `0/${alive} waiting` : `${working}/${alive}`;
-      return `  ${icon} Swarm ${GRAY}(${countText}):${RESET} ${shown.join(', ')}`;
-    }
-    const countText = total > alive ? `${alive}/${total}` : String(alive);
-    return `  ${YELLOW}◐${RESET} Agents ${GRAY}(${countText}):${RESET} ${shown.join(', ')}`;
+    const prefix =
+      kind === 'swarm'
+        ? `  ${working > 0 ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`} Swarm ${GRAY}(${working === 0 ? `0/${alive} waiting` : `${working}/${alive}`}):${RESET} `
+        : `  ${YELLOW}◐${RESET} Agents ${GRAY}(${total > alive ? `${alive}/${total}` : String(alive)}):${RESET} `;
+    return packActivityLine({
+      prefix,
+      separator: ', ',
+      items: ordered.map(makeMemberChipItem),
+      maxItems: maxAgentChips,
+      termWidth,
+      formatOverflow: options?.formatOverflow,
+    });
   }
 
-  const recent = entries.filter(
-    (e) => e.state === 'done' && isFiniteNum(e.ts) && nowSec - e.ts <= AGENT_RETENTION_SECONDS,
-  );
+  const recent: { entry: AgentEntry; ts: number; idx: number }[] = [];
+  for (let idx = 0; idx < entries.length; idx += 1) {
+    const entry = entries[idx];
+    if (entry && entry.state === 'done' && isFiniteNum(entry.ts) && nowSec - entry.ts <= AGENT_RETENTION_SECONDS) {
+      recent.push({ entry, ts: entry.ts, idx });
+    }
+  }
   if (recent.length === 0) {
     return '';
   }
-  const doneLimit = Math.min(3, maxAgentChips);
-  const shown = recent.slice(-doneLimit).map((e) => `${MAGENTA}${e.name}${RESET}`);
-  if (recent.length > doneLimit) {
-    shown.push(`${GRAY}+${recent.length - doneLimit} more${RESET}`);
-  }
-  return `  ${GREEN}✓${RESET} Agents ${GRAY}(${recent.length} done):${RESET} ${shown.join(', ')}`;
+
+  const byNewest = [...recent].sort((a, b) => (b.ts !== a.ts ? b.ts - a.ts : b.idx - a.idx));
+  const doneItems: PackableLineItem[] = byNewest.map(({ entry }) => ({
+    render: () => `${MAGENTA}${entry.name}${RESET}`,
+    renderEllipsized: (maxCols: number) => `${MAGENTA}${truncateToWidth(entry.name, maxCols)}${RESET}`,
+  }));
+  return packActivityLine({
+    prefix: `  ${GREEN}✓${RESET} Agents ${GRAY}(${recent.length} done):${RESET} `,
+    separator: ', ',
+    items: doneItems,
+    maxItems: maxAgentChips,
+    termWidth,
+    formatOverflow: options?.formatOverflow,
+    sortSelectedIndices: (selected) =>
+      [...selected].sort((ia, ib) => {
+        const a = byNewest[ia];
+        const b = byNewest[ib];
+        if (!a || !b) {
+          return ia - ib;
+        }
+        return a.ts !== b.ts ? a.ts - b.ts : a.idx - b.idx;
+      }),
+  });
 }
