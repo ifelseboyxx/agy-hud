@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -9,6 +10,7 @@ import {
   DIST_CLI,
   DIST_HUD,
   DIST_INDEX,
+  DIST_MCP_HUD,
   INSTALL_SCRIPT,
   makeIsolatedEnv,
   readJson,
@@ -177,6 +179,24 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.equal(installRes.status, 0, installRes.stderr);
     assert.equal(existsSync(path.join(targetDir, 'dist', 'hud.mjs')), true);
     assert.equal(existsSync(path.join(targetDir, 'dist', 'cli.mjs')), true);
+    assert.equal(existsSync(path.join(targetDir, 'dist', 'mcp-hud.mjs')), true);
+    assert.equal(existsSync(path.join(targetDir, 'mcp_config.json')), true);
+    const stagedMcp = readJson(path.join(targetDir, 'mcp_config.json')) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    assert.deepEqual(stagedMcp.mcpServers.inspector, {
+      command: 'node',
+      args: ['${PLUGIN_ROOT}/dist/mcp-hud.mjs'],
+    });
+    const agyProbe = spawnSync('agy', ['--version'], { stdio: 'ignore', timeout: 5000, windowsHide: true });
+    if (!agyProbe.error && agyProbe.status === 0) {
+      const validateRes = spawnSync('agy', ['plugin', 'validate', targetDir, '--strict'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        windowsHide: true,
+      });
+      assert.equal(validateRes.status, 0, `${validateRes.stdout}\n${validateRes.stderr}`);
+    }
     assert.equal(
       (readJson(settingsPath).statusLine as Record<string, unknown>).command,
       path.join(targetDir, 'dist', 'hud.mjs'),
@@ -221,6 +241,91 @@ void describe('agy-hud built artifacts e2e', async () => {
       { cliHome: path.join(root, '.gemini', 'antigravity-cli') },
     );
     assert.ok(rendered.includes('G4 Carbon'));
+  });
+
+  await it('runs built dist/mcp-hud.mjs over stdio JSON-RPC with app-only entrypoints, CSP HTML, and ETag polling', () => {
+    const root = makeTempDir('agy-hud-e2e-mcp-');
+    const cliHome = path.join(root, '.gemini', 'antigravity-cli');
+    const convId = 'e2e-mcp-session-01';
+    const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(
+      path.join(logsDir, 'transcript.jsonl'),
+      `${JSON.stringify({
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        model: 'Gemini 4 Carbon',
+        created_at: '2026-06-01T11:58:00Z',
+        tool_calls: [{ name: 'read_file', args: { Path: path.join(root, 'README.md') } }],
+      })}\n`,
+      'utf8',
+    );
+    const env = makeIsolatedEnv(root);
+
+    const firstPassInput = [
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } }),
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'resources/read',
+        params: { uri: 'ui://agy-hud/inspector.html' },
+      }),
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'hud_inspector', arguments: {} },
+      }),
+    ].join('\n');
+
+    const res1 = runNodeScript(DIST_MCP_HUD, [], env, `${firstPassInput}\n`);
+    assert.equal(res1.status, 0, res1.stderr);
+    assert.equal(res1.stderr, '');
+    const replies1 = res1.stdout
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { id: number; result: Record<string, unknown> });
+    assert.equal(replies1.length, 4);
+
+    const listedTools = replies1[1]?.result.tools as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      listedTools.map((t) => t.name),
+      ['hud_inspector', 'hud_poll_snapshot'],
+    );
+    const inspectorMeta = listedTools[0]?._meta as Record<string, unknown> | undefined;
+    assert.deepEqual(inspectorMeta?.ui, {
+      resourceUri: 'ui://agy-hud/inspector.html',
+      visibility: ['app'],
+    });
+
+    const contents = replies1[2]?.result.contents as Array<{ mimeType: string; text: string }> | undefined;
+    const htmlDoc = contents?.[0];
+    assert.equal(htmlDoc?.mimeType, 'text/html;profile=mcp-app');
+    assert.ok(htmlDoc?.text.startsWith('<!DOCTYPE html>'));
+    assert.equal(/https?:\/\//i.test(htmlDoc?.text ?? ''), false);
+
+    const callResult = replies1[3]?.result as {
+      content: Array<{ text: string }>;
+      structuredContent: { etag: string; snapshot: { convId: string } };
+    };
+    assert.ok(callResult.content[0]?.text.includes('e2e-mcp-'));
+    assert.equal(callResult.structuredContent.snapshot.convId, convId);
+
+    const etag = callResult.structuredContent.etag;
+    const pollInput = `${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: { name: 'hud_poll_snapshot', arguments: { sessionId: convId, etag } },
+    })}\n`;
+    const res2 = runNodeScript(DIST_MCP_HUD, [], env, pollInput);
+    assert.equal(res2.status, 0, res2.stderr);
+    const pollReply = JSON.parse(res2.stdout.trim()) as {
+      result: { structuredContent: { unchanged: boolean; etag: string } };
+    };
+    assert.deepEqual(pollReply.result.structuredContent, { unchanged: true, etag });
   });
 
   await it('degrades built dist/cli.mjs -p to one-shot Structured Inspector when piped', () => {
