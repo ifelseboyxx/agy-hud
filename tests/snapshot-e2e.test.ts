@@ -92,7 +92,7 @@ void describe('cross-surface HUD -> snapshot CLI e2e', () => {
     const listRes = runNodeScript(DIST_CLI, ['snapshot', '--sessions'], env);
     assert.equal(listRes.status, 0, listRes.stderr);
     assert.ok(listRes.stdout.includes('[CLI]'));
-    assert.ok(listRes.stdout.includes('[App]'));
+    assert.ok(listRes.stdout.includes('[APP]'));
     assert.ok(listRes.stdout.includes('e2e11111'));
     assert.ok(listRes.stdout.includes('e2e12222'));
 

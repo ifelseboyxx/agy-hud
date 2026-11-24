@@ -111,6 +111,8 @@ void describe('collectors', () => {
     const settings = readCliSettings(cliHome);
     assert.equal(settings.agentMode, 'accept-edits');
 
+    assert.deepEqual(readHudConfig(cliHome), DEFAULT_HUD_CONFIG);
+
     writeFileSync(
       path.join(cliHome, 'hud-config.json'),
       JSON.stringify({ preset: 'compact', showCost: false, maxAgentChips: 2, showTodosLine: 'invalid' }),
@@ -120,7 +122,7 @@ void describe('collectors', () => {
     assert.equal(hudCfg.preset, 'compact');
     assert.equal(hudCfg.segments.cost, false);
     assert.equal(hudCfg.maxAgentChips, 2);
-    assert.deepEqual(hudCfg.lines, DEFAULT_HUD_CONFIG.lines);
+    assert.deepEqual(hudCfg.lines, ['mode', 'identity', 'usage', 'activity']);
 
     const repoDir = path.join(tmpRoot, 'repo');
     const nestedDir = path.join(repoDir, 'src', 'nested');

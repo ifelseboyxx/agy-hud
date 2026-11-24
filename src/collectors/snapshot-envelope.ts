@@ -29,7 +29,7 @@ export function formatRelativeAge(deltaMs: number): string {
 export function formatSurfaceBadge(surface: SessionSurface): string {
   if (surface === 'cli') return 'CLI';
   if (surface === 'ide') return 'IDE';
-  return 'App';
+  return 'APP';
 }
 
 function parseEnvelopeSubagents(raw: unknown): SubagentStdinItem[] {

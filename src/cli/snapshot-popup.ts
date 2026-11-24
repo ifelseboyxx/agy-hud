@@ -7,37 +7,25 @@ import {
   resolveInspectorWidth,
   shouldUseSnapshotColor,
 } from './snapshot-render.ts';
+import {
+  CTRL_C,
+  ESC_CHAR,
+  ESC_SEQUENCE_TIMEOUT_MS,
+  isInteractiveTty,
+  runAltScreenTtySession,
+  type TtyInputStream,
+  type TtyOutputStream,
+} from './tty-session.ts';
 
-export const ESC_SEQUENCE_TIMEOUT_MS: number = 25;
+export { ESC_SEQUENCE_TIMEOUT_MS };
 
 const DEFAULT_POPUP_ROWS = 32;
 const MIN_POPUP_ROWS = 4;
-const ESC_CHAR = String.fromCharCode(0x1b);
-const CTRL_C = String.fromCharCode(0x03);
-const ALT_SCREEN_ENTER = `${ESC_CHAR}[?1049h`;
-const ALT_SCREEN_EXIT = `${ESC_CHAR}[?1049l`;
-const CURSOR_HIDE = `${ESC_CHAR}[?25l`;
-const CURSOR_SHOW = `${ESC_CHAR}[?25h`;
 const CLEAR_HOME = `${ESC_CHAR}[H${ESC_CHAR}[2J`;
 const BAR_BG = `${ESC_CHAR}[48;5;236m${ESC_CHAR}[97m`;
 
-export interface PopupInputStream {
-  readonly isTTY?: boolean;
-  setRawMode?: (mode: boolean) => unknown;
-  resume(): unknown;
-  pause(): unknown;
-  on(event: 'data', listener: (chunk: Buffer | string) => void): unknown;
-  off(event: 'data', listener: (chunk: Buffer | string) => void): unknown;
-}
-
-export interface PopupOutputStream {
-  readonly isTTY?: boolean;
-  readonly columns?: number;
-  readonly rows?: number;
-  write(chunk: string): boolean;
-  on(event: 'resize', listener: () => void): unknown;
-  off(event: 'resize', listener: () => void): unknown;
-}
+export type PopupInputStream = TtyInputStream;
+export type PopupOutputStream = TtyOutputStream;
 
 export interface PopupState {
   sections: SnapshotSection[];
@@ -74,7 +62,7 @@ export function isPopupInteractiveTty(
   stdin: PopupInputStream = process.stdin,
   stdout: PopupOutputStream = process.stdout,
 ): boolean {
-  return Boolean(stdin.isTTY && stdout.isTTY);
+  return isInteractiveTty(stdin, stdout);
 }
 
 export function createPopupState(initialSections: readonly SnapshotSection[] = []): PopupState {
@@ -184,16 +172,6 @@ export async function runSnapshotPopup(options: RunSnapshotPopupOptions): Promis
   let snapshot = options.loadSnapshot();
   const state = createPopupState(options.initialSections);
   let lastMaxScroll = 0;
-  let pendingEsc = false;
-  let escTimer: ReturnType<typeof setTimeout> | null = null;
-  let rawModeEnabled = false;
-
-  const clearPendingEsc = (): void => {
-    if (escTimer !== null) {
-      clearTimeout(escTimer);
-      escTimer = null;
-    }
-  };
 
   const draw = (): void => {
     const cols = resolveInspectorWidth(stdout.columns, DEFAULT_INSPECTOR_WIDTH);
@@ -206,79 +184,32 @@ export async function runSnapshotPopup(options: RunSnapshotPopupOptions): Promis
     stdout.write(frame.output);
   };
 
-  let onData: ((chunk: Buffer | string) => void) | null = null;
-  stdout.write(`${ALT_SCREEN_ENTER}${CURSOR_HIDE}`);
-  try {
-    if (typeof stdin.setRawMode === 'function') {
-      stdin.setRawMode(true);
-      rawModeEnabled = true;
-    }
-    stdin.resume();
-    draw();
-    stdout.on('resize', draw);
-    await new Promise<void>((resolve) => {
-      const finish = (): void => {
-        clearPendingEsc();
-        if (onData !== null) {
-          stdin.off('data', onData);
-          onData = null;
-        }
-        resolve();
-      };
-
-      onData = (chunk: Buffer | string): void => {
-        clearPendingEsc();
-        const raw = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-        const seq = pendingEsc ? `${ESC_CHAR}${raw}` : raw;
-        pendingEsc = false;
-
-        if (seq === ESC_CHAR) {
-          pendingEsc = true;
-          escTimer = setTimeout(() => {
-            escTimer = null;
-            pendingEsc = false;
-            finish();
-          }, escTimeoutMs);
-          return;
-        }
-
-        const effect = applyPopupKey(state, seq, lastMaxScroll);
-        if (effect === 'dismiss') {
-          finish();
-          return;
-        }
-        if (effect === 'reload') {
-          try {
-            snapshot = options.loadSnapshot();
-            state.statusNote = '';
-          } catch {
-            state.statusNote = 'reload failed';
-          }
-          draw();
-          return;
-        }
-        if (effect === 'redraw') {
-          draw();
-        }
-      };
-
-      stdin.on('data', onData);
-    });
-  } finally {
-    clearPendingEsc();
-    stdout.off('resize', draw);
-    if (onData !== null) {
-      stdin.off('data', onData);
-    }
-    if (rawModeEnabled && typeof stdin.setRawMode === 'function') {
-      try {
-        stdin.setRawMode(false);
-      } catch {
-        // Ignore raw mode restore failure if stream already closed.
+  await runAltScreenTtySession<void>({
+    stdin,
+    stdout,
+    escTimeoutMs,
+    render: draw,
+    onEscTimeout: (finish) => finish(),
+    onKey: (seq, finish) => {
+      const effect = applyPopupKey(state, seq, lastMaxScroll);
+      if (effect === 'dismiss') {
+        finish();
+        return;
       }
-    }
-    stdin.pause();
-    stdout.write(`${CURSOR_SHOW}${ALT_SCREEN_EXIT}`);
-  }
+      if (effect === 'reload') {
+        try {
+          snapshot = options.loadSnapshot();
+          state.statusNote = '';
+        } catch {
+          state.statusNote = 'reload failed';
+        }
+        draw();
+        return;
+      }
+      if (effect === 'redraw') {
+        draw();
+      }
+    },
+  });
   return 0;
 }

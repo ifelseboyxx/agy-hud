@@ -41,12 +41,13 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
         return '<button type="button" class="src-pill' + on + '" data-src-filter="' + f.id + '">' + f.label + "</button>";
       })
       .join("");
+    var activeId = state.selectedSessionId || (state.snapshot && state.snapshot.convId) || null;
     var rowsHtml =
       state.sessions.length === 0
         ? '<div class="va-row" style="color:var(--text-tertiary)">No local sessions found.</div>'
         : state.sessions
             .map(function (s) {
-              var on = s.convId === state.selectedSessionId ? " on" : "";
+              var on = s.convId === activeId ? " on" : "";
               return (
                 '<button type="button" class="global-sess-item' + on + '" data-pick-session="' + esc(s.convId) + '">' +
                 '<div class="global-sess-top"><span class="badge-surf ' + esc(s.surface) + '">' + esc(s.surface) + "</span>" +
@@ -70,8 +71,28 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
     }
     return '<span class="va-target-text" title="' + esc(target) + '">' + esc(target) + "</span>";
   }
+  function renderRunningToolItem(rt) {
+    var label = rt.target || rt.fullTarget || "";
+    var titleText = rt.fullTarget || label;
+    var tgtHtml = rt.fileUri
+      ? '<button type="button" class="va-target-btn va-run-tgt" data-file-uri="' + esc(rt.fileUri) +
+        '" title="Open in side pane: ' + esc(titleText) + '">' + FILE_ICO + "<span>" + esc(label) + "</span></button>"
+      : '<span class="va-run-tgt" title="' + esc(titleText) + '">' + esc(label) + "</span>";
+    return '<div class="va-run-item"><span class="dot warn"></span><span class="va-name">' + esc(rt.disp) +
+      "</span>" + tgtHtml + "</div>";
+  }
   function renderToolsTab(d) {
     var q = state.query.trim().toLowerCase();
+    var runTools = Array.isArray(d.runningTools) ? d.runningTools : [];
+    var matchedRunning = runTools.filter(function (rt) {
+      if (!q) return true;
+      if ((rt.disp || "").toLowerCase().indexOf(q) !== -1) return true;
+      if ((rt.target || "").toLowerCase().indexOf(q) !== -1) return true;
+      return (rt.fullTarget || "").toLowerCase().indexOf(q) !== -1;
+    });
+    var runHtml = matchedRunning.length === 0
+      ? ""
+      : '<div class="va-run-banner">' + matchedRunning.map(renderRunningToolItem).join("") + "</div>";
     var maxCnt = 1;
     for (var i = 0; i < d.completedTools.length; i++) {
       if (d.completedTools[i].count > maxCnt) maxCnt = d.completedTools[i].count;
@@ -82,9 +103,9 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
       if ((t.latestTarget || "").toLowerCase().indexOf(q) !== -1) return true;
       return (t.recentTargets || []).some(function (rt) { return rt.toLowerCase().indexOf(q) !== -1; });
     });
-    var rows = filtered.length === 0
-      ? '<div class="va-row" style="color:var(--text-tertiary)">No matching tools.</div>'
-      : filtered.map(function (t) {
+    var completedCard = filtered.length === 0
+      ? (matchedRunning.length > 0 ? "" : '<div class="va-card"><div class="va-row" style="color:var(--text-tertiary)">No matching tools.</div></div>')
+      : '<div class="va-card">' + filtered.map(function (t) {
           var open = state.expandedTool === t.disp;
           var pct = Math.max(4, Math.round((t.count / maxCnt) * 100));
           var targets = Array.isArray(t.recentTargets) ? t.recentTargets : [];
@@ -98,11 +119,11 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
             '<span class="va-tgt">' + esc(t.latestTarget || "\u2014") + "</span></div>" +
             '<div class="va-bar-bg"><div class="va-bar-fg" style="width:' + pct + '%"></div></div>' + targetsHtml + "</div>"
           );
-        }).join("");
+        }).join("") + "</div>";
     return (
       '<input id="va-search" class="search-input" type="search" placeholder="Filter ' +
-      d.completedTools.length + ' tool types or file paths\u2026" value="' + esc(state.query) + '">' +
-      '<div class="va-card">' + rows + "</div>"
+      (runTools.length + d.completedTools.length) + ' tools or file paths\u2026" value="' + esc(state.query) + '">' +
+      runHtml + completedCard
     );
   }
   function renderContextTab(d) {
@@ -143,11 +164,9 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
     return '<div class="va-card"><div class="va-card-hd"><span>' + title + "</span></div>" + rows + "</div>";
   }
   function renderOverviewTab(d) {
-    var runHtml = d.runningTools.length === 0 ? "" :
-      '<div class="va-run-banner">' + d.runningTools.map(function (rt) {
-        return '<div class="va-run-item"><span class="dot warn"></span><span class="va-name">' + esc(rt.disp) +
-          '</span><span class="va-run-tgt">' + esc(rt.target) + "</span></div>";
-      }).join("") + "</div>";
+    var runTools = Array.isArray(d.runningTools) ? d.runningTools : [];
+    var runHtml = runTools.length === 0 ? "" :
+      '<div class="va-run-banner">' + runTools.map(renderRunningToolItem).join("") + "</div>";
     var hiddenTools = Math.max(0, d.completedTools.length - 4);
     var hiddenAgents = Math.max(0, d.agents.length - 4);
     var topTools = d.completedTools.length === 0
@@ -196,14 +215,16 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
     var ctxTone = toneForCtx(ctxPct);
     var cacheTone = toneForCache(tel.cachePct);
     var barColor = ctxTone === "danger" ? "var(--accent-danger)" : ctxTone === "warn" ? "var(--accent-warn)" : "var(--accent-ok)";
+    var activeId = state.selectedSessionId || d.convId;
     var selectHtml = state.sessions.length > 1
       ? '<select id="va-sess-select" class="va-sess-select" aria-label="Select session">' +
         state.sessions.map(function (s) {
-          var sel = s.convId === d.convId ? " selected" : "";
+          var sel = s.convId === activeId ? " selected" : "";
           return '<option value="' + esc(s.convId) + '"' + sel + ">[" + esc(s.surface.toUpperCase()) + "] " + esc(s.title) + "</option>";
         }).join("") + "</select>"
       : "";
     var agentTabLabel = d.agentsKind === "swarm" ? "Swarm" : "Agents";
+    var runningCount = Array.isArray(d.runningTools) ? d.runningTools.length : 0;
     var tabBtn = function (id, label, cnt) {
       var active = state.tab === id;
       var cntHtml = cnt == null ? "" : '<span class="va-cnt">' + cnt + "</span>";
@@ -228,7 +249,7 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
       (typeof tel.cachePct === "number" ? tel.cachePct.toFixed(0) + "%" : "\u2014") + "</strong></span></div>" +
       '<nav class="va-tabs" role="tablist">' +
       tabBtn("overview", "Overview", null) +
-      tabBtn("tools", "Tools", d.completedTools.length) +
+      tabBtn("tools", "Tools", runningCount + d.completedTools.length) +
       tabBtn("context", "Skills &amp; MCP", d.skills.length + d.mcps.length) +
       tabBtn("agents", agentTabLabel, d.agents.length) +
       "</nav></div>"

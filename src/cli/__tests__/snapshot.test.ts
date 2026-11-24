@@ -132,7 +132,7 @@ void describe('agy-hud snapshot CLI', () => {
     assert.throws(() => parseSnapshotArgs(['-s']), /Missing value after -s/);
   });
 
-  void it('prints --sessions table with [CLI], [App], and [IDE] badges', () => {
+  void it('prints --sessions table with [CLI], [APP], and [IDE] badges', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeSnapshotEnvelope(
       cliHome,
@@ -200,7 +200,7 @@ void describe('agy-hud snapshot CLI', () => {
       isAlive: (p) => p === process.pid,
     });
     assert.ok(res.output.includes('[CLI]'));
-    assert.ok(res.output.includes('[App]'));
+    assert.ok(res.output.includes('[APP]'));
     assert.ok(res.output.includes('[IDE]'));
     assert.ok(res.output.includes(`live:${process.pid}`));
     assert.ok(res.output.includes('cli-1111'));
@@ -255,7 +255,7 @@ void describe('agy-hud snapshot CLI', () => {
     assert.equal(parsed.agents[0]?.state, 'done');
 
     const textToolsOnly = formatSnapshotText(parsed, ['tools']);
-    assert.ok(textToolsOnly.includes('[App] Activity Snapshot'));
+    assert.ok(textToolsOnly.includes('[APP] Activity Snapshot'));
     assert.ok(textToolsOnly.includes('read_file'));
     assert.equal(textToolsOnly.includes('Skills ('), false);
   });

@@ -108,7 +108,7 @@ void describe('Structured Inspector terminal renderer', () => {
       siblingHint: '1 other active/recent session in this workspace: --session cli-9999 ([CLI])',
     });
     const lines = renderStructuredInspectorLines(snap, { color: false, width: 110 });
-    assert.equal(lines[0], '[App] Activity Snapshot  conv-abc  "Inspect overflow layout"');
+    assert.equal(lines[0], '[APP] Activity Snapshot  conv-abc  "Inspect overflow layout"');
     assert.equal(lines[1], 'Workspace: agy-hud · Matched via pid · 22 calls, 3 skills, 1 MCPs, 3 agents');
     assert.ok(lines[2]?.includes('Gemini 4 Carbon · Ctx 42k/200k (21%) · 92.4 t/s · TTFT 1.45s · Cache 86%'));
     assert.ok(lines[3]?.startsWith('Note: 1 other active/recent session in this workspace:'));
@@ -149,7 +149,7 @@ void describe('Structured Inspector terminal renderer', () => {
     }
   });
 
-  void it('pins running tools first with [+more] beyond 2 concurrent calls', () => {
+  void it('orders running tools newest-first with [+more] only on older overflowed calls beyond 2', () => {
     const runningTools: SnapshotRunningTool[] = [
       { name: 'run_command', disp: 'run_command', target: 'pnpm verify', fullTarget: 'pnpm verify', isMcp: false },
       { name: 'read_file', disp: 'read_file', target: 'spec.md', fullTarget: '/repo/spec.md', isMcp: false },
@@ -159,8 +159,11 @@ void describe('Structured Inspector terminal renderer', () => {
     const lines = renderStructuredInspectorLines(snap, { sections: ['tools'], color: false, width: 100 });
     const runningLines = lines.filter((line) => line.includes('◐'));
     assert.equal(runningLines.length, 3);
+    assert.ok(runningLines[0]?.includes('edit_file'));
     assert.equal(runningLines[0]?.includes('[+more]'), false);
+    assert.ok(runningLines[1]?.includes('read_file'));
     assert.equal(runningLines[1]?.includes('[+more]'), false);
+    assert.ok(runningLines[2]?.includes('run_command'));
     assert.equal(runningLines[2]?.includes('[+more]'), true);
 
     const firstRunningIdx = lines.findIndex((line) => line.includes('◐'));

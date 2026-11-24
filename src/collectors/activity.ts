@@ -21,6 +21,7 @@ import {
   listMcpServers,
   parseMcpTool,
   resolveSkillName,
+  RUNNING_STEP_STATUSES,
   sanitizeFullTarget,
   shortenTarget,
   unwrapArg,
@@ -33,13 +34,13 @@ export {
   extractToolTarget,
   parseMcpTool,
   resolveSkillName,
+  RUNNING_STEP_STATUSES,
   sanitizeFullTarget,
   shortenTarget,
   unwrapArg,
 } from './activity-parse.ts';
 
 const TASK_LINE_RE = /^\s*[-*]\s*\[([ xX/])\]\s+(.+)$/;
-const RUNNING_STATUSES: ReadonlySet<string> = new Set(['RUNNING', 'PENDING', 'IN_PROGRESS', 'GENERATING', 'WAITING']);
 
 interface ScanSliceResult {
   activity: TranscriptActivity;
@@ -211,7 +212,7 @@ function scanChunkFromOffset(
     }
 
     const status = typeof step.status === 'string' ? step.status.toUpperCase() : '';
-    const isRunning = RUNNING_STATUSES.has(status);
+    const isRunning = RUNNING_STEP_STATUSES.has(status);
     if (isRunning && !sawRunningStep) {
       sawRunningStep = true;
       stableOffset = lineStart;

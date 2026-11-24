@@ -70,9 +70,9 @@ export interface ConfigureTuiRenderedFrame {
 export const CONFIGURE_PRESET_DESCRIPTIONS: Readonly<Record<HudPreset, string>> = {
   zen: '1-row focus bar for narrow terminals & split panes',
   minimal: '2-row visual bars (identity + usage) without extra noise',
-  compact: '3-4 row daily coding default with collapsed Activity Summary',
+  compact: '3-4 row daily coding layout with collapsed Activity Summary',
   swarm: '4-5 row multi-agent orchestration with Agents & Todos',
-  full: 'Up to 8-row full diagnostics for tools, skills, MCPs & agents',
+  full: 'Default full diagnostics for tools, skills, MCPs, agents & todos',
 };
 
 const LINE_DESCRIPTIONS: Readonly<Record<HudLineId, string>> = {

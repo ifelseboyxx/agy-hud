@@ -10,6 +10,7 @@ import {
   listMcpServers,
   parseMcpTool,
   resolveSkillName,
+  RUNNING_STEP_STATUSES,
   shortenTarget,
   unwrapArg,
 } from './activity-parse.ts';
@@ -17,13 +18,6 @@ import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
 
 const SNAPSHOT_ACTIVITY_CACHE_VERSION = 1;
 export const SNAPSHOT_TARGET_DISPLAY_LEN = 34;
-const SNAPSHOT_RUNNING_STATUSES: ReadonlySet<string> = new Set([
-  'RUNNING',
-  'PENDING',
-  'IN_PROGRESS',
-  'GENERATING',
-  'WAITING',
-]);
 
 export interface SnapshotRawToolCall {
   name: string;
@@ -184,17 +178,25 @@ function mergeMcpServerLists(dataRoot: string, cacheCliHome: string): string[] {
   return [...unique].sort((a, b) => b.length - a.length);
 }
 
+interface SnapshotScanContext {
+  readonly dataRoot: string;
+  readonly workspaceDir: string | undefined;
+  readonly mcpServers: readonly string[];
+}
+
+interface SnapshotScanAccumulators {
+  readonly tools: SnapshotRawToolCall[];
+  readonly skills: string[];
+  readonly skillsSeen: Set<string>;
+  readonly agents: ActivityAgentEntry[];
+}
+
 function recordSnapshotToolCall(
   tc: unknown,
-  dataRoot: string,
-  workspaceDir: string | undefined,
-  mcpServers: readonly string[],
+  ctx: SnapshotScanContext,
+  acc: SnapshotScanAccumulators,
   isRunning: boolean,
   stepTs: number | null,
-  tools: SnapshotRawToolCall[],
-  skills: string[],
-  skillsSeen: Set<string>,
-  agents: ActivityAgentEntry[],
 ): void {
   if (!isPlainObject(tc)) return;
   const name = typeof tc.name === 'string' ? tc.name.trim() : '';
@@ -204,17 +206,17 @@ function recordSnapshotToolCall(
 
   const skillName =
     (name === 'read_file' || name === 'view_file') && rawTarget.length > 0
-      ? resolveSkillName(rawTarget, dataRoot, workspaceDir)
+      ? resolveSkillName(rawTarget, ctx.dataRoot, ctx.workspaceDir)
       : null;
   if (skillName !== null) {
-    appendUniqueString(skills, skillsSeen, skillName);
+    appendUniqueString(acc.skills, acc.skillsSeen, skillName);
   }
 
-  const mcpInfo = parseMcpTool(name, args, mcpServers);
+  const mcpInfo = parseMcpTool(name, args, ctx.mcpServers);
   if (name === 'invoke_subagent' && args) {
     const role = nonEmptyStr(unwrapArg(args.Role)) ?? nonEmptyStr(unwrapArg(args.TypeName)) ?? 'subagent';
     const model = unwrapArg(args.Model);
-    agents.push({
+    acc.agents.push({
       name: role,
       type: unwrapArg(args.TypeName),
       model: model === 'inherit' ? '' : model,
@@ -223,7 +225,7 @@ function recordSnapshotToolCall(
     });
   }
 
-  tools.push({
+  acc.tools.push({
     name,
     disp: mcpInfo !== null ? `${mcpInfo[0]}:${mcpInfo[1]}` : name,
     target: rawTarget.length > 0 ? shortenTarget(rawTarget, SNAPSHOT_TARGET_DISPLAY_LEN) : '',
@@ -247,6 +249,8 @@ function scanSnapshotTranscript(
   const skills = seed ? [...seed.data.skills] : [];
   const skillsSeen = new Set<string>(skills);
   const agents = seed ? seed.data.agents.slice(0, seed.stableAgentsCount) : [];
+  const scanCtx: SnapshotScanContext = { dataRoot, workspaceDir, mcpServers };
+  const acc: SnapshotScanAccumulators = { tools, skills, skillsSeen, agents };
   let lastModel = seed ? seed.data.lastModel : '';
 
   let stableOffset = startOffset;
@@ -304,7 +308,7 @@ function scanSnapshotTranscript(
       lastModel = step.model.trim();
     }
     const status = typeof step.status === 'string' ? step.status.toUpperCase() : '';
-    const isRunning = SNAPSHOT_RUNNING_STATUSES.has(status);
+    const isRunning = RUNNING_STEP_STATUSES.has(status);
     if (isRunning && !sawRunningStep) {
       sawRunningStep = true;
       stableOffset = lineStart;
@@ -315,18 +319,7 @@ function scanSnapshotTranscript(
     const stepTs = parseIsoTimestampSec(step.created_at);
     const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
     for (const tc of toolCalls) {
-      recordSnapshotToolCall(
-        tc,
-        dataRoot,
-        workspaceDir,
-        mcpServers,
-        isRunning,
-        stepTs,
-        tools,
-        skills,
-        skillsSeen,
-        agents,
-      );
+      recordSnapshotToolCall(tc, scanCtx, acc, isRunning, stepTs);
     }
 
     if (!sawRunningStep) {

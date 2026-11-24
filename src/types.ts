@@ -156,10 +156,10 @@ export interface HudConfig {
 }
 
 export const DEFAULT_HUD_CONFIG: HudConfig = {
-  preset: 'compact',
+  preset: 'full',
   maxAgentChips: 8,
   osc8Links: true,
-  lines: ['mode', 'identity', 'usage', 'activity'],
+  lines: ['mode', 'identity', 'usage', 'tools', 'skills', 'mcps', 'agents', 'todos'],
   segments: {
     model: true,
     git: true,

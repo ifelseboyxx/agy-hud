@@ -13,12 +13,12 @@ import {
 } from '../hud-config.ts';
 
 void describe('HudConfig schema, presets, and legacy hydration', async () => {
-  await it('defaults DEFAULT_HUD_CONFIG to the compact preset with osc8Links enabled', () => {
+  await it('defaults DEFAULT_HUD_CONFIG to the full preset with osc8Links enabled', () => {
     assert.deepEqual(DEFAULT_HUD_CONFIG, {
-      preset: 'compact',
+      preset: 'full',
       maxAgentChips: 8,
       osc8Links: true,
-      lines: ['mode', 'identity', 'usage', 'activity'],
+      lines: ['mode', 'identity', 'usage', 'tools', 'skills', 'mcps', 'agents', 'todos'],
       segments: {
         model: true,
         git: true,
@@ -129,10 +129,10 @@ void describe('HudConfig schema, presets, and legacy hydration', async () => {
     ]);
   });
 
-  await it('defaults legacy config without preset or lines to compact before applying show* keys', () => {
+  await it('defaults legacy config without preset or lines to full before applying show* keys', () => {
     const hydrated = hydrateHudConfig({ showPerfCapsule: false, showCost: false });
-    assert.equal(hydrated.preset, 'compact');
-    assert.deepEqual(hydrated.lines, ['mode', 'identity', 'usage', 'activity']);
+    assert.equal(hydrated.preset, 'full');
+    assert.deepEqual(hydrated.lines, ['mode', 'identity', 'usage', 'tools', 'skills', 'mcps', 'agents', 'todos']);
     assert.equal(hydrated.segments.perf, false);
     assert.equal(hydrated.segments.cost, false);
   });
@@ -184,8 +184,8 @@ void describe('HudConfig schema, presets, and legacy hydration', async () => {
 
   await it('ignores autoWireStatusLine as an unknown key in both merge and hydrate', () => {
     const expected: HudConfig = {
-      ...buildPresetConfig('compact'),
-      segments: { ...buildPresetConfig('compact').segments, cost: false },
+      ...buildPresetConfig('full'),
+      segments: { ...buildPresetConfig('full').segments, cost: false },
     };
     assert.deepEqual(mergeHudConfig({ autoWireStatusLine: true, showCost: false }), expected);
     assert.deepEqual(hydrateHudConfig({ autoWireStatusLine: true, showCost: false }), expected);

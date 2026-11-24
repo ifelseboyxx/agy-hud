@@ -7,6 +7,7 @@ import { isFiniteNum, isPlainObject } from '../core/guards.ts';
 import { realpathExistingPrefixSync, resolveProfileRoots, toComparePath } from '../core/paths.ts';
 import { lstatIfPresentSync, readJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
 import type { SessionRecord, SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
+import { RUNNING_STEP_STATUSES } from './activity-parse.ts';
 import { readTailLines } from './agents.ts';
 import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
 import { formatRelativeAge, formatSurfaceBadge, parseEnvelopeRecord } from './snapshot-envelope.ts';
@@ -14,13 +15,6 @@ import { openReadonlyDb } from './telemetry.ts';
 
 const SUMMARY_QUERY_LIMIT = 100;
 const ENVELOPE_FILE_RE = /^agy_hud_snapshot_(.+)\.json$/;
-const RUNNING_STEP_STATUSES: ReadonlySet<string> = new Set([
-  'RUNNING',
-  'PENDING',
-  'IN_PROGRESS',
-  'GENERATING',
-  'WAITING',
-]);
 const ACTIVE_SUBAGENT_STATUSES: ReadonlySet<string> = new Set([
   'running',
   'working',

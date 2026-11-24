@@ -13,13 +13,16 @@ import {
   type ConfigureTuiTier,
 } from './configure-tui-render.ts';
 import { type ConfigureHudOptions, loadInteractiveDraftConfig, writeHudConfigAtomic } from './configure.ts';
-import {
-  ESC_SEQUENCE_TIMEOUT_MS,
-  isPopupInteractiveTty,
-  type PopupInputStream,
-  type PopupOutputStream,
-} from './snapshot-popup.ts';
 import { shouldUseSnapshotColor } from './snapshot-render.ts';
+import {
+  CTRL_C,
+  ESC_CHAR,
+  ESC_SEQUENCE_TIMEOUT_MS,
+  isInteractiveTty,
+  runAltScreenTtySession,
+  type TtyInputStream,
+  type TtyOutputStream,
+} from './tty-session.ts';
 
 export {
   buildConfigurePreviewLines,
@@ -50,18 +53,12 @@ export interface RunConfigureInteractiveOptions {
   readonly json?: boolean;
   readonly color?: boolean;
   readonly configureOptions?: ConfigureHudOptions;
-  readonly stdin?: PopupInputStream;
-  readonly stdout?: PopupOutputStream;
+  readonly stdin?: TtyInputStream;
+  readonly stdout?: TtyOutputStream;
   readonly stderr?: ConfigureErrorStream;
   readonly escTimeoutMs?: number;
 }
 
-const ESC_CHAR = String.fromCharCode(0x1b);
-const CTRL_C = String.fromCharCode(0x03);
-const ALT_SCREEN_ENTER = `${ESC_CHAR}[?1049h`;
-const ALT_SCREEN_EXIT = `${ESC_CHAR}[?1049l`;
-const CURSOR_HIDE = `${ESC_CHAR}[?25l`;
-const CURSOR_SHOW = `${ESC_CHAR}[?25h`;
 const DEFAULT_INTERACTIVE_COLS = 104;
 const DEFAULT_INTERACTIVE_ROWS = 28;
 
@@ -197,7 +194,7 @@ export async function runConfigureInteractive(options: RunConfigureInteractiveOp
   const stderr = options.stderr ?? process.stderr;
   const env = options.env ?? process.env;
 
-  if (!isPopupInteractiveTty(stdin, stdout)) {
+  if (!isInteractiveTty(stdin, stdout)) {
     stderr.write(CONFIGURE_NON_TTY_HINT);
     return 1;
   }
@@ -211,18 +208,6 @@ export async function runConfigureInteractive(options: RunConfigureInteractiveOp
   const useColor = options.color !== undefined ? options.color : shouldUseSnapshotColor(false, env);
   const escTimeoutMs = options.escTimeoutMs ?? ESC_SEQUENCE_TIMEOUT_MS;
 
-  let pendingEsc = false;
-  let escTimer: ReturnType<typeof setTimeout> | null = null;
-  let rawModeEnabled = false;
-  let onData: ((chunk: Buffer | string) => void) | null = null;
-
-  const clearPendingEsc = (): void => {
-    if (escTimer !== null) {
-      clearTimeout(escTimer);
-      escTimer = null;
-    }
-  };
-
   const draw = (): void => {
     const cols = typeof stdout.columns === 'number' && stdout.columns > 0 ? stdout.columns : DEFAULT_INTERACTIVE_COLS;
     const rows = typeof stdout.rows === 'number' && stdout.rows > 0 ? stdout.rows : DEFAULT_INTERACTIVE_ROWS;
@@ -230,75 +215,27 @@ export async function runConfigureInteractive(options: RunConfigureInteractiveOp
     stdout.write(frame.output);
   };
 
-  let decision: 'save' | 'cancel' = 'cancel';
-  stdout.write(`${ALT_SCREEN_ENTER}${CURSOR_HIDE}`);
-  try {
-    if (typeof stdin.setRawMode === 'function') {
-      stdin.setRawMode(true);
-      rawModeEnabled = true;
-    }
-    stdin.resume();
-    draw();
-    stdout.on('resize', draw);
-
-    decision = await new Promise<'save' | 'cancel'>((resolve) => {
-      const finish = (outcome: 'save' | 'cancel'): void => {
-        clearPendingEsc();
-        if (onData !== null) {
-          stdin.off('data', onData);
-          onData = null;
-        }
-        resolve(outcome);
-      };
-
-      onData = (chunk: Buffer | string): void => {
-        clearPendingEsc();
-        const raw = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-        const seq = pendingEsc ? `${ESC_CHAR}${raw}` : raw;
-        pendingEsc = false;
-
-        if (seq === ESC_CHAR) {
-          pendingEsc = true;
-          escTimer = setTimeout(() => {
-            escTimer = null;
-            pendingEsc = false;
-            finish('cancel');
-          }, escTimeoutMs);
-          return;
-        }
-
-        const effect = applyConfigureTuiKey(state, seq);
-        if (effect === 'save') {
-          finish('save');
-          return;
-        }
-        if (effect === 'cancel') {
-          finish('cancel');
-          return;
-        }
-        if (effect === 'redraw') {
-          draw();
-        }
-      };
-
-      stdin.on('data', onData);
-    });
-  } finally {
-    clearPendingEsc();
-    stdout.off('resize', draw);
-    if (onData !== null) {
-      stdin.off('data', onData);
-    }
-    if (rawModeEnabled && typeof stdin.setRawMode === 'function') {
-      try {
-        stdin.setRawMode(false);
-      } catch {
-        // Ignore raw mode restore failure if stream already closed.
+  const decision = await runAltScreenTtySession<'save' | 'cancel'>({
+    stdin,
+    stdout,
+    escTimeoutMs,
+    render: draw,
+    onEscTimeout: (finish) => finish('cancel'),
+    onKey: (seq, finish) => {
+      const effect = applyConfigureTuiKey(state, seq);
+      if (effect === 'save') {
+        finish('save');
+        return;
       }
-    }
-    stdin.pause();
-    stdout.write(`${CURSOR_SHOW}${ALT_SCREEN_EXIT}`);
-  }
+      if (effect === 'cancel') {
+        finish('cancel');
+        return;
+      }
+      if (effect === 'redraw') {
+        draw();
+      }
+    },
+  });
 
   if (decision === 'cancel') {
     return 0;

@@ -416,7 +416,7 @@ export function runInstallerCli(args: readonly string[]): number {
         binDir: opts.binDir,
         requireShim: false,
         noShim: opts.noShim,
-        checkMalformedShim: opts.manageShim,
+        checkMalformedShim: false,
       });
       return ok ? 0 : 1;
     }

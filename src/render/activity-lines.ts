@@ -9,14 +9,33 @@ import {
   resolveLineBudget,
 } from './pack-line.ts';
 
-export type { ActivityLineFormatOptions } from './pack-line.ts';
+export type { ActivityLineFormatOptions, PackableLineItem } from './pack-line.ts';
 
 const MAX_TOOL_SUMMARY = 8;
 const MAX_RUNNING_TOOLS = 2;
 const MAX_VISIBLE_NAMES = 8;
 const MAX_TODO_LEN = 48;
+const HUD_TOOLS_PREFIX_COLS = 2;
+const HUD_TOOLS_SEP_COLS = 3;
 
-function makeRunningToolItem(entry: TranscriptToolEntry): PackableLineItem {
+export interface HudToolRunningSpec {
+  readonly name?: string;
+  readonly disp: string;
+  readonly target: string;
+}
+
+export interface HudToolCompletedSpec {
+  readonly disp: string;
+  readonly count: number;
+}
+
+interface ToolsLineLayout {
+  readonly allFit: boolean;
+  readonly shownRunning: number;
+  readonly shownCompleted: number;
+}
+
+export function makeRunningToolItem(entry: TranscriptToolEntry): PackableLineItem {
   const disp = entry.disp.length > 0 ? entry.disp : entry.name;
   const tgt = entry.target.length > 0 ? `${GRAY}: ${entry.target}${RESET}` : '';
   const full = `${YELLOW}◐${RESET} ${CYAN}${disp}${RESET}${tgt}`;
@@ -63,6 +82,94 @@ function makeCompletedToolItem(agg: CompletedToolAggregate): PackableLineItem {
   };
 }
 
+function computeToolsLineLayout(
+  runningWidths: readonly number[],
+  totalRunning: number,
+  completedWidths: readonly number[],
+  totalCompleted: number,
+  budget: number,
+  formatOverflow: (hiddenCount: number) => string,
+): ToolsLineLayout {
+  const totalSlots = totalRunning + totalCompleted;
+  if (totalRunning <= MAX_RUNNING_TOOLS && totalCompleted <= MAX_TOOL_SUMMARY) {
+    const allWidths = [...runningWidths, ...completedWidths];
+    let fullCols = HUD_TOOLS_PREFIX_COLS;
+    for (let i = 0; i < allWidths.length; i += 1) {
+      fullCols += (i > 0 ? HUD_TOOLS_SEP_COLS : 0) + (allWidths[i] ?? 0);
+    }
+    if (fullCols <= budget) {
+      return { allFit: true, shownRunning: runningWidths.length, shownCompleted: completedWidths.length };
+    }
+  }
+
+  let shownRunning = 0;
+  let curCols = HUD_TOOLS_PREFIX_COLS;
+  if (runningWidths.length > 0) {
+    shownRunning = 1;
+    if (runningWidths.length === 2 && totalSlots > 2) {
+      const twoCols =
+        HUD_TOOLS_PREFIX_COLS +
+        (runningWidths[0] ?? 0) +
+        HUD_TOOLS_SEP_COLS +
+        (runningWidths[1] ?? 0) +
+        HUD_TOOLS_SEP_COLS +
+        visibleLen(formatOverflow(totalSlots - 2));
+      if (twoCols <= budget) {
+        shownRunning = 2;
+      }
+    }
+    curCols =
+      HUD_TOOLS_PREFIX_COLS +
+      (runningWidths[0] ?? 0) +
+      (shownRunning === 2 ? HUD_TOOLS_SEP_COLS + (runningWidths[1] ?? 0) : 0);
+  }
+
+  let shownCompleted = 0;
+  for (let k = 1; k <= completedWidths.length; k += 1) {
+    const hidden = totalSlots - shownRunning - k;
+    if (runningWidths.length > 0 && hidden <= 0) {
+      break;
+    }
+    const width = completedWidths[k - 1] ?? 0;
+    const itemCols = shownRunning === 0 && k === 1 ? width : HUD_TOOLS_SEP_COLS + width;
+    curCols += itemCols;
+    const overflowCols = hidden > 0 ? HUD_TOOLS_SEP_COLS + visibleLen(formatOverflow(hidden)) : 0;
+    if (curCols + overflowCols <= budget) {
+      shownCompleted = k;
+    } else {
+      break;
+    }
+  }
+  return { allFit: false, shownRunning, shownCompleted };
+}
+
+export function computeHudVisibleCompletedCap(
+  runningTools: readonly HudToolRunningSpec[],
+  completedTools: readonly HudToolCompletedSpec[],
+  maxCols: number,
+  formatOverflow: (hiddenCount: number) => string = formatDefaultOverflow,
+): number {
+  if (completedTools.length === 0) return 0;
+  const runningWidths = runningTools
+    .slice(-MAX_RUNNING_TOOLS)
+    .reverse()
+    .map((rt) => {
+      const disp = rt.disp.length > 0 ? rt.disp : (rt.name ?? '');
+      return visibleLen(rt.target.length > 0 ? `◐ ${disp}: ${rt.target}` : `◐ ${disp}`);
+    });
+  const completedWidths = completedTools
+    .slice(0, MAX_TOOL_SUMMARY)
+    .map((ct) => visibleLen(`✓ ${ct.disp} ×${ct.count}`));
+  return computeToolsLineLayout(
+    runningWidths,
+    runningTools.length,
+    completedWidths,
+    completedTools.length,
+    maxCols,
+    formatOverflow,
+  ).shownCompleted;
+}
+
 export function formatToolsLine(
   tools: readonly TranscriptToolEntry[],
   hasSkills: boolean,
@@ -92,8 +199,6 @@ export function formatToolsLine(
 
   const budget = resolveLineBudget(termWidth);
   const formatOverflow = options?.formatOverflow ?? formatDefaultOverflow;
-  const prefixCols = visibleLen(prefix);
-  const sepCols = visibleLen(separator);
   const totalRunning = allRunning.length;
   const totalCompleted = completed.length;
   const totalSlots = totalRunning + totalCompleted;
@@ -105,75 +210,39 @@ export function formatToolsLine(
   const completedRendered = completedCandidates.map((item) => item.render());
   const completedWidths = completedRendered.map(visibleLen);
 
-  if (totalRunning <= MAX_RUNNING_TOOLS && totalCompleted <= MAX_TOOL_SUMMARY) {
-    const allRendered = [...runningRendered, ...completedRendered];
-    const allWidths = [...runningWidths, ...completedWidths];
-    let fullCols = prefixCols;
-    for (let i = 0; i < allWidths.length; i += 1) {
-      fullCols += (i > 0 ? sepCols : 0) + (allWidths[i] ?? 0);
-    }
-    if (fullCols <= budget) {
-      return `${prefix}${allRendered.join(separator)}`;
-    }
-    if (totalSlots === 1) {
-      const only = runningCandidates[0];
-      return only ? `${prefix}${only.renderEllipsized(Math.max(1, budget - prefixCols))}` : '';
-    }
+  const layout = computeToolsLineLayout(
+    runningWidths,
+    totalRunning,
+    completedWidths,
+    totalCompleted,
+    budget,
+    formatOverflow,
+  );
+  if (layout.allFit) {
+    return `${prefix}${[...runningRendered, ...completedRendered].join(separator)}`;
+  }
+  if (totalSlots === 1) {
+    const only = runningCandidates[0];
+    return only ? `${prefix}${only.renderEllipsized(Math.max(1, budget - HUD_TOOLS_PREFIX_COLS))}` : '';
   }
 
-  let shownRunning = 1;
-  if (runningCandidates.length === 2) {
-    const hiddenIfTwo = totalSlots - 2;
-    if (hiddenIfTwo > 0) {
-      const twoCols =
-        prefixCols +
-        (runningWidths[0] ?? 0) +
-        sepCols +
-        (runningWidths[1] ?? 0) +
-        sepCols +
-        visibleLen(formatOverflow(hiddenIfTwo));
-      if (twoCols <= budget) {
-        shownRunning = 2;
-      }
-    }
-  }
-
-  if (shownRunning === 1) {
+  if (layout.shownRunning === 1) {
     const overflowIfOne = formatOverflow(totalSlots - 1);
-    const oneCols = prefixCols + (runningWidths[0] ?? 0) + sepCols + visibleLen(overflowIfOne);
+    const oneCols = HUD_TOOLS_PREFIX_COLS + (runningWidths[0] ?? 0) + HUD_TOOLS_SEP_COLS + visibleLen(overflowIfOne);
     if (oneCols > budget) {
       const firstRunning = runningCandidates[0];
       if (!firstRunning) {
         return '';
       }
-      const avail = Math.max(1, budget - prefixCols - sepCols - visibleLen(overflowIfOne));
+      const avail = Math.max(1, budget - HUD_TOOLS_PREFIX_COLS - HUD_TOOLS_SEP_COLS - visibleLen(overflowIfOne));
       return `${prefix}${firstRunning.renderEllipsized(avail)}${separator}${overflowIfOne}`;
     }
   }
 
-  let baseCols = prefixCols + (runningWidths[0] ?? 0);
-  if (shownRunning === 2) {
-    baseCols += sepCols + (runningWidths[1] ?? 0);
-  }
-  let bestCompleted = 0;
-  let curCols = baseCols;
-  for (let k = 1; k <= completedCandidates.length; k += 1) {
-    const hidden = totalSlots - shownRunning - k;
-    if (hidden <= 0) {
-      break;
-    }
-    curCols += sepCols + (completedWidths[k - 1] ?? 0);
-    if (curCols + sepCols + visibleLen(formatOverflow(hidden)) <= budget) {
-      bestCompleted = k;
-    } else {
-      break;
-    }
-  }
-
-  const hidden = totalSlots - shownRunning - bestCompleted;
+  const hidden = totalSlots - layout.shownRunning - layout.shownCompleted;
   const parts = [
-    ...runningRendered.slice(0, shownRunning),
-    ...completedRendered.slice(0, bestCompleted),
+    ...runningRendered.slice(0, layout.shownRunning),
+    ...completedRendered.slice(0, layout.shownCompleted),
     formatOverflow(hidden),
   ];
   return `${prefix}${parts.join(separator)}`;

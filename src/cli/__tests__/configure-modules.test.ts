@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 void describe('sanitizeHudConfigTemplate', async () => {
-  await it('validates 5-preset enum, maxAgentChips, osc8Links, and whitelists/deduplicates lines', () => {
+  await it('whitelists canonical fields while dropping unknown keys', () => {
     const sanitized = sanitizeHudConfigTemplate({
       preset: 'swarm',
       maxAgentChips: 6,
@@ -54,7 +54,7 @@ void describe('sanitizeHudConfigTemplate', async () => {
     assert.equal('secretSegment' in segments, false);
   });
 
-  await it('hydrates legacy show* keys into canonical lines and segments during sanitization', () => {
+  await it('hydrates legacy show* keys into canonical schema during sanitization', () => {
     const sanitized = sanitizeHudConfigTemplate({
       preset: 'full',
       showSkillsMcpLine: false,
@@ -67,7 +67,7 @@ void describe('sanitizeHudConfigTemplate', async () => {
     assert.equal((sanitized.segments as Record<string, boolean>).cost, false);
   });
 
-  await it('rejects invalid preset, maxAgentChips, osc8Links, lines, and segment value types', () => {
+  await it('rejects invalid field types during sanitization', () => {
     assert.throws(() => sanitizeHudConfigTemplate({ preset: 'ultra' }), /Invalid 'preset'/);
     assert.throws(() => sanitizeHudConfigTemplate({ maxAgentChips: 25 }), /Invalid 'maxAgentChips'/);
     assert.throws(() => sanitizeHudConfigTemplate({ osc8Links: 'yes' }), /Invalid boolean 'osc8Links'/);
@@ -83,7 +83,7 @@ void describe('sanitizeHudConfigTemplate', async () => {
 });
 
 void describe('pluggable configure CLI parsing and mutations', async () => {
-  await it('parses positional preset shorthand, --enable, --disable, --order, --set, and -i flags', () => {
+  await it('parses positional preset with modular flags', () => {
     const parsed = parseConfigureArgs([
       'swarm',
       '--enable',
@@ -103,17 +103,19 @@ void describe('pluggable configure CLI parsing and mutations', async () => {
     assert.deepEqual(parsed.options.disable, ['cost', 'perf']);
     assert.deepEqual(parsed.options.order, ['identity', 'usage', 'agents', 'tools']);
     assert.deepEqual(parsed.options.sets, ['osc8Links=false']);
-
-    const interactiveParsed = parseConfigureArgs(['-i']);
-    assert.equal(interactiveParsed.interactive, true);
-    assert.equal(interactiveParsed.options.interactive, true);
-
-    const interactiveLong = parseConfigureArgs(['--interactive']);
-    assert.equal(interactiveLong.interactive, true);
-    assert.equal(interactiveLong.options.interactive, true);
   });
 
-  await it('seeds lines and segments from preset while preserving maxAgentChips and osc8Links', () => {
+  await it('parses short and long interactive configure flags', () => {
+    const shortFlag = parseConfigureArgs(['-i']);
+    assert.equal(shortFlag.interactive, true);
+    assert.equal(shortFlag.options.interactive, true);
+
+    const longFlag = parseConfigureArgs(['--interactive']);
+    assert.equal(longFlag.interactive, true);
+    assert.equal(longFlag.options.interactive, true);
+  });
+
+  await it('preserves top-level numeric and link options when switching presets', () => {
     const cliHome = makeTempCliHome('agy-hud-cfg-seed-');
     configureHud({ cliHome, sets: ['maxAgentChips=5', 'osc8Links=false'] });
 
@@ -128,7 +130,7 @@ void describe('pluggable configure CLI parsing and mutations', async () => {
     assert.equal(switched.config.segments.quota, true);
   });
 
-  await it('applies preset together with --enable, --disable, --order, and --set in one invocation', () => {
+  await it('applies preset with modular overrides in one invocation', () => {
     const cliHome = makeTempCliHome('agy-hud-cfg-combo-');
     const parsed = parseConfigureArgs([
       'compact',
@@ -152,7 +154,7 @@ void describe('pluggable configure CLI parsing and mutations', async () => {
     assert.equal(res.config.segments.perf, true);
   });
 
-  await it('supports legacy show* --set aliases including showSkillsMcpLine for both skills and mcps', () => {
+  await it('maps legacy show* aliases through --set', () => {
     const cliHome = makeTempCliHome('agy-hud-cfg-legacy-');
     const enabled = configureHud({
       cliHome,
@@ -167,7 +169,7 @@ void describe('pluggable configure CLI parsing and mutations', async () => {
     assert.deepEqual(disabled.config.lines, ['identity', 'usage', 'activity', 'tools']);
   });
 
-  await it('supports --set segments.<id>=<bool> and --set osc8Links=<bool>', () => {
+  await it('updates individual segments via --set segments.<id>', () => {
     const cliHome = makeTempCliHome('agy-hud-cfg-seg-');
     const res = configureHud({
       cliHome,
@@ -178,7 +180,7 @@ void describe('pluggable configure CLI parsing and mutations', async () => {
     assert.equal(res.config.osc8Links, false);
   });
 
-  await it('rejects invalid --enable, --disable, --order, duplicate presets, and autoWireStatusLine', () => {
+  await it('rejects invalid configure flags or unknown target identifiers', () => {
     const cliHome = makeTempCliHome('agy-hud-cfg-err-');
     assert.throws(() => parseConfigureArgs(['zen', 'full']), /Duplicate preset/);
     assert.throws(() => parseConfigureArgs(['zen', '--preset', 'full']), /Duplicate preset/);
@@ -190,7 +192,7 @@ void describe('pluggable configure CLI parsing and mutations', async () => {
     assert.throws(() => configureHud({ cliHome, sets: ['autoWireStatusLine=true'] }), /Unknown configuration key/);
   });
 
-  await it('throws without overwriting when existing hud-config.json contains corrupted JSON', () => {
+  await it('throws without overwriting corrupted hud-config.json', () => {
     const cliHome = makeTempCliHome('agy-hud-cfg-corrupt-');
     mkdirSync(cliHome, { recursive: true });
     const configPath = path.join(cliHome, 'hud-config.json');
@@ -201,7 +203,7 @@ void describe('pluggable configure CLI parsing and mutations', async () => {
     assert.equal(readFileSync(configPath, 'utf8'), rawCorrupt);
   });
 
-  await it('resets hud-config.json back to compact default with osc8Links=true and maxAgentChips=8', () => {
+  await it('resets hud-config.json back to the full default preset', () => {
     const cliHome = makeTempCliHome('agy-hud-cfg-reset-');
     configureHud({ cliHome, preset: 'zen', sets: ['osc8Links=false', 'maxAgentChips=2'] });
     const reset = configureHud({ cliHome, reset: true });

@@ -213,14 +213,16 @@ void describe('render and hud-entry', () => {
     const fullLine1 = fullOut.split('\n')[1] ?? '';
     assert.equal(fullLine1.includes('BG 2'), false);
 
-    const compactOut = stripAnsi(renderHudFromData(baseData, opts));
+    const compactOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: buildPresetConfig('compact') }));
     assert.ok(compactOut.includes('accept edits on'));
-    assert.ok(compactOut.includes('Tools 5'));
-    assert.ok(compactOut.includes('Skills 1'));
-    assert.ok(compactOut.includes('MCPs 1'));
-    assert.ok(compactOut.includes('Swarm 2/3'));
-    assert.equal(compactOut.includes('Read ×5'), false);
+    assert.ok(compactOut.includes('Read ×5'));
+    assert.ok(compactOut.includes('Skills: tdd'));
+    assert.ok(compactOut.includes('MCPs: github'));
+    assert.ok(compactOut.includes('Swarm: ◐ hud-core'));
+    assert.equal(compactOut.includes('Tools 5'), false);
     assert.equal(compactOut.includes('Skills (1):'), false);
+    assert.equal(compactOut.includes('MCPs (1):'), false);
+    assert.equal(compactOut.includes('Swarm (2/3):'), false);
     assert.equal(compactOut.includes('Build tests'), false);
     // Todos line is hidden in compact mode, so BG 2 returns on Line 1.
     assert.ok(compactOut.includes('BG 2'));

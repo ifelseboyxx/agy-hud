@@ -1,6 +1,6 @@
 # agy-hud
 
-An Antigravity CLI plugin that shows live session telemetry below your prompt: model and thinking effort, context usage, rate-limit quotas, throughput/TTFT/cache metrics, active tools, native `/swarm` status, and todos — plus sanitized cross-machine profile migration.
+An Antigravity CLI and App plugin that shows live session telemetry below your prompt — model and thinking effort, context usage, rate-limit quotas, throughput/TTFT/cache metrics, active tools, skills, MCP servers, native `/swarm` status, and todos — with one-click overflow inspection, interactive terminal configuration, and sanitized profile migration.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/ifelseboyxx/agy-hud)](https://github.com/ifelseboyxx/agy-hud/stargazers)
@@ -13,133 +13,170 @@ An Antigravity CLI plugin that shows live session telemetry below your prompt: m
 
 ## What You See
 
-The default (`full`) layout renders the active mode, identity and performance metrics, context and quota bars, plus live activity rows whenever tools, skills, MCP servers, swarms, or todos are active:
+The default (`full`) layout renders active mode, identity and performance metrics, context and quota bars, plus live activity rows whenever tools, skills, MCP servers, swarms, or todos are active:
 
 ```text
  ⏵⏵ accept edits on (shift+tab to cycle)
  [G4 Carbon ◑ high] │ agy-hud git:(main*) │ ◷ 12m │ Swarm 1/2 │ Cost $0.185 │ 86.4 t/s · TTFT 1.62s · Cache 94%
   Context █████░░░░░ 48% (480k/1M) │ G 5h: 92.50% (3h 14m) | 7d: 88.20% (102h 6m)
-  ◐ Edit: lines.ts | ✓ Read ×4 | ✓ Grep ×2
+  ◐ Edit: lines.ts | ✓ Read ×4 | ✓ Grep ×2 | +3 more
   ✓ Skills (2): agy-hud-setup, agy-hud-configure
   ✓ MCPs (1): filesystem
   ◐ Swarm (1/2): ◐ coder, ◌ reviewer
   ▸ Verify statusLine rollback guards (2/4) │ BG 1
 ```
 
-- **Mode line**: current permission or agent mode (`bypass permissions`, `accept edits`, `plan`, `auto`, or `default`), optional Vim mode tag (`[NORMAL]` / `[INSERT]`), and cycle hint.
-- **Line 1 (Identity & Perf)**: model and thinking effort (including `Orchestrator (Planner/Executor)` resolution), workspace folder and git branch (`*` when dirty), session duration, active `Swarm` / `Agents` counter, runtime badges (`@agent`, `Battle`, `BG`, `! Approval`, `Q:N`), session cost, and an adaptive **Perf Capsule** (`t/s`, `TTFT`, `Cache%`) that trims segments automatically on narrow terminals.
-- **Line 2 (Context & Quota)**: color-coded context bar (cyan below 50%, yellow at 50%+, red at 80%+) with token capacity on terminals `>= 95` columns and compaction-aware estimates (`~used/max`), alongside model-prioritized quota buckets (`G` vs `3P`, with secondary buckets shown when terminal width `>= 120` columns).
-- **Activity lines**: live and completed tools, loaded skills and MCP servers, native `/swarm` worker chips (`◐` working, `◌` waiting) merged with stdin subagents without double-counting, and todo progress. Each row collapses cleanly with `+N more` when items exceed one line.
+- **Mode line (`mode`)**: active permission or agent mode (`bypass permissions`, `accept edits`, `plan`, `auto`, or `default`), optional Vim mode tag (`[NORMAL]` / `[INSERT]`), and cycle hint.
+- **Identity & Perf (`identity`)**: model and thinking effort (including `Orchestrator (Planner/Executor)`), workspace folder and git branch (`*` when dirty), duration, active `Swarm` / `Agents` counter, runtime badges (`@agent`, `Battle`, `BG`, `! Approval`, `Q:N`), session cost, and an adaptive **Perf Capsule** (`t/s`, `TTFT`, `Cache%`).
+- **Context & Quota (`usage`)**: color-coded context bar with token capacity and compaction-aware estimates (`~used/max`), alongside model-prioritized quota buckets (`G` vs `3P`).
+- **Activity lines (`tools`, `skills`, `mcps`, `agents`, `todos`) & collapsed summary (`activity`)**: live and completed tools, loaded skills and MCP servers, native `/swarm` and subagent chips (`◐` working, `◌` waiting), and todo progress. Each row packs greedily within terminal width and turns `+N more` (or `· snapshot` on `compact`) into a clickable OSC 8 link when supported.
 
 ### Display Presets
 
-| Preset | Mode Line | Line 1 & Line 2 | Swarm / Agents Chips | Tools, Skills/MCPs & Todos |
-| :--- | :---: | :---: | :---: | :---: |
-| `full` *(default)* | On | On | On | On |
-| `compact` | On | On | On | Off |
-| `minimal` | Off | On | Off | Off |
-
-<!-- Optional preset comparison image: save to assets/presets.png and uncomment below:
-![agy-hud presets](assets/presets.png)
--->
+| Preset | Default Lines | Inline Segments | Best For |
+| :--- | :--- | :--- | :--- |
+| `full` *(default)* | `mode`, `identity`, `usage`, `tools`, `skills`, `mcps`, `agents`, `todos` | All enabled | Complete live diagnostics |
+| `compact` | `mode`, `identity`, `usage`, `activity` | All enabled | Daily coding with single-line concrete Activity Summary |
+| `swarm` | `mode`, `identity`, `usage`, `agents`, `todos` | All enabled | Multi-agent orchestration focus |
+| `minimal` | `identity`, `usage` | `model`, `git`, `badges`, `context`, `quota` | Clean two-row bars without activity noise |
+| `zen` | `identity` (folds `Ctx%` & `5h%` inline) | `model`, `git`, `badges`, `context`, `quota` | Strict single-row narrow terminals & split panes |
 
 ## Install
 
-Requires **Antigravity CLI (`agy`)** and **Node.js `^22.20.0 || >=24.0.0`** (`pnpm@11.1.1` if building from source).
-
-### Plugin-First Setup (Recommended)
+Requires **Antigravity CLI (`agy`)** and **Node.js `^22.20.0 || >=24.0.0`**.
 
 ```bash
+# 1. Install the plugin package
 agy plugin install https://github.com/ifelseboyxx/agy-hud
+
+# 2. Connect the HUD status line and install the `agy-hud` command
 node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire
 ```
 
-`wire` connects the installed plugin in-place without re-copying files: it backs up any existing `statusLine` in `~/.gemini/antigravity-cli/settings.json`, wires `dist/hud.mjs`, installs an ownership-verified `CLI Shim` (`agy-hud` in `~/.local/bin` on macOS/Linux or `%LOCALAPPDATA%\agy\bin` on Windows — never modifying shell rc files or the Windows Registry), runs `doctor` (including a `5 s` `<shim> --help` smoke check), and prints a single-line `PATH` hint if needed. Pass `--no-shim` to skip the `CLI Shim` or `--bin-dir <dir>` (`AGY_HUD_BIN_DIR`) to choose a custom bin directory. If any step fails, `settings.json` and any prior `agy-hud` shim are rolled back automatically.
+`wire` backs up any existing status line in `~/.gemini/antigravity-cli/settings.json`, enables `agy-hud`, installs the `agy-hud` terminal command (`~/.local/bin/agy-hud` on macOS/Linux or `%LOCALAPPDATA%\agy\bin\agy-hud.cmd` on Windows), and verifies everything works — rolling back automatically if any step fails.
 
-To detach host wiring cleanly before uninstalling the plugin:
-
-```bash
-agy-hud unwire
-agy plugin uninstall agy-hud
-```
-
-If you run `agy plugin uninstall agy-hud` without running `unwire` first, the stale `CLI Shim` exits `1` with an actionable `rm`/`del` message on `stderr` without self-deleting.
+To pause or resume the HUD at any time:
+- **Inside Antigravity CLI**: `/statusline` (toggle), `/statusline off`, or `/statusline on`.
+- **From the terminal**: `agy-hud off` / `agy-hud on` (or `agy plugin disable|enable agy-hud`).
 
 <details>
-<summary><strong>Build from source, development link install, custom targets, diagnostics, and uninstall</strong></summary>
+<summary><strong>Advanced install options, build from source, and diagnostics</strong></summary>
 
 ```bash
-# Build and install directly from a local clone (global installs manage the CLI Shim unless --no-shim)
+# Skip installing the `agy-hud` terminal command (invoke via node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs)
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire --no-shim
+
+# Install the terminal command into a custom directory (or set AGY_HUD_BIN_DIR)
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire --bin-dir ~/.bin
+
+# Run full health checks (Node, node:sqlite, HUD render smoke, settings, command smoke, plugin validation)
+agy-hud doctor
+# Fallback without `agy-hud` on PATH:
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs doctor
+
+# Build and install directly from a local git clone (requires pnpm@11.1.1)
 git clone https://github.com/ifelseboyxx/agy-hud.git agy-hud
 cd agy-hud
 pnpm install && pnpm build
 node scripts/install.mjs install --wire-statusline
 
-# Symlink this repo into ~/.gemini/config/plugins/agy-hud and wire statusLine + CLI Shim (dev mode)
-pnpm hud:wire
+# Link-install from a local source checkout for development
+pnpm hud:wire     # symlink plugin + wire statusLine + install command
+pnpm hud:install  # symlink plugin only without modifying statusLine
 
-# Symlink plugin only, without modifying existing statusLine
-pnpm hud:install
-
-# Install into a project's .agents/plugins/agy-hud or a custom directory
-# (--project and --target skip CLI Shim unless --bin-dir or AGY_HUD_BIN_DIR is provided)
+# Project-local or custom target installs (skip global command unless --bin-dir / AGY_HUD_BIN_DIR is passed)
 node scripts/install.mjs install --project [dir]
 node scripts/install.mjs install --target <dir> --no-enable
-
-# Run health checks (Node, node:sqlite, stdin render smoke, settings, CLI Shim smoke, agy plugin validate)
-agy-hud doctor
-# Fallback without CLI Shim:
-node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs doctor
-
-# Uninstall plugin, remove owned CLI Shim, and restore backed-up statusLine
-node scripts/install.mjs uninstall --restore-statusline
 ```
 
 </details>
 
-### Enable / Disable
+## Uninstall
 
-- **Inside Antigravity CLI**: `/statusline` (toggle), `/statusline off` / `/statusline on`, or `/statusline delete` (revert to the built-in default status line).
-- **From the terminal**: `agy-hud off` / `agy-hud on` (fallback: `node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs off|on` or `pnpm hud:off` / `pnpm hud:on`), which toggles `statusLine.enabled` and calls `agy plugin disable|enable agy-hud` while preserving any existing `CLI Shim`.
-- **Plugin package only**: `agy plugin disable agy-hud` / `agy plugin enable agy-hud`.
+### Recommended Uninstall
+
+```bash
+# 1. Restore your previous status line and remove the `agy-hud` command
+agy-hud unwire
+
+# 2. Remove the plugin package
+agy plugin uninstall agy-hud
+```
+
+If you skipped the `agy-hud` command (`--no-shim`), run the unwire step directly:
+
+```bash
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs unwire
+agy plugin uninstall agy-hud
+```
+
+- **Quick in-session revert**: run `/statusline delete` inside Antigravity CLI to switch back to the built-in default status line immediately.
+- **Uninstalled plugin before running `unwire`?** Running the leftover `agy-hud` command prints the exact `rm` / `del` path on `stderr` and exits `1` without deleting files on its own; you can remove that file directly or run `unwire`.
+- **Source / link-install uninstall**: inside a local checkout, run `node scripts/install.mjs uninstall --restore-statusline`.
+- **File footprint**: `unwire` + `agy plugin uninstall` removes `~/.gemini/config/plugins/agy-hud`, the owned `agy-hud` command, and `~/.gemini/antigravity-cli/cache/agy-hud-statusline-backup.json` (after restoring your previous `statusLine`). Optional preferences (`~/.gemini/antigravity-cli/hud-config.json`) and local snapshot caches (`~/.gemini/antigravity-cli/cache/agy_hud_*`) can be deleted manually if you want a full clean slate.
+
+## Overflow Inspection & HUD Inspector
+
+When session activity exceeds a single status line, you can inspect the full untruncated Activity Snapshot across three channels:
+
+- **Clickable OSC 8 links**: `Cmd+Click` (or terminal hyperlink open) any `+N more` badge or `· snapshot` tail to open the session's local GFM Markdown snapshot (`0o600`, written lazily only when a link is actually emitted and content changes).
+- **Terminal Inspector & Popup (`agy-hud` / `agy-hud snapshot`)**:
+  ```bash
+  # Inspect the active session right from the Antigravity prompt box (!agy-hud) or any shell
+  agy-hud
+  agy-hud snapshot tools agents
+
+  # Open the single-key-dismiss interactive overlay (q/Esc/Enter close, 1-4/a filter, j/k scroll, r reload)
+  agy-hud -p
+
+  # List active and recent CLI / APP / IDE sessions or emit structured JSON
+  agy-hud --sessions
+  agy-hud -s <id-or-prefix> --source all --json
+
+  # Print ready-to-paste popup shortcut snippets (tmux, kitty, wezterm, ghostty, iterm2, or all)
+  agy-hud --keybindings
+  agy-hud --keybindings all
+  ```
+- **Antigravity App `HUD Inspector` (MCP App)**: bundled automatically via `mcp_config.json` (`dist/mcp-hud.mjs`). Open **HUD Inspector** from the Antigravity App side panel (`aux_pane`) or full-page plugin view (`global`) for live 2-second visibility-gated telemetry, searchable running and completed tools, skills, MCP breakdowns, swarm rosters, and clickable local file links that open directly in the side pane.
 
 ## Configure
 
-You can ask Antigravity directly in natural language — the plugin bundles `agy-hud-setup` and `agy-hud-configure` skills — for example: *"Switch agy-hud to compact preset"*, *"Hide cost and show up to 6 swarm chips"*, or *"Run agy-hud diagnostics"*.
-
-Or update settings directly from the terminal (if `--no-shim` was used, replace `agy-hud` with `node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs`):
+You can ask Antigravity in natural language — the plugin bundles `agy-hud-setup` and `agy-hud-configure` skills — or configure directly from the terminal (without `agy-hud` on `PATH`, replace `agy-hud` with `node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs`):
 
 ```bash
+# Launch the interactive two-tier TUI editor (presets + live preview, then module toggle & reorder)
+agy-hud configure -i
+
 # Inspect effective configuration
 agy-hud configure --show
 
-# Switch preset (full | compact | minimal)
-agy-hud configure --preset compact
+# Switch preset (full | compact | swarm | minimal | zen)
+agy-hud configure compact
 
-# Toggle individual fields
-agy-hud configure --set showPerfCapsule=true --set showCost=false --set maxAgentChips=6
+# Enable, disable, or reorder Line Modules and Inline Segments in one command
+agy-hud configure compact --enable tools,agents --disable activity,cost --order identity,usage,tools,agents
 
-# Reset to defaults
+# Update top-level options, segments, or legacy show* aliases
+agy-hud configure --set osc8Links=false --set maxAgentChips=6 --set segments.perf=true
+
+# Reset to full defaults
 agy-hud configure --reset
 ```
 
-Settings are stored in `~/.gemini/antigravity-cli/hud-config.json` (respects `GEMINI_CLI_HOME`). Inside a source checkout, you can also run `pnpm hud:configure -- <flags>`.
+Settings live in `~/.gemini/antigravity-cli/hud-config.json` (respects `GEMINI_CLI_HOME`). Inside a source checkout, you can also run `pnpm hud:configure -- <flags>`.
 
 <details>
 <summary><strong>All configuration options</strong></summary>
 
 | Key | Type / Values | Default | Description |
 | :--- | :--- | :---: | :--- |
-| `preset` | `full` \| `compact` \| `minimal` | `full` | Base layout density (presets override lower-priority line flags at render time). |
-| `showModeLine` | `boolean` | `true` | Show permission/agent mode line above Line 1. |
-| `showPerfCapsule` | `boolean` | `true` | Show `t/s`, `TTFT`, and `Cache%` capsule on Line 1 when terminal width allows. |
-| `showQuota` | `boolean` | `true` | Show `5h` / `7d` quota remaining on Line 2. |
-| `showCost` | `boolean` | `true` | Show session USD cost on Line 1 when provided by CLI stdin. |
-| `showSwarmChips` | `boolean` | `true` | Show Swarm / Subagents activity line. |
-| `showToolsLine` | `boolean` | `true` | Show active and completed tools line. |
-| `showSkillsMcpLine` | `boolean` | `true` | Show loaded Skills and MCP servers lines. |
-| `showTodosLine` | `boolean` | `true` | Show todo progress and background task count line. |
-| `maxAgentChips` | integer `0..20` | `4` | Maximum Swarm/Agent chips shown before `+N more` (`0` hides the row). |
+| `preset` | `full` \| `compact` \| `swarm` \| `minimal` \| `zen` | `full` | Base persona preset used to seed `lines` and `segments`. |
+| `lines` | Ordered array of `mode`, `identity`, `usage`, `activity`, `tools`, `skills`, `mcps`, `agents`, `todos` | `full` lines | Explicit pluggable rows rendered in order; empty rows auto-collapse. |
+| `segments` | Booleans for `model`, `git`, `duration`, `badges`, `cost`, `perf`, `context`, `quota` | All `true` | Toggleable inline segments within `identity` and `usage` (and `zen` folded tail). |
+| `osc8Links` | `boolean` | `true` | Emit OSC 8 hyperlinks on `+N more` / `snapshot` (suppressed under `NO_COLOR`, `TERM=dumb`, or SSH). |
+| `maxAgentChips` | integer `0..20` | `8` | Maximum Swarm/Agent chips shown before `+N more` (`0` hides the row). |
+
+Legacy `showModeLine`, `showPerfCapsule`, `showQuota`, `showCost`, `showSwarmChips`, `showToolsLine`, `showSkillsMcpLine`, and `showTodosLine` keys remain supported in `hud-config.json` and `--set` aliases.
 
 </details>
 
@@ -155,24 +192,16 @@ agy-hud export-profile --out ./agy-profile
 agy-hud import-profile --in ./agy-profile --merge-mcp
 ```
 
-In `--no-shim` mode, invoke `node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs export-profile|import-profile ...`.
-
 - **Exported bundle**: `settings.template.json`, `config.template.json`, `mcp_config.template.json`, `hud-config.json`, and `plugins-manifest.json`.
 - **Automatic sanitization**: applies key whitelists, drops machine-local bindings (`trustedWorkspaces`, `remoteControlHostname`, `sidecars.*.projectId`), and replaces tokens, secrets, sensitive CLI flags/headers, and URL credentials with `<SET_IN_ENV>`. Always review exported files manually before sharing them publicly.
 - **Safe import**: validates all input JSON files before writing anything, deep-merges `settings.json` while preserving the target machine's `trustedWorkspaces`, never modifies `~/.gemini/config/config.json` automatically (prints manual reference instructions instead), and skips existing `mcp_config.json` unless `--merge-mcp` is specified.
 
 ## Security & Reliability
 
-- **Zero runtime dependencies**: bundled into self-contained ESM (`dist/hud.mjs`, `dist/cli.mjs`) using only Node.js built-ins (`node:sqlite`, `node:fs`, `node:child_process`) and a pure-TypeScript Protobuf decoder.
-- **Read-only telemetry & path containment**: session SQLite databases are opened read-only (`?mode=ro` / `?immutable=1`, 50ms timeout) with local `mtime`/size caching. `conversation_id`, `transcript_path`, and skill paths are verified against trusted roots to block path traversal and symlink escapes.
-- **Ownership-gated writes & atomic rollback**: `settings.json` is written through a single locked writer (`src/cli/installer/settings.ts`), and `CLI Shim` launchers carry explicit `agy-hud-shim:v1` ownership headers. Preflight refuses foreign files or symlinks before staging files or touching `settings.json`, `off` and `unwire`/`uninstall` verify canonical path ownership before modifying `statusLine` or shims, corrupt user JSON fails closed instead of being overwritten, and failed `install`/`wire` transactions roll back byte-verified changes cleanly.
-- **Local-only scope**: reads statusLine stdin JSON, `~/.gemini/antigravity-cli` session state, local `.git/HEAD`, and (during profile commands) `~/.gemini/config`. Makes no network requests.
-
-## Requirements
-
-- Antigravity CLI (`agy`)
-- Node.js `^22.20.0 || >=24.0.0` (built-in `node:sqlite`)
-- `pnpm@11.1.1` (for building from source and development)
+- **Zero runtime dependencies**: bundled into self-contained ESM (`dist/hud.mjs`, `dist/cli.mjs`, `dist/mcp-hud.mjs`) using only Node.js built-ins (`node:sqlite`, `node:fs`, `node:child_process`) and a pure-TypeScript Protobuf decoder.
+- **Read-only telemetry & path containment**: session SQLite databases and Antigravity App/IDE roots are accessed strictly read-only (`?mode=ro` / `?immutable=1`, 50ms timeout) with all caches confined to `<cliHome>/cache`. `conversation_id`, `transcript_path`, and skill paths are verified against trusted roots to block traversal and symlink escapes.
+- **Ownership-gated writes & atomic rollback**: `settings.json` is written through a single locked writer (`src/cli/installer/settings.ts`). Command launchers carry explicit `agy-hud-shim:v1` ownership headers (including a Windows `.cmd` + companion POSIX script pair) and pass a `5 s` `--help` smoke check during `wire`/`install` without touching shell rc files or the Windows Registry. Preflight refuses foreign files or symlinks before staging anything, `off`/`unwire`/`uninstall` verify canonical ownership, corrupt user JSON fails closed without being overwritten, and failed `install`/`wire` transactions roll back atomically.
+- **Local-only scope**: reads statusLine stdin JSON, local Antigravity session roots, local `.git/HEAD`, and (during profile commands) `~/.gemini/config`. Makes no network requests; the MCP App HTML is 100% self-contained (`default-src 'none'` CSP compliant).
 
 ## Development
 
@@ -194,7 +223,7 @@ MIT. See [LICENSE](LICENSE).
 <a href="https://star-history.com/#ifelseboyxx/agy-hud&Date">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ifelseboyxx/agy-hud&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ifelseboyxx/agy-hud&type=Date" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ifelseboyxx/agy-hud&type=Date&theme=light" />
     <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ifelseboyxx/agy-hud&type=Date" />
   </picture>
 </a>

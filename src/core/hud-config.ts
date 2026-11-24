@@ -56,6 +56,7 @@ export const HUD_BOOLEAN_KEYS: readonly HudBooleanKey[] = [
   'showTodosLine',
 ];
 
+// Spec-mandated legacy compatibility aliases (spec.md §2.4.1; introduced in 0.1.0, remove at 1.0.0).
 export const LEGACY_HUD_BOOLEAN_KEYS: readonly HudBooleanKey[] = HUD_BOOLEAN_KEYS;
 
 export interface HudPresetTemplate {

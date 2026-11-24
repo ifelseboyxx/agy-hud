@@ -165,7 +165,7 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     assert.ok(l1.includes('G 5h: 88.00%'));
   });
 
-  await it('renders compact preset with Activity Summary and without dedicated Activity Lines', () => {
+  await it('renders compact preset with concrete high-frequency Activity Summary and without dedicated Activity Lines', () => {
     const lines = renderHudLines(cliHome, makeRichData(tmpRoot), baseRenderOpts(buildPresetConfig('compact')));
     assert.equal(lines.length, 4);
     const joined = stripAnsi(lines.join('\n'));
@@ -175,10 +175,14 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     assert.ok(joined.includes('Context'));
     const summaryLine = stripAnsi(lines[3] ?? '');
     assert.ok(summaryLine.includes('Edit: modules.ts'));
-    assert.ok(summaryLine.includes('Tools 3'));
-    assert.ok(summaryLine.includes('Skills 2'));
-    assert.ok(summaryLine.includes('MCPs 1'));
-    assert.ok(summaryLine.includes('Swarm 2/3'));
+    assert.ok(summaryLine.includes('Read ×2'));
+    assert.ok(summaryLine.includes('Skills: tdd, codebase-design'));
+    assert.ok(summaryLine.includes('MCPs: agy-fast'));
+    assert.ok(summaryLine.includes('Swarm: ◐ hud-core'));
+    assert.equal(summaryLine.includes('Tools 3'), false);
+    assert.equal(summaryLine.includes('Skills 2'), false);
+    assert.equal(summaryLine.includes('MCPs 1'), false);
+    assert.equal(summaryLine.includes('Swarm 2/3'), false);
     assert.equal(joined.includes('Skills (2):'), false);
     assert.equal(joined.includes('Build module registry'), false);
   });
@@ -238,10 +242,88 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     });
     const plain = stripAnsi(line);
     assert.equal(plain.includes('Edit:'), false);
-    assert.equal(plain.includes('Tools'), false);
-    assert.equal(plain.includes('Swarm'), false);
-    assert.ok(plain.includes('Skills 2'));
-    assert.ok(plain.includes('MCPs 1'));
+    assert.equal(plain.includes('Read ×2'), false);
+    assert.equal(plain.includes('Swarm:'), false);
+    assert.ok(plain.includes('Skills: tdd, codebase-design'));
+    assert.ok(plain.includes('MCPs: agy-fast'));
+  });
+
+  await it('orders Activity Summary completed tools by frequency and renders concrete agent names instead of raw ratios', () => {
+    const repeated = (disp: string, count: number) =>
+      Array.from({ length: count }, (_, idx) => ({
+        name: disp,
+        disp,
+        target: `f${idx}.ts`,
+        running: false,
+        isSkillRead: false,
+      }));
+    const activity: TranscriptActivity = {
+      tools: [
+        ...repeated('Edit', 19),
+        ...repeated('Read', 42),
+        ...repeated('Bash', 28),
+        ...repeated('Grep', 5),
+        ...repeated('Glob', 5),
+        ...repeated('Write', 2),
+      ],
+      skills: ['tdd', 'grilling', 'code-review', 'research', 'wizard'],
+      mcps: ['agy-fast', 'github', 'chrome'],
+      agents: [],
+    };
+    const agentsSummary: AgentsSummary = {
+      kind: 'agents',
+      working: 1,
+      waiting: 0,
+      alive: 1,
+      total: 19,
+      entries: [
+        { name: 't06', type: 'coder', model: '', state: 'working', ts: null },
+        ...Array.from({ length: 18 }, (_, i) => ({
+          name: `old-${i}`,
+          type: 'coder',
+          model: '',
+          state: 'done' as const,
+          ts: 900,
+        })),
+      ],
+    };
+
+    const line = formatActivitySummaryLine({
+      enabledLines: new Set(['activity']),
+      activity,
+      agentsSummary,
+      termWidth: 140,
+      nowSec: 1000,
+    });
+    const plain = stripAnsi(line);
+    assert.ok(visibleLen(line) <= 139);
+    assert.ok(plain.includes('✓ Read ×42, Bash ×28'));
+    assert.ok(plain.includes('Skills: tdd'));
+    assert.ok(plain.includes('MCPs: agy-fast'));
+    assert.ok(plain.includes('Agents: ◐ t06 (+18)'));
+    assert.equal(plain.includes('Agents 1/19'), false);
+    assert.equal(plain.includes('Tools '), false);
+
+    const recentDoneOnly = formatActivitySummaryLine({
+      enabledLines: new Set(['activity']),
+      activity: { tools: [], skills: [], mcps: [], agents: [] },
+      agentsSummary: {
+        kind: 'agents',
+        working: 0,
+        waiting: 0,
+        alive: 0,
+        total: 2,
+        entries: [
+          { name: 'scout', type: 'explore', model: '', state: 'done', ts: 980 },
+          { name: 'reviewer', type: 'review', model: '', state: 'done', ts: 995 },
+        ],
+      },
+      termWidth: 120,
+      nowSec: 1000,
+    });
+    const donePlain = stripAnsi(recentDoneOnly);
+    assert.ok(donePlain.includes('Agents: ✓ reviewer, ✓ scout'));
+    assert.equal(donePlain.includes('(+'), false);
   });
 
   await it('emits empty string from Activity Summary when all four dedicated lines are enabled or all counts are zero', () => {

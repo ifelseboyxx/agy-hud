@@ -145,8 +145,8 @@ void describe('runConfigureInteractive TTY runner', () => {
     stdout.emit('resize');
     assert.ok(stdout.chunks.length > writesBeforeResize);
 
-    // compact (idx 2) -> Down -> swarm (idx 3) -> Enter
-    stdin.emit('data', Buffer.from('\x1b[B'));
+    // full (idx 4) -> Up -> swarm (idx 3) -> Enter
+    stdin.emit('data', Buffer.from('\x1b[A'));
     stdin.emit('data', Buffer.from('\r'));
     const code = await promise;
 
@@ -164,6 +164,8 @@ void describe('runConfigureInteractive TTY runner', () => {
 
   void it('saves Tier 2 module toggles, row reordering, and osc8Links atomically on Enter', async () => {
     const cliHome = makeTempCliHome('agy-hud-tui-t2-save-');
+    mkdirSync(cliHome, { recursive: true });
+    writeFileSync(path.join(cliHome, 'hud-config.json'), `${JSON.stringify(buildPresetConfig('compact'))}\n`, 'utf8');
     const stdin = new MockConfigureInput(true);
     const stdout = new MockConfigureOutput(true, 100, 24);
     const stderr = makeStderrCapture();
@@ -252,7 +254,7 @@ void describe('runConfigureInteractive TTY runner', () => {
     const initialWrites = stdout.chunks.length;
     stdin.emit('data', Buffer.from('\x1b'));
     await new Promise((r) => setTimeout(r, 5));
-    stdin.emit('data', Buffer.from('[B'));
+    stdin.emit('data', Buffer.from('[A'));
     await new Promise((r) => setTimeout(r, 35));
 
     assert.ok(stdout.chunks.length > initialWrites, 'split arrow CSI should update selection and redraw');
@@ -339,14 +341,14 @@ void describe('configure -i CLI entry wiring', () => {
       env: { NO_COLOR: '1' },
     });
     assert.ok(ttyOut.joined().startsWith('\x1b[?1049h\x1b[?25l'));
-    ttyIn.emit('data', Buffer.from('\x1b[A')); // compact -> minimal
+    ttyIn.emit('data', Buffer.from('\x1b[A')); // full -> swarm
     ttyIn.emit('data', Buffer.from('\r'));
     const saveCode = await savePromise;
 
     assert.equal(saveCode, 0);
     assert.equal(ttyErr.text(), '');
     const saved = JSON.parse(readFileSync(path.join(cliHome, 'hud-config.json'), 'utf8')) as HudConfig;
-    assert.equal(saved.preset, 'minimal');
+    assert.equal(saved.preset, 'swarm');
   });
 
   void it('returns exit 1 with Error on stderr when configure -i encounters corrupted hud-config.json', async () => {

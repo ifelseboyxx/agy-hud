@@ -140,7 +140,8 @@ void describe('renderHudLines OSC 8 hyperlinks integration', async () => {
       env: LOCAL_ENV,
     });
 
-    const summaryLine = lines.find((line) => stripAnsi(line).includes('Tools 1')) ?? '';
+    const summaryLine = lines.find((line) => stripAnsi(line).includes('Read ×1')) ?? '';
+    assert.ok(stripAnsi(summaryLine).includes('Skills: tdd'));
     assert.equal(
       summaryLine.endsWith(` ${GRAY}· ${ESC}]8;;${target.uri}${ESC}\\snapshot${ESC}]8;;${ESC}\\${RESET}`),
       true,
@@ -172,7 +173,7 @@ void describe('renderHudLines OSC 8 hyperlinks integration', async () => {
       env: LOCAL_ENV,
     });
 
-    const summaryLine = lines.find((line) => stripAnsi(line).includes('Tools 1')) ?? '';
+    const summaryLine = lines.find((line) => stripAnsi(line).includes('Read ×1')) ?? '';
     assert.equal(stripAnsi(summaryLine).includes('snapshot'), false);
     assert.equal(summaryLine.includes(`${ESC}]8;;`), false);
     assert.equal(existsSync(target.absPath), false);
@@ -301,6 +302,7 @@ void describe('renderHudLines OSC 8 hyperlinks integration', async () => {
       })}\n`,
       'utf8',
     );
+    writeFileSync(path.join(cliHome, 'hud-config.json'), JSON.stringify({ preset: 'compact' }), 'utf8');
     const entryFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../hud-entry.ts');
     const cleanEnv: NodeJS.ProcessEnv = {
       PATH: process.env.PATH,

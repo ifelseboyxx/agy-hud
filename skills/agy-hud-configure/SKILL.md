@@ -5,7 +5,7 @@ description: 配置 agy-hud 状态栏模块、预设方案（zen/minimal/compact
 
 # agy-hud 展示配置与跨机迁移
 
-通过 `agy-hud`（或 `node dist/cli.mjs`）管理 `<cliHome>/hud-config.json` 模块与展示选项，或执行脱敏配置导出与导入。
+通过 `agy-hud`（无 shim 回退路径：`node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs`）管理 `<cliHome>/hud-config.json` 模块与展示选项，或执行脱敏配置导出与导入。
 
 ## 展示配置 (`configure`)
 
@@ -13,12 +13,18 @@ description: 配置 agy-hud 状态栏模块、预设方案（zen/minimal/compact
   ```bash
   agy-hud configure --show
   ```
-- 切换 5 种角色预设（默认 `compact`）：
+- 启动交互式双层配置编辑器（第一层切换预设与实时预览，第二层按行插拔、排序模块与片段，需在交互式 TTY 终端中运行）：
+  ```bash
+  agy-hud configure -i
+  # 或
+  agy-hud configure --interactive
+  ```
+- 切换 5 种角色预设（默认 `full`）：
+  - `full`（默认）：最多 8 行全量诊断（`mode` + `identity` + `usage` + 独立 `tools`、`skills`、`mcps`、`agents`、`todos`）
   - `zen`：极简 1 行（`identity` + 折叠 `Ctx`/`5h` 尾部）
   - `minimal`：2 行（`identity` + `usage`）
-  - `compact`：3-4 行日常开发默认（`mode` + `identity` + `usage` + `activity` 摘要）
+  - `compact`：3-4 行日常开发（`mode` + `identity` + `usage` + 单行高频 `activity` 摘要）
   - `swarm`：4-5 行多代理编排（`mode` + `identity` + `usage` + `agents` + `todos`）
-  - `full`：最多 8 行全量诊断（含独立 `tools`、`skills`、`mcps`、`agents`、`todos`）
   ```bash
   agy-hud configure zen
   agy-hud configure --preset swarm
@@ -32,7 +38,7 @@ description: 配置 agy-hud 状态栏模块、预设方案（zen/minimal/compact
   agy-hud configure --set osc8Links=false --set maxAgentChips=6 --set segments.perf=true
   agy-hud configure --set showCost=false --set showSkillsMcpLine=true
   ```
-- 重置为默认 `compact` 配置：
+- 重置为默认 `full` 配置：
   ```bash
   agy-hud configure --reset
   ```

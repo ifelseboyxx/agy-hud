@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { formatSurfaceBadge } from '../collectors/session-index.ts';
+import { computeHudVisibleCompletedCap } from '../render/activity-lines.ts';
 import {
   BOLD,
   BRIGHT_WHITE,
@@ -24,9 +25,6 @@ const MIN_INSPECTOR_COLS = 20;
 const TWO_COL_MIN_WIDTH = 98;
 const TWO_COL_MIN_TYPES = 5;
 const HUD_RUNNING_VISIBLE_CAP = 2;
-const HUD_COMPLETED_MAX_ITEMS = 8;
-const HUD_PREFIX_COLS = 2;
-const HUD_SEP_COLS = 3;
 
 interface InspectorPalette {
   readonly reset: string;
@@ -162,63 +160,6 @@ function formatTelemetryStripLine(
   return visibleLen(line) <= maxCols ? line : truncateToWidth(line, maxCols);
 }
 
-function computeHudVisibleCompletedCap(snapshot: ActivitySnapshot, maxCols: number): number {
-  const completed = snapshot.completedTools;
-  if (completed.length === 0) return 0;
-
-  const running = snapshot.runningTools;
-  const totalSlots = running.length + completed.length;
-  const runningWidths = running
-    .slice(-HUD_RUNNING_VISIBLE_CAP)
-    .reverse()
-    .map((rt) => visibleLen(rt.target.length > 0 ? `◐ ${rt.disp}: ${rt.target}` : `◐ ${rt.disp}`));
-  const completedWidths = completed
-    .slice(0, HUD_COMPLETED_MAX_ITEMS)
-    .map((ct) => visibleLen(`✓ ${ct.disp} ×${ct.count}`));
-
-  if (running.length <= HUD_RUNNING_VISIBLE_CAP && completed.length <= HUD_COMPLETED_MAX_ITEMS) {
-    const allWidths = [...runningWidths, ...completedWidths];
-    let fullCols = HUD_PREFIX_COLS;
-    for (let i = 0; i < allWidths.length; i += 1) {
-      fullCols += (i > 0 ? HUD_SEP_COLS : 0) + (allWidths[i] ?? 0);
-    }
-    if (fullCols <= maxCols) return completed.length;
-  }
-
-  let shownRunning = 0;
-  let curCols = HUD_PREFIX_COLS;
-  if (runningWidths.length > 0) {
-    shownRunning = 1;
-    if (runningWidths.length === 2 && totalSlots > 2) {
-      const twoCols =
-        HUD_PREFIX_COLS +
-        (runningWidths[0] ?? 0) +
-        HUD_SEP_COLS +
-        (runningWidths[1] ?? 0) +
-        HUD_SEP_COLS +
-        visibleLen(`+${totalSlots - 2} more`);
-      if (twoCols <= maxCols) shownRunning = 2;
-    }
-    curCols =
-      HUD_PREFIX_COLS + (runningWidths[0] ?? 0) + (shownRunning === 2 ? HUD_SEP_COLS + (runningWidths[1] ?? 0) : 0);
-  }
-
-  let bestCompleted = 0;
-  for (let k = 1; k <= completedWidths.length; k += 1) {
-    const hidden = totalSlots - shownRunning - k;
-    const width = completedWidths[k - 1] ?? 0;
-    const itemCols = shownRunning === 0 && k === 1 ? width : HUD_SEP_COLS + width;
-    curCols += itemCols;
-    const overflowCols = hidden > 0 ? HUD_SEP_COLS + visibleLen(`+${hidden} more`) : 0;
-    if (curCols + overflowCols <= maxCols) {
-      bestCompleted = k;
-    } else {
-      break;
-    }
-  }
-  return bestCompleted;
-}
-
 function formatCompletedToolCell(
   item: SnapshotCompletedTool | undefined,
   idx: number,
@@ -263,8 +204,9 @@ function appendToolsSection(
     return;
   }
 
-  for (let i = 0; i < snapshot.runningTools.length; i += 1) {
-    const rt = snapshot.runningTools[i];
+  const orderedRunning = [...snapshot.runningTools].reverse();
+  for (let i = 0; i < orderedRunning.length; i += 1) {
+    const rt = orderedRunning[i];
     if (!rt) continue;
     const overflowTag = i >= HUD_RUNNING_VISIBLE_CAP ? `  ${palette.yellow}[+more]${palette.reset}` : '';
     const dispColW = Math.min(30, Math.max(12, maxCols - 30));
@@ -277,7 +219,7 @@ function appendToolsSection(
     );
   }
 
-  const hudVisibleCap = computeHudVisibleCompletedCap(snapshot, maxCols);
+  const hudVisibleCap = computeHudVisibleCompletedCap(snapshot.runningTools, snapshot.completedTools, maxCols);
   const useTwoCol = cols >= TWO_COL_MIN_WIDTH && snapshot.completedTools.length >= TWO_COL_MIN_TYPES;
   if (useTwoCol) {
     const colW = Math.floor((maxCols - 4) / 2);

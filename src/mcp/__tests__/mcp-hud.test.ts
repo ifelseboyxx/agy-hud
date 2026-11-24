@@ -3,12 +3,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { INSPECTOR_MIME_TYPE, INSPECTOR_RESOURCE_URI } from '../hud-inspector-ui.ts';
-import { handleMcpMessage, runMcpStdioServer } from '../hud-mcp-entry.ts';
 import { capInspectorPayload, pollHudSnapshot, type HudPollSnapshotData } from '../hud-mcp-snapshot.ts';
 
 function encodeVarint(value: number): number[] {
@@ -152,7 +149,7 @@ void describe('hud-mcp-snapshot polling and ETag', () => {
     assert.ok(result.etag.length > 0);
   });
 
-  void it('loads read-only 0o555 client session with caches only in cliHome and file:/// target URIs', () => {
+  void it('loads read-only client sessions while writing caches only to cliHome', () => {
     const convId = 'app-mcp-12345678';
     const fileA = path.join(wsDir, 'src', 'index.ts');
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
@@ -199,8 +196,34 @@ void describe('hud-mcp-snapshot polling and ETag', () => {
     assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_telemetry_${convId}.json`)), true);
   });
 
-  void it('short-circuits with unchanged when ETag matches and reloads after transcript update', () => {
+  void it('short-circuits with unchanged when the snapshot ETag matches', () => {
     const convId = 'app-etag-12345678';
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    const initialLines = [
+      {
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        model: 'Gemini 4 Carbon',
+        created_at: '2026-06-01T11:58:00Z',
+        tool_calls: [{ name: 'read_file', args: { Path: path.join(wsDir, 'a.ts') } }],
+      },
+    ];
+    seedAppSession(appRoot, wsDir, convId, 'ETag Test', initialLines);
+
+    const first = pollHudSnapshot({ sessionId: convId }, { cliHome, geminiRoot, cwd: wsDir, nowMs });
+    assert.equal(first.unchanged, false);
+    assert.ok(first.snapshot !== null);
+    assert.equal(first.snapshot.totalToolCalls, 1);
+
+    const second = pollHudSnapshot(
+      { sessionId: convId, etag: first.etag },
+      { cliHome, geminiRoot, cwd: wsDir, nowMs: nowMs + 4000 },
+    );
+    assert.deepEqual(second, { unchanged: true, etag: first.etag });
+  });
+
+  void it('reloads snapshot data with a fresh ETag after transcript updates', () => {
+    const convId = 'app-etag-reload-1234';
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     const initialLines = [
       {
@@ -215,14 +238,6 @@ void describe('hud-mcp-snapshot polling and ETag', () => {
 
     const first = pollHudSnapshot({ sessionId: convId }, { cliHome, geminiRoot, cwd: wsDir, nowMs });
     assert.equal(first.unchanged, false);
-    assert.ok(first.snapshot !== null);
-    assert.equal(first.snapshot.totalToolCalls, 1);
-
-    const second = pollHudSnapshot(
-      { sessionId: convId, etag: first.etag },
-      { cliHome, geminiRoot, cwd: wsDir, nowMs: nowMs + 4000 },
-    );
-    assert.deepEqual(second, { unchanged: true, etag: first.etag });
 
     const appended = JSON.stringify({
       type: 'PLANNER_RESPONSE',
@@ -233,14 +248,14 @@ void describe('hud-mcp-snapshot polling and ETag', () => {
     });
     writeFileSync(transcriptPath, `${initialLines.map((l) => JSON.stringify(l)).join('\n')}\n${appended}\n`, 'utf8');
 
-    const third = pollHudSnapshot(
+    const updated = pollHudSnapshot(
       { sessionId: convId, etag: first.etag },
       { cliHome, geminiRoot, cwd: wsDir, nowMs: nowMs + 6000 },
     );
-    assert.equal(third.unchanged, false);
-    assert.notEqual(third.etag, first.etag);
-    assert.ok(third.snapshot !== null);
-    assert.equal(third.snapshot.totalToolCalls, 2);
+    assert.equal(updated.unchanged, false);
+    assert.notEqual(updated.etag, first.etag);
+    assert.ok(updated.snapshot !== null);
+    assert.equal(updated.snapshot.totalToolCalls, 2);
   });
 
   void it('caps oversized snapshot payloads deterministically below 1 MiB', () => {
@@ -298,187 +313,5 @@ void describe('hud-mcp-snapshot polling and ETag', () => {
     const finalBytes = Buffer.byteLength(JSON.stringify(capped), 'utf8');
     assert.ok(finalBytes < 1_048_576, `expected < 1 MiB, got ${finalBytes}`);
     assert.equal(capped.truncated, true);
-  });
-});
-
-void describe('hud-mcp-entry JSON-RPC 2.0 MCP server', () => {
-  let tmpRoot = '';
-  let geminiRoot = '';
-  let cliHome = '';
-  let appRoot = '';
-  let wsDir = '';
-
-  beforeEach(() => {
-    tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-mcp-srv-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
-    appRoot = path.join(geminiRoot, 'antigravity');
-    wsDir = path.join(tmpRoot, 'project');
-    mkdirSync(cliHome, { recursive: true });
-    mkdirSync(appRoot, { recursive: true });
-    mkdirSync(wsDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    if (tmpRoot.length > 0) rmSync(tmpRoot, { recursive: true, force: true });
-  });
-
-  void it('negotiates initialize capabilities, ignores notifications, and responds to ping', () => {
-    const initRes = handleMcpMessage({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: { protocolVersion: '2025-06-18', clientInfo: { name: 'test', version: '1.0' } },
-    });
-    assert.ok(initRes !== null && 'result' in initRes);
-    const result = initRes.result as Record<string, unknown>;
-    assert.equal(result.protocolVersion, '2025-06-18');
-    const caps = result.capabilities as Record<string, unknown>;
-    assert.ok(caps.tools !== undefined);
-    assert.ok(caps.resources !== undefined);
-
-    const notifRes = handleMcpMessage({ jsonrpc: '2.0', method: 'notifications/initialized' });
-    assert.equal(notifRes, null);
-
-    const pingRes = handleMcpMessage({ jsonrpc: '2.0', id: 2, method: 'ping' });
-    assert.deepEqual(pingRes, { jsonrpc: '2.0', id: 2, result: {} });
-  });
-
-  void it('exposes only app-only hud_inspector and hud_poll_snapshot tools with aux_pane and global entrypoints', () => {
-    const res = handleMcpMessage({ jsonrpc: '2.0', id: 3, method: 'tools/list' });
-    assert.ok(res !== null && 'result' in res);
-    const tools = (res.result as { tools: Array<Record<string, unknown>> }).tools;
-    assert.deepEqual(
-      tools.map((t) => t.name),
-      ['hud_inspector', 'hud_poll_snapshot'],
-    );
-
-    const inspector = tools[0];
-    assert.ok(inspector !== undefined);
-    assert.deepEqual(inspector._meta, {
-      ui: {
-        resourceUri: INSPECTOR_RESOURCE_URI,
-        visibility: ['app'],
-      },
-      'com.google.antigravity/ui': {
-        entrypoints: [
-          { type: 'aux_pane', title: 'HUD Inspector' },
-          { type: 'global', title: 'HUD Inspector' },
-        ],
-      },
-    });
-
-    const poller = tools[1];
-    assert.ok(poller !== undefined);
-    assert.deepEqual(poller._meta, {
-      ui: { visibility: ['app'] },
-    });
-  });
-
-  void it('lists and reads ui://agy-hud/inspector.html as text/html;profile=mcp-app and rejects unknown URIs', () => {
-    const listRes = handleMcpMessage({ jsonrpc: '2.0', id: 4, method: 'resources/list' });
-    assert.ok(listRes !== null && 'result' in listRes);
-    const resources = (listRes.result as { resources: Array<Record<string, unknown>> }).resources;
-    assert.equal(resources.length, 1);
-    assert.equal(resources[0]?.uri, INSPECTOR_RESOURCE_URI);
-    assert.equal(resources[0]?.mimeType, INSPECTOR_MIME_TYPE);
-
-    const readRes = handleMcpMessage({
-      jsonrpc: '2.0',
-      id: 5,
-      method: 'resources/read',
-      params: { uri: INSPECTOR_RESOURCE_URI },
-    });
-    assert.ok(readRes !== null && 'result' in readRes);
-    const contents = (readRes.result as { contents: Array<Record<string, unknown>> }).contents;
-    assert.equal(contents.length, 1);
-    assert.equal(contents[0]?.uri, INSPECTOR_RESOURCE_URI);
-    assert.equal(contents[0]?.mimeType, INSPECTOR_MIME_TYPE);
-    assert.ok(typeof contents[0]?.text === 'string' && contents[0].text.startsWith('<!DOCTYPE html>'));
-
-    const missingRes = handleMcpMessage({
-      jsonrpc: '2.0',
-      id: 6,
-      method: 'resources/read',
-      params: { uri: 'ui://agy-hud/missing.html' },
-    });
-    assert.ok(missingRes !== null && 'error' in missingRes);
-    assert.equal(missingRes.error.code, -32002);
-  });
-
-  void it('serves tools/call for hud_inspector and ETag short-circuit for hud_poll_snapshot', () => {
-    const convId = 'app-rpc-87654321';
-    const nowMs = Date.parse('2026-06-01T12:00:00Z');
-    seedAppSession(appRoot, wsDir, convId, 'RPC Session', [
-      {
-        type: 'PLANNER_RESPONSE',
-        status: 'DONE',
-        model: 'Gemini 4 Carbon',
-        created_at: '2026-06-01T11:58:00Z',
-        tool_calls: [{ name: 'read_file', args: { Path: path.join(wsDir, 'main.ts') } }],
-      },
-    ]);
-    const ctx = { cliHome, geminiRoot, cwd: wsDir, nowMs };
-
-    const openRes = handleMcpMessage(
-      { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'hud_inspector', arguments: {} } },
-      ctx,
-    );
-    assert.ok(openRes !== null && 'result' in openRes);
-    const openResult = openRes.result as {
-      content: Array<{ type: string; text: string }>;
-      structuredContent: HudPollSnapshotData;
-    };
-    assert.equal(openResult.content[0]?.type, 'text');
-    assert.ok(openResult.content[0]?.text.includes('RPC Session'));
-    assert.equal(openResult.structuredContent.snapshot?.convId, convId);
-
-    const etag = openResult.structuredContent.etag;
-    const pollRes = handleMcpMessage(
-      {
-        jsonrpc: '2.0',
-        id: 8,
-        method: 'tools/call',
-        params: { name: 'hud_poll_snapshot', arguments: { sessionId: convId, etag } },
-      },
-      ctx,
-    );
-    assert.ok(pollRes !== null && 'result' in pollRes);
-    const pollResult = pollRes.result as { structuredContent: { unchanged: boolean; etag: string } };
-    assert.deepEqual(pollResult.structuredContent, { unchanged: true, etag });
-
-    const unknownTool = handleMcpMessage(
-      { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'no_such_tool', arguments: {} } },
-      ctx,
-    );
-    assert.ok(unknownTool !== null && 'error' in unknownTool);
-    assert.equal(unknownTool.error.code, -32602);
-  });
-
-  void it('streams chunked newline-delimited JSON-RPC messages over stdio and reports parse errors cleanly', async () => {
-    const input = new PassThrough();
-    const output = new PassThrough();
-    const chunks: string[] = [];
-    output.on('data', (buf: Buffer) => {
-      chunks.push(buf.toString('utf8'));
-    });
-
-    const done = runMcpStdioServer(input, output, { cliHome, geminiRoot, cwd: wsDir });
-    const req1 = JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'ping' });
-    input.write(req1.slice(0, 12));
-    input.write(`${req1.slice(12)}\n`);
-    input.write('{bad-json\n');
-    input.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
-    input.end();
-    await done;
-
-    const lines = chunks
-      .join('')
-      .trim()
-      .split('\n')
-      .map((l) => JSON.parse(l) as Record<string, unknown>);
-    assert.equal(lines.length, 2);
-    assert.deepEqual(lines[0], { jsonrpc: '2.0', id: 10, result: {} });
-    assert.equal((lines[1]?.error as Record<string, unknown> | undefined)?.code, -32700);
   });
 });

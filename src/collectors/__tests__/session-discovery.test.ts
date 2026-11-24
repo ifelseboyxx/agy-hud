@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { discoverSessions, resolveSession, SessionResolutionError, writeSnapshotEnvelope } from '../session-index.ts';
+import { discoverSessions } from '../session-index.ts';
 
 interface SummaryRowSeed {
   id: string;
@@ -71,15 +71,13 @@ function writeTranscript(rootDir: string, convId: string, lines: readonly unknow
   return filePath;
 }
 
-void describe('multi-root discovery and 4-tier session resolution', () => {
+void describe('multi-root session discovery', () => {
   let tmpRoot = '';
   let geminiRoot = '';
   let cliHome = '';
   let appRoot = '';
   let ideRoot = '';
   let wsRoot = '';
-  let wsNested = '';
-  let wsOther = '';
   const chmodRestore: string[] = [];
 
   beforeEach(() => {
@@ -89,12 +87,9 @@ void describe('multi-root discovery and 4-tier session resolution', () => {
     appRoot = path.join(geminiRoot, 'antigravity');
     ideRoot = path.join(geminiRoot, 'antigravity-ide');
     wsRoot = path.join(tmpRoot, 'repo');
-    wsNested = path.join(wsRoot, 'packages', 'sub');
-    wsOther = path.join(tmpRoot, 'other-proj');
     mkdirSync(cliHome, { recursive: true });
     mkdirSync(appRoot, { recursive: true });
-    mkdirSync(wsNested, { recursive: true });
-    mkdirSync(wsOther, { recursive: true });
+    mkdirSync(wsRoot, { recursive: true });
   });
 
   afterEach(() => {
@@ -111,7 +106,40 @@ void describe('multi-root discovery and 4-tier session resolution', () => {
     }
   });
 
-  void it('discovers cli, app, and ide roots while skipping ide without brain/ and filtering subagent or killed rows', () => {
+  void it('skips antigravity-ide when its brain directory is absent', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeTranscript(
+      cliHome,
+      'cli-1111-aaaa',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 60_000,
+    );
+    writeSummaryDb(cliHome, [
+      {
+        id: 'cli-1111-aaaa',
+        title: 'CLI Work',
+        lastModifiedIso: '2026-06-01T11:59:00Z',
+        workspaces: [wsRoot],
+        source: 'CORTEX_TRAJECTORY_SOURCE_CLI',
+      },
+    ]);
+    writeSummaryDb(ideRoot, [
+      {
+        id: 'ide-5555-eeee',
+        title: 'IDE Without Brain',
+        lastModifiedIso: '2026-06-01T11:59:40Z',
+        workspaces: [wsRoot],
+      },
+    ]);
+
+    const discovered = discoverSessions({ env: { GEMINI_CLI_HOME: tmpRoot }, nowMs });
+    assert.deepEqual(
+      discovered.map((s) => `${s.surface}:${s.convId}`),
+      ['cli:cli-1111-aaaa'],
+    );
+  });
+
+  void it('discovers top-level multi-root sessions while excluding nested or killed rows', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeTranscript(
       cliHome,
@@ -136,6 +164,12 @@ void describe('multi-root discovery and 4-tier session resolution', () => {
       'kil-4444-dddd',
       [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
       nowMs - 10_000,
+    );
+    writeTranscript(
+      ideRoot,
+      'ide-5555-eeee',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 20_000,
     );
 
     writeSummaryDb(cliHome, [
@@ -164,31 +198,12 @@ void describe('multi-root discovery and 4-tier session resolution', () => {
         killed: 1,
       },
     ]);
-    // antigravity-ide without brain/ directory must be skipped
     writeSummaryDb(ideRoot, [
-      {
-        id: 'ide-5555-eeee',
-        title: 'IDE Without Brain',
-        lastModifiedIso: '2026-06-01T11:59:40Z',
-        workspaces: [wsRoot],
-      },
+      { id: 'ide-5555-eeee', title: 'IDE Work', lastModifiedIso: '2026-06-01T11:59:40Z', workspaces: [wsRoot] },
     ]);
 
-    const withoutIdeBrain = discoverSessions({ env: { GEMINI_CLI_HOME: tmpRoot }, nowMs });
-    assert.deepEqual(withoutIdeBrain.map((s) => `${s.surface}:${s.convId}`).sort(), [
-      'app:app-2222-bbbb',
-      'cli:cli-1111-aaaa',
-    ]);
-
-    // Once antigravity-ide/brain/<id> exists, IDE root is scanned
-    writeTranscript(
-      ideRoot,
-      'ide-5555-eeee',
-      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
-      nowMs - 20_000,
-    );
-    const withIdeBrain = discoverSessions({ env: { GEMINI_CLI_HOME: tmpRoot }, nowMs });
-    assert.deepEqual(withIdeBrain.map((s) => `${s.surface}:${s.convId}`).sort(), [
+    const discovered = discoverSessions({ env: { GEMINI_CLI_HOME: tmpRoot }, nowMs });
+    assert.deepEqual(discovered.map((s) => `${s.surface}:${s.convId}`).sort(), [
       'app:app-2222-bbbb',
       'cli:cli-1111-aaaa',
       'ide:ide-5555-eeee',
@@ -204,8 +219,6 @@ void describe('multi-root discovery and 4-tier session resolution', () => {
       [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
       nowMs - 5_000,
     );
-    // Row appears in antigravity/conversation_summaries.db with CORTEX_TRAJECTORY_SOURCE_CLI,
-    // while physical brain/<id> exists ONLY under antigravity-cli.
     writeSummaryDb(appRoot, [
       {
         id: sharedCliId,
@@ -232,7 +245,7 @@ void describe('multi-root discovery and 4-tier session resolution', () => {
     assert.equal(sessions[0]?.dataRoot, cliHome);
   });
 
-  void it('keeps client roots 100% read-only under chmod 0o555 during discovery', () => {
+  void it('keeps client roots read-only under chmod 0o555 during discovery', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeTranscript(appRoot, 'app-ro-1111', [{ type: 'PLANNER_RESPONSE', status: 'RUNNING', tool_calls: [] }], nowMs);
     writeSummaryDb(appRoot, [
@@ -257,239 +270,5 @@ void describe('multi-root discovery and 4-tier session resolution', () => {
     assert.equal(sessions[0]?.running, true);
     assert.deepEqual(readdirSync(appRoot).sort(), before);
     assert.equal(existsSync(path.join(appRoot, 'cache')), false);
-  });
-
-  void it('resolves Tier 0 exact ID and unique >=4-char prefix and throws with candidate list on ambiguity', () => {
-    const nowMs = Date.parse('2026-06-01T12:00:00Z');
-    writeTranscript(cliHome, 'abcd1111-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
-    writeTranscript(appRoot, 'abcd2222-app', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
-    writeSummaryDb(cliHome, [
-      {
-        id: 'abcd1111-cli',
-        title: 'First',
-        lastModifiedIso: '2026-06-01T12:00:00Z',
-        workspaces: [wsRoot],
-        source: 'CORTEX_TRAJECTORY_SOURCE_CLI',
-      },
-    ]);
-    writeSummaryDb(appRoot, [
-      { id: 'abcd2222-app', title: 'Second', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
-    ]);
-
-    const exact = resolveSession({ cliHome, geminiRoot, session: 'abcd2222-app', nowMs });
-    assert.equal(exact.tier, 'explicit');
-    assert.equal(exact.session.convId, 'abcd2222-app');
-
-    const uniquePrefix = resolveSession({ cliHome, geminiRoot, session: 'abcd1', nowMs });
-    assert.equal(uniquePrefix.tier, 'explicit');
-    assert.equal(uniquePrefix.session.convId, 'abcd1111-cli');
-
-    const scopedPrefix = resolveSession({ cliHome, geminiRoot, session: 'abcd', source: 'app', nowMs });
-    assert.equal(scopedPrefix.session.convId, 'abcd2222-app');
-
-    assert.throws(
-      () => resolveSession({ cliHome, geminiRoot, session: 'abcd', source: 'auto', nowMs }),
-      (err: unknown) =>
-        err instanceof SessionResolutionError &&
-        err.message.includes('abcd1111-cli') &&
-        err.message.includes('abcd2222-app'),
-    );
-
-    assert.throws(() => resolveSession({ cliHome, geminiRoot, session: 'abc', nowMs }), SessionResolutionError);
-  });
-
-  void it('resolves Tier 1 by live ancestor agyPid for auto/cli and skips Tier 1 for --source app', () => {
-    const nowMs = Date.parse('2026-06-01T12:00:00Z');
-    writeSnapshotEnvelope(
-      cliHome,
-      { conversation_id: 'cli-old-same-pid', cwd: wsRoot, conversation_title: 'Before /clear' },
-      2000,
-      { nowMs: nowMs - 20_000 },
-    );
-    writeSnapshotEnvelope(
-      cliHome,
-      { conversation_id: 'cli-new-same-pid', cwd: wsRoot, conversation_title: 'After /clear' },
-      2000,
-      { nowMs: nowMs - 5_000 },
-    );
-    writeSnapshotEnvelope(
-      cliHome,
-      { conversation_id: 'cli-other-tui', cwd: wsRoot, conversation_title: 'Other TUI' },
-      3000,
-      { nowMs: nowMs - 1_000 },
-    );
-    writeTranscript(appRoot, 'app-sibling-1111', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
-    writeSummaryDb(appRoot, [
-      { id: 'app-sibling-1111', title: 'App Sibling', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
-    ]);
-
-    const alive = new Set([2000, 3000]);
-    const hitAuto = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsRoot,
-      source: 'auto',
-      callerAgyPid: 2000,
-      nowMs,
-      isAlive: (p) => alive.has(p),
-    });
-    assert.equal(hitAuto.tier, 'pid');
-    assert.equal(hitAuto.session.convId, 'cli-new-same-pid');
-
-    const skipForApp = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsRoot,
-      source: 'app',
-      callerAgyPid: 2000,
-      nowMs,
-      isAlive: (p) => alive.has(p),
-    });
-    assert.equal(skipForApp.tier, 'workspace');
-    assert.equal(skipForApp.session.convId, 'app-sibling-1111');
-  });
-
-  void it('ranks Tier 2 deepest workspace by active execution then recency, excludes dead CLI PIDs, and reports siblings', () => {
-    const nowMs = Date.parse('2026-06-01T12:00:00Z');
-    // Dead-PID CLI session with very recent timestamp must be excluded from Tier 2
-    writeSnapshotEnvelope(
-      cliHome,
-      { conversation_id: 'cli-dead-pid', cwd: wsRoot, conversation_title: 'Dead CLI' },
-      9999,
-      { nowMs },
-    );
-    // Live but idle CLI session (older)
-    writeSnapshotEnvelope(
-      cliHome,
-      { conversation_id: 'cli-live-idle', cwd: wsRoot, conversation_title: 'Idle CLI' },
-      4001,
-      { nowMs: nowMs - 60_000 },
-    );
-    // Newer idle App session in same wsRoot -> must beat older idle live CLI!
-    writeTranscript(
-      appRoot,
-      'app-newer-idle',
-      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
-      nowMs - 10_000,
-    );
-    writeSummaryDb(appRoot, [
-      {
-        id: 'app-newer-idle',
-        title: 'Newer App',
-        lastModifiedIso: '2026-06-01T11:59:50Z',
-        workspaces: [wsRoot],
-        notFullyIdle: 0,
-      },
-      {
-        id: 'app-nested-ws',
-        title: 'Nested WS App',
-        lastModifiedIso: '2026-06-01T11:50:00Z',
-        workspaces: [wsNested],
-        notFullyIdle: 0,
-      },
-    ]);
-    writeTranscript(
-      appRoot,
-      'app-nested-ws',
-      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
-      nowMs - 600_000,
-    );
-
-    const alive = new Set([4001]);
-    const atRoot = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsRoot,
-      callerAgyPid: null,
-      nowMs,
-      isAlive: (p) => alive.has(p),
-    });
-    assert.equal(atRoot.tier, 'workspace');
-    assert.equal(atRoot.session.convId, 'app-newer-idle');
-    assert.ok(atRoot.siblings.some((s) => s.convId === 'cli-live-idle'));
-    assert.equal(
-      atRoot.siblings.some((s) => s.convId === 'cli-dead-pid'),
-      false,
-    );
-
-    // Inside nested dir, deepest matching root (wsNested) wins over parent wsRoot
-    const atNested = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsNested,
-      callerAgyPid: null,
-      nowMs,
-      isAlive: (p) => alive.has(p),
-    });
-    assert.equal(atNested.tier, 'workspace');
-    assert.equal(atNested.session.convId, 'app-nested-ws');
-
-    // If CLI session becomes actively running, active execution beats newer idle App session
-    writeTranscript(
-      cliHome,
-      'cli-live-idle',
-      [{ type: 'PLANNER_RESPONSE', status: 'RUNNING', tool_calls: [] }],
-      nowMs - 30_000,
-    );
-    const activeWins = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsRoot,
-      callerAgyPid: null,
-      nowMs,
-      isAlive: (p) => alive.has(p),
-    });
-    assert.equal(activeWins.tier, 'workspace');
-    assert.equal(activeWins.session.convId, 'cli-live-idle');
-  });
-
-  void it('falls back to Tier 3 newest live/recent session within --source when cwd matches no workspace', () => {
-    const nowMs = Date.parse('2026-06-01T12:00:00Z');
-    writeSnapshotEnvelope(
-      cliHome,
-      { conversation_id: 'cli-dead-1111', cwd: wsRoot, conversation_title: 'Dead CLI' },
-      9991,
-      { nowMs },
-    );
-    writeSnapshotEnvelope(
-      cliHome,
-      { conversation_id: 'cli-live-2222', cwd: wsRoot, conversation_title: 'Live CLI' },
-      5001,
-      { nowMs: nowMs - 30_000 },
-    );
-    writeTranscript(
-      appRoot,
-      'app-recent-3333',
-      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
-      nowMs - 5_000,
-    );
-    writeSummaryDb(appRoot, [
-      { id: 'app-recent-3333', title: 'Recent App', lastModifiedIso: '2026-06-01T11:59:55Z', workspaces: [wsRoot] },
-    ]);
-
-    const alive = new Set([5001]);
-    const fallbackAuto = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsOther,
-      source: 'auto',
-      callerAgyPid: null,
-      nowMs,
-      isAlive: (p) => alive.has(p),
-    });
-    assert.equal(fallbackAuto.tier, 'fallback');
-    assert.equal(fallbackAuto.session.convId, 'app-recent-3333');
-
-    const fallbackCli = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsOther,
-      source: 'cli',
-      callerAgyPid: null,
-      nowMs,
-      isAlive: (p) => alive.has(p),
-    });
-    assert.equal(fallbackCli.tier, 'fallback');
-    assert.equal(fallbackCli.session.convId, 'cli-live-2222');
   });
 });

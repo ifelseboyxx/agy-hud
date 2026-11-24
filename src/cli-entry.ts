@@ -73,7 +73,7 @@ Options:
   --disable <id,...>           Disable Line Module(s) or Inline Segment(s) (repeatable)
   --order <lineId,...>         Set explicit ordered Line Modules list
   --set <key>=<value>          Set osc8Links, maxAgentChips, segments.<id>, or legacy show* alias
-  --reset                      Reset hud-config.json to compact defaults
+  --reset                      Reset hud-config.json to full defaults
   --json                       Emit JSON output
   -i, --interactive            Launch interactive configuration editor
   -h, --help                   Show this help

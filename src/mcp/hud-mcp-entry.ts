@@ -320,6 +320,7 @@ export function runMcpStdioServer(
   const handleLine = createMcpLineHandler(ctx);
   return new Promise((resolve) => {
     let buffer = '';
+    let settled = false;
     const flushLine = (line: string): void => {
       try {
         const reply = handleLine(line);
@@ -332,8 +333,7 @@ export function runMcpStdioServer(
       }
     };
 
-    input.setEncoding('utf8');
-    input.on('data', (chunk: string) => {
+    const onData = (chunk: string): void => {
       buffer += chunk;
       let nlIdx = buffer.indexOf('\n');
       while (nlIdx !== -1) {
@@ -342,17 +342,37 @@ export function runMcpStdioServer(
         flushLine(line);
         nlIdx = buffer.indexOf('\n');
       }
-    });
-    input.on('end', () => {
+    };
+
+    const cleanup = (): void => {
+      input.off('data', onData);
+      input.off('end', onEnd);
+      input.off('error', onError);
+    };
+
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+
+    const onEnd = (): void => {
       if (buffer.trim().length > 0) {
         flushLine(buffer);
       }
-      resolve();
-    });
-    input.on('error', (err) => {
+      finish();
+    };
+
+    const onError = (err: Error): void => {
       process.stderr.write(`[agy-hud-mcp] stdin error: ${err.message}\n`);
-      resolve();
-    });
+      finish();
+    };
+
+    input.setEncoding('utf8');
+    input.on('data', onData);
+    input.on('end', onEnd);
+    input.on('error', onError);
   });
 }
 

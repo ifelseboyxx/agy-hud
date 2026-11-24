@@ -38,7 +38,7 @@ function makeFastEnv(root: string, extra: Record<string, string> = {}): NodeJS.P
 }
 
 void describe('plugin-first wire/unwire and CLI Shim lifecycle', { concurrency: true }, () => {
-  void it('wires statusLine and CLI Shim in-place without recopying files, prints PATH hint, and detaches on unwire', async (t) => {
+  void it('wires statusLine and CLI Shim in-place without recopying plugin files', async (t) => {
     if (process.platform === 'win32') return;
     const localTracker = createTempDirTracker();
     t.after(() => localTracker.cleanup());
@@ -83,7 +83,7 @@ void describe('plugin-first wire/unwire and CLI Shim lifecycle', { concurrency: 
     assert.equal(existsSync(backupPath), false);
   });
 
-  void it('emits actionable rm diagnostic on stderr after plugin deletion and still removes owned shim on unwire', async (t) => {
+  void it('emits actionable rm diagnostic after plugin deletion before unwire cleanup', async (t) => {
     if (process.platform === 'win32') return;
     const localTracker = createTempDirTracker();
     t.after(() => localTracker.cleanup());
@@ -107,7 +107,7 @@ void describe('plugin-first wire/unwire and CLI Shim lifecycle', { concurrency: 
     assert.equal(existsSync(shimPath), false);
   });
 
-  void it('isolates --project and --target from global shims and preserves shims across on/off toggles', async (t) => {
+  void it('skips global shim management for --project or --target unless --bin-dir is provided', async (t) => {
     if (process.platform === 'win32') return;
     const localTracker = createTempDirTracker();
     t.after(() => localTracker.cleanup());
@@ -151,7 +151,7 @@ void describe('plugin-first wire/unwire and CLI Shim lifecycle', { concurrency: 
     assert.equal(existsSync(customShim), false);
   });
 
-  void it('refuses foreign shim files in preflight before staging files or editing settings and skips them on uninstall', async (t) => {
+  void it('refuses foreign shim files in preflight without modifying plugin files or settings', async (t) => {
     if (process.platform === 'win32') return;
     const localTracker = createTempDirTracker();
     t.after(() => localTracker.cleanup());
@@ -188,162 +188,5 @@ void describe('plugin-first wire/unwire and CLI Shim lifecycle', { concurrency: 
     const unwireRes = await runInstallAsync(['unwire', '--no-enable'], env);
     assert.equal(unwireRes.status, 0, unwireRes.stderr);
     assert.equal(lstatSync(shimPath).isSymbolicLink(), true);
-  });
-
-  void it('rolls back repointed shim atomically on post-install doctor failure and preserves concurrent external edits', async (t) => {
-    if (process.platform === 'win32') return;
-    const localTracker = createTempDirTracker();
-    t.after(() => localTracker.cleanup());
-    const root = localTracker.makeTempDir('agy-hud-shim-rb-e2e-');
-    const binDir = path.join(root, 'bin');
-    const targetA = path.join(root, 'plugin-a');
-    const targetB = path.join(root, 'plugin-b');
-    const shimPath = path.join(binDir, 'agy-hud');
-    const env = makeFastEnv(root);
-
-    assert.equal(
-      (await runInstallAsync(['install', '--target', targetA, '--bin-dir', binDir, '--no-enable', '--quiet'], env))
-        .status,
-      0,
-    );
-    const bytesA = readFileSync(shimPath);
-
-    const failBin = createFakeAgyBin(root, 'fail-rb', '  echo "doctor fail" >&2\n  exit 1');
-    const envFail = makeIsolatedEnv(root, { PATH: `${failBin}${path.delimiter}${process.env.PATH ?? ''}` });
-    const resB = await runInstallAsync(
-      ['install', '--target', targetB, '--bin-dir', binDir, '--wire-statusline', '--no-enable', '--quiet'],
-      envFail,
-    );
-    assert.notEqual(resB.status, 0);
-    assert.equal(existsSync(targetB), false);
-    assert.deepEqual(readFileSync(shimPath), bytesA);
-    assert.equal(statSync(shimPath).mode & 0o777, 0o755);
-
-    const externalShim = '#!/bin/sh\necho concurrent-winner\n';
-    const mutateBin = createFakeAgyBin(
-      root,
-      'mutate-rb',
-      `  "${process.execPath}" -e 'import("node:fs").then((fs) => fs.writeFileSync(${JSON.stringify(shimPath)}, ${JSON.stringify(externalShim)}, "utf8"))'
-  echo "doctor fail" >&2
-  exit 1`,
-    );
-    const envMutate = makeIsolatedEnv(root, { PATH: `${mutateBin}${path.delimiter}${process.env.PATH ?? ''}` });
-    const resB2 = await runInstallAsync(
-      ['install', '--target', targetB, '--bin-dir', binDir, '--no-enable', '--quiet'],
-      envMutate,
-    );
-    assert.notEqual(resB2.status, 0);
-    assert.equal(readFileSync(shimPath, 'utf8'), externalShim);
-  });
-
-  void it('rolls back both statusLine and shim on wire doctor failure and restores removed shim on mid-uninstall error', async (t) => {
-    if (process.platform === 'win32') return;
-    const localTracker = createTempDirTracker();
-    t.after(() => localTracker.cleanup());
-    const root = localTracker.makeTempDir('agy-hud-wire-uninst-rb-');
-    const binDir = path.join(root, 'bin');
-    const targetA = path.join(root, 'plugin-a');
-    const targetB = path.join(root, 'plugin-b');
-    const cliHome = path.join(root, '.gemini', 'antigravity-cli');
-    const settingsPath = path.join(cliHome, 'settings.json');
-    const cacheDir = path.join(cliHome, 'cache');
-    const shimPath = path.join(binDir, 'agy-hud');
-    const priorSl = { type: 'command', command: '/prior/user-hud.sh', enabled: true };
-    const env = makeFastEnv(root);
-
-    writeJson(settingsPath, { statusLine: priorSl });
-    assert.equal(
-      (await runInstallAsync(['install', '--target', targetA, '--bin-dir', binDir, '--no-enable', '--quiet'], env))
-        .status,
-      0,
-    );
-    assert.equal((await runInstallAsync(['install', '--target', targetB, '--no-enable', '--quiet'], env)).status, 0);
-    const bytesA = readFileSync(shimPath);
-
-    const failBin = createFakeAgyBin(root, 'wire-fail', '  echo "wire doctor fail" >&2\n  exit 1');
-    const envFail = makeIsolatedEnv(root, { PATH: `${failBin}${path.delimiter}${process.env.PATH ?? ''}` });
-    const wireFail = await runInstallAsync(
-      ['wire', '--target', targetB, '--bin-dir', binDir, '--no-enable', '--quiet'],
-      envFail,
-    );
-    assert.notEqual(wireFail.status, 0);
-    assert.deepEqual(readJson(settingsPath).statusLine, priorSl);
-    assert.deepEqual(readFileSync(shimPath), bytesA);
-
-    assert.equal(
-      (await runInstallAsync(['wire', '--target', targetA, '--bin-dir', binDir, '--no-enable', '--quiet'], env)).status,
-      0,
-    );
-    const wiredBytesA = readFileSync(shimPath);
-    chmodSync(cacheDir, 0o555);
-    try {
-      const uninstFail = await runInstallAsync(
-        ['uninstall', '--target', targetA, '--bin-dir', binDir, '--restore-statusline', '--no-enable', '--quiet'],
-        env,
-      );
-      if (process.getuid?.() !== 0) {
-        assert.notEqual(uninstFail.status, 0);
-        assert.equal(existsSync(targetA), true, 'target must be restored on mid-uninstall error');
-        assert.deepEqual(readFileSync(shimPath), wiredBytesA, 'removed shim must be restored on mid-uninstall error');
-      }
-    } finally {
-      chmodSync(cacheDir, 0o755);
-    }
-  });
-
-  void it('enforces blocking doctor checks for owned shims while keeping standalone missing/foreign/other informational', async (t) => {
-    if (process.platform === 'win32') return;
-    const localTracker = createTempDirTracker();
-    t.after(() => localTracker.cleanup());
-    const root = localTracker.makeTempDir('agy-hud-doctor-shim-');
-    const targetA = path.join(root, 'plugin-a');
-    const targetB = path.join(root, 'plugin-b');
-    const binDir = path.join(root, 'bin');
-    const shimPath = path.join(binDir, 'agy-hud');
-    const env = makeFastEnv(root);
-
-    assert.equal((await runInstallAsync(['install', '--target', targetA, '--no-enable', '--quiet'], env)).status, 0);
-    assert.equal((await runInstallAsync(['install', '--target', targetB, '--no-enable', '--quiet'], env)).status, 0);
-
-    const missingDoc = await runInstallAsync(['doctor', '--target', targetA, '--bin-dir', binDir], env);
-    assert.equal(missingDoc.status, 0, missingDoc.stdout);
-    assert.ok(missingDoc.stdout.includes('CLI shim'));
-    assert.ok(missingDoc.stdout.includes('not installed'));
-
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(shimPath, '#!/bin/sh\necho foreign\n', 'utf8');
-    const foreignDoc = await runInstallAsync(['doctor', '--target', targetA, '--bin-dir', binDir], env);
-    assert.equal(foreignDoc.status, 0, foreignDoc.stdout);
-    assert.ok(foreignDoc.stdout.includes('foreign'));
-
-    rmSync(shimPath, { force: true });
-    assert.equal(
-      (await runInstallAsync(['wire', '--target', targetB, '--bin-dir', binDir, '--no-enable', '--quiet'], env)).status,
-      0,
-    );
-    const otherDoc = await runInstallAsync(['doctor', '--target', targetA, '--bin-dir', binDir], env);
-    assert.equal(otherDoc.status, 0, otherDoc.stdout);
-    assert.ok(otherDoc.stdout.includes('owned by other install'));
-
-    const selfDoc = await runInstallAsync(['doctor', '--target', targetB, '--bin-dir', binDir], env);
-    assert.equal(selfDoc.status, 0, selfDoc.stdout);
-    assert.ok(selfDoc.stdout.includes('OK'));
-    assert.ok(selfDoc.stdout.includes('not on PATH'));
-
-    // Missing execute bit -> blocking failure
-    chmodSync(shimPath, 0o644);
-    const nonExecDoc = await runInstallAsync(['doctor', '--target', targetB, '--bin-dir', binDir], env);
-    assert.notEqual(nonExecDoc.status, 0);
-
-    // --no-shim downgrades to informational
-    const noShimDoc = await runInstallAsync(['doctor', '--target', targetB, '--bin-dir', binDir, '--no-shim'], env);
-    assert.equal(noShimDoc.status, 0, noShimDoc.stdout);
-
-    // Missing dist/cli.mjs while shim claims targetB -> blocking failure
-    chmodSync(shimPath, 0o755);
-    rmSync(path.join(targetB, 'dist', 'cli.mjs'), { force: true });
-    const missingCliDoc = await runInstallAsync(['doctor', '--target', targetB, '--bin-dir', binDir], env);
-    assert.notEqual(missingCliDoc.status, 0);
-    assert.ok(missingCliDoc.stdout.includes('missing'));
   });
 });

@@ -14,6 +14,14 @@ const USER_REQ_RE = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/;
 const FRONTMATTER_NAME_RE = /^name:\s*['"]?([^'"\n]+)['"]?\s*$/m;
 const SLASH_CMD_NAME_RE = /^[a-z0-9_-]+$/;
 
+export const RUNNING_STEP_STATUSES: ReadonlySet<string> = new Set([
+  'RUNNING',
+  'PENDING',
+  'IN_PROGRESS',
+  'GENERATING',
+  'WAITING',
+]);
+
 export const BUILTIN_SLASH_CMDS: ReadonlySet<string> = new Set([
   'agent',
   'agents',

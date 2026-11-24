@@ -107,7 +107,6 @@ ${INSPECTOR_RENDER_SCRIPT}
     if (data.unchanged === true) return;
     if (Array.isArray(data.sessions)) state.sessions = data.sessions;
     state.snapshot = data.snapshot || null;
-    if (state.snapshot && state.snapshot.convId) state.selectedSessionId = state.snapshot.convId;
     renderAll();
   }
 

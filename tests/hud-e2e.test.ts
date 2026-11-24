@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 void describe('agy-hud built artifacts e2e', async () => {
-  await it('renders HUD via built dist/hud.mjs and handles malformed/empty stdin safely', () => {
+  await it('renders HUD via built dist/hud.mjs on valid stdin JSON', () => {
     const root = makeTempDir('agy-hud-e2e-hud-');
     const cliHome = path.join(root, '.gemini', 'antigravity-cli');
     const env = makeIsolatedEnv(root);
@@ -57,6 +57,11 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.ok(okRes.stdout.trim().length > 0);
     assert.ok(okRes.stdout.includes('Orchestrator (Carbon/Hydrogen)'));
     assert.ok(okRes.stdout.includes('42%'));
+  });
+
+  await it('degrades silently via built dist/hud.mjs on empty or malformed stdin', () => {
+    const root = makeTempDir('agy-hud-e2e-hud-bad-');
+    const env = makeIsolatedEnv(root);
 
     const emptyRes = runNodeScript(DIST_HUD, [], env, '');
     assert.equal(emptyRes.status, 0);
@@ -67,7 +72,7 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.equal(badJsonRes.stdout, '');
   });
 
-  await it('configures, exports, and imports profiles via built dist/cli.mjs', () => {
+  await it('round-trips configure and sanitized profile migration via built dist/cli.mjs', () => {
     const srcRoot = makeTempDir('agy-hud-e2e-src-');
     const dstRoot = makeTempDir('agy-hud-e2e-dst-');
     const bundleDir = path.join(makeTempDir('agy-hud-e2e-bundle-'), 'profile');
@@ -162,7 +167,7 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.equal(servers.sample?.env?.API_TOKEN, '<SET_IN_ENV>');
   });
 
-  await it('installs to --target with --wire-statusline, passes doctor, and restores on uninstall', () => {
+  await it('completes target install lifecycle with wired statusLine', () => {
     const root = makeTempDir('agy-hud-e2e-inst-');
     const targetDir = path.join(root, 'installed-plugin');
     const cliHome = path.join(root, '.gemini', 'antigravity-cli');
@@ -228,7 +233,7 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.equal(typeof mod.configureHud, 'function');
     assert.equal(typeof mod.exportProfile, 'function');
     assert.equal(typeof mod.importProfile, 'function');
-    assert.equal(mod.DEFAULT_HUD_CONFIG.preset, 'compact');
+    assert.equal(mod.DEFAULT_HUD_CONFIG.preset, 'full');
 
     const root = makeTempDir('agy-hud-e2e-lib-');
     const rendered = mod.renderHudFromData(
@@ -243,7 +248,7 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.ok(rendered.includes('G4 Carbon'));
   });
 
-  await it('runs built dist/mcp-hud.mjs over stdio JSON-RPC with app-only entrypoints, CSP HTML, and ETag polling', () => {
+  await it('serves MCP App inspector tools over built dist/mcp-hud.mjs stdio', () => {
     const root = makeTempDir('agy-hud-e2e-mcp-');
     const cliHome = path.join(root, '.gemini', 'antigravity-cli');
     const convId = 'e2e-mcp-session-01';

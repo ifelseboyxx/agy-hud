@@ -209,7 +209,7 @@ export function runDoctor(opts: DoctorRunOptions): { ok: boolean } {
   const slState = inspectStatusLineState(resolveCliHome(), resolvedTarget);
   const shimCheck = evaluateCliShimDoctor(
     opts.binDir,
-    resolvedTarget,
+    pluginBase,
     opts.requireShim ?? false,
     opts.noShim ?? false,
     opts.checkMalformedShim ?? false,
