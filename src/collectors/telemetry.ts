@@ -65,7 +65,7 @@ interface DbLoadResult {
   ckpt: CompactionCheckpoint | null;
 }
 
-function statSignature(filePath: string): [number, number] {
+export function statSignature(filePath: string): [number, number] {
   try {
     const st = statSync(filePath, { bigint: true });
     return [Number(st.mtimeNs), Number(st.size)];
@@ -78,7 +78,7 @@ function sigMatches(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every((v, idx) => v === b[idx]);
 }
 
-function openReadonlyDb(dbPath: string): DatabaseSync | null {
+export function openReadonlyDb(dbPath: string): DatabaseSync | null {
   const baseUri = pathToFileURL(dbPath).href;
   const targets = [`${baseUri}?mode=ro`, `${baseUri}?immutable=1`];
   for (const uri of targets) {
@@ -216,19 +216,19 @@ function readTelemetryCache(cacheFile: string, expectedSig: readonly number[]): 
   }
 }
 
-function loadDbRows(cliHome: string, convId: string): DbLoadResult {
+function loadDbRows(dataRoot: string, cacheCliHome: string, convId: string): DbLoadResult {
   const safeId = sanitizeSessionId(convId);
   if (safeId === null) {
     return { rows: {}, ckpt: null };
   }
-  const dbPath = resolveCliSubdirFile(cliHome, 'conversations', `${safeId}.db`);
-  const walPath = resolveCliSubdirFile(cliHome, 'conversations', `${safeId}.db-wal`);
-  const shmPath = resolveCliSubdirFile(cliHome, 'conversations', `${safeId}.db-shm`);
+  const dbPath = resolveCliSubdirFile(dataRoot, 'conversations', `${safeId}.db`);
+  const walPath = resolveCliSubdirFile(dataRoot, 'conversations', `${safeId}.db-wal`);
+  const shmPath = resolveCliSubdirFile(dataRoot, 'conversations', `${safeId}.db-shm`);
   if (dbPath === null || walPath === null || shmPath === null || !existsSync(dbPath)) {
     return { rows: {}, ckpt: null };
   }
   const sig = [...statSignature(dbPath), ...statSignature(walPath)];
-  const cacheFile = resolveCliSubdirFile(cliHome, 'cache', `agy_hud_telemetry_${safeId}.json`);
+  const cacheFile = resolveCliSubdirFile(cacheCliHome, 'cache', `agy_hud_telemetry_${safeId}.json`);
   if (cacheFile === null) {
     return { rows: {}, ckpt: null };
   }
@@ -292,10 +292,14 @@ function computeEffectiveTps(outTok: number, ttftSec: number, streamSec: number)
   return rawTps;
 }
 
-export function loadSessionTelemetry(cliHome: string, data: StatusLineData): SessionTelemetry {
+export function loadSessionTelemetryFromRoot(
+  dataRoot: string,
+  cacheCliHome: string,
+  convId: string | null,
+  data: StatusLineData = {},
+): SessionTelemetry {
   const ctxObj = data.context_window;
-  const convId = resolveConversationId(data);
-  const { rows, ckpt } = convId !== null ? loadDbRows(cliHome, convId) : { rows: {}, ckpt: null };
+  const { rows, ckpt } = convId !== null ? loadDbRows(dataRoot, cacheCliHome, convId) : { rows: {}, ckpt: null };
 
   const ordered = Object.keys(rows)
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
@@ -342,6 +346,10 @@ export function loadSessionTelemetry(cliHome: string, data: StatusLineData): Ses
     ctxMax,
     compacted,
   };
+}
+
+export function loadSessionTelemetry(cliHome: string, data: StatusLineData): SessionTelemetry {
+  return loadSessionTelemetryFromRoot(cliHome, cliHome, resolveConversationId(data), data);
 }
 
 export function formatContextCapacity(

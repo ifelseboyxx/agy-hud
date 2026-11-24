@@ -53,7 +53,7 @@ export function getMcpConfigLockPath(geminiRoot: string): string {
   return path.join(realpathExistingPrefixSync(geminiRoot), MCP_LOCK_NAME);
 }
 
-function isPidAlive(pid: number): boolean {
+export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);

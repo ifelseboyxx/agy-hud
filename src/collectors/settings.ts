@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -6,17 +5,12 @@ import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
 import { mergeHudConfig } from '../core/hud-config.ts';
 import { resolveCliHome } from '../core/paths.ts';
 import type { CliSettings, HudConfig, StatusLineData, StatusLineVcs } from '../types.ts';
+import { detectAgyFlags, type AgyProcFlags } from './proc.ts';
 import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
 
-export { mergeHudConfig };
+export { detectAgyFlags, mergeHudConfig, type AgyProcFlags };
 
 const SESSION_TTL_SECONDS = 7 * 86400;
-const MAX_ANCESTOR_HOPS = 4;
-
-export interface AgyProcFlags {
-  bypass: boolean;
-  cliMode: string;
-}
 
 export interface GitBranchInfo {
   branch: string;
@@ -45,125 +39,6 @@ export function readCliSettings(cliHome: string): CliSettings {
 export function readHudConfig(cliHome: string): HudConfig {
   const loaded = readJsonRecord(path.join(cliHome, 'hud-config.json'));
   return mergeHudConfig(loaded);
-}
-
-function splitShellTokens(cmdline: string): string[] {
-  const tokens: string[] = [];
-  let cur = '';
-  let quote: '"' | "'" | '' = '';
-  let escaped = false;
-
-  for (let i = 0; i < cmdline.length; i += 1) {
-    const ch = cmdline[i];
-    if (ch === undefined) {
-      continue;
-    }
-    if (escaped) {
-      cur += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\' && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if ((ch === '"' || ch === "'") && (quote === '' || quote === ch)) {
-      quote = quote === '' ? ch : '';
-      continue;
-    }
-    if (/\s/.test(ch) && quote === '') {
-      if (cur.length > 0) {
-        tokens.push(cur);
-        cur = '';
-      }
-      continue;
-    }
-    cur += ch;
-  }
-  if (cur.length > 0) {
-    tokens.push(cur);
-  }
-  return tokens;
-}
-
-function extractAgyTokens(tokens: string[]): AgyProcFlags | null {
-  const exe = tokens[0] !== undefined ? path.basename(tokens[0]) : '';
-  const hasBypass = tokens.includes('--dangerously-skip-permissions');
-  if (exe !== 'agy' && !hasBypass) {
-    return null;
-  }
-  let cliMode = '';
-  for (let i = 0; i < tokens.length; i += 1) {
-    const tok = tokens[i];
-    if (tok === undefined) {
-      continue;
-    }
-    if (tok.startsWith('--mode=')) {
-      cliMode = tok.slice('--mode='.length);
-    } else if (tok === '--mode') {
-      const next = tokens[i + 1];
-      if (next !== undefined) {
-        cliMode = next;
-      }
-    }
-  }
-  return { bypass: hasBypass, cliMode };
-}
-
-export function detectAgyFlags(cliHome: string): AgyProcFlags {
-  const ppid = process.ppid;
-  const cacheFile = resolveCliSubdirFile(cliHome, 'cache', 'agy_hud_proc.json');
-  const cached = cacheFile !== null ? readJsonRecord(cacheFile) : null;
-  if (cached && cached.ppid === ppid) {
-    return {
-      bypass: Boolean(cached.bypass),
-      cliMode: typeof cached.cliMode === 'string' ? cached.cliMode : '',
-    };
-  }
-
-  let bypass = false;
-  let cliMode = '';
-  let pid = ppid;
-
-  for (let hop = 0; hop < MAX_ANCESTOR_HOPS; hop += 1) {
-    if (pid <= 1) {
-      break;
-    }
-    let output = '';
-    try {
-      output = execFileSync('ps', ['-o', 'ppid=,args=', '-p', String(pid)], {
-        encoding: 'utf8',
-        timeout: 300,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-    } catch {
-      break;
-    }
-    if (output.length === 0) {
-      break;
-    }
-    const match = /^\s*(\d+)\s*(.*)$/s.exec(output);
-    const nextPid = match?.[1] !== undefined ? Number.parseInt(match[1], 10) : 0;
-    const cmdline = match?.[2] ?? '';
-    const extracted = extractAgyTokens(splitShellTokens(cmdline));
-    if (extracted !== null) {
-      bypass = extracted.bypass;
-      cliMode = extracted.cliMode;
-      break;
-    }
-    pid = nextPid;
-  }
-
-  if (cacheFile !== null) {
-    try {
-      mkdirSync(path.dirname(cacheFile), { recursive: true });
-      writeFileSync(cacheFile, JSON.stringify({ ppid, bypass, cliMode }), 'utf8');
-    } catch {
-      // Best-effort process cache write.
-    }
-  }
-
-  return { bypass, cliMode };
 }
 
 function readGitHeadBranch(gitEntry: string): string {
