@@ -1,12 +1,14 @@
-import { loadTodos, loadTranscriptActivity } from '../collectors/activity.ts';
+import { loadTodos, loadTranscriptActivity, resolveTranscriptPath } from '../collectors/activity.ts';
 import { collectAgentsSummary } from '../collectors/agents.ts';
 import { detectAgyProcess } from '../collectors/proc.ts';
 import { resolveConversationId } from '../collectors/safe-path.ts';
 import { detectGitBranch, readCliSettings, readHudConfig, type GitBranchInfo } from '../collectors/settings.ts';
-import { readSnapshotEnvelope, writeSnapshotEnvelope } from '../collectors/snapshot-envelope.ts';
+import { readSnapshotEnvelope } from '../collectors/snapshot-envelope.ts';
 import { loadSessionTelemetry } from '../collectors/telemetry.ts';
 import { isFiniteNum } from '../core/guards.ts';
 import { buildPresetConfig, cloneHudConfig, PRESET_TEMPLATES } from '../core/hud-config.ts';
+import { statIfPresentSync } from '../fs-utils.ts';
+import type { SnapshotEnvelope } from '../snapshot-types.ts';
 import type {
   ActivityAgentEntry,
   AgentsSummary,
@@ -22,6 +24,15 @@ import type {
 import { formatTodosLine } from './activity-lines.ts';
 import { DEFAULT_TERM_WIDTH } from './ansi.ts';
 import { hasAnyActivityLine, type HudModuleRenderContext, LINE_MODULE_REGISTRY } from './modules.ts';
+import {
+  canEmitOsc8Links,
+  countEmittedOsc8Links,
+  formatActivitySummarySnapshotTail,
+  formatOsc8Overflow,
+  materializeSnapshotMarkdownIfNeeded,
+  resolveSnapshotMarkdownUri,
+  type TranscriptStatFingerprint,
+} from './osc8.ts';
 import type { ActivityLineFormatOptions } from './pack-line.ts';
 
 export { type ActivityLineFormatOptions, formatNamesLine, formatTodosLine, formatToolsLine } from './activity-lines.ts';
@@ -71,6 +82,7 @@ export interface RenderHudOptions {
   activityLineOptions?: ActivityLineFormatOptions;
   formatActivitySummaryTail?: (remainingCols: number) => string;
   collectors?: HudCollectorOverrides;
+  env?: NodeJS.ProcessEnv;
 }
 
 function resolveRenderHudConfig(baseConfig: HudConfig, override?: Partial<HudConfig>): HudConfig {
@@ -160,21 +172,40 @@ export function renderHudLines(cliHome: string, data: StatusLineData, options?: 
   const termWidth = isFiniteNum(effectiveData.terminal_width) ? effectiveData.terminal_width : DEFAULT_TERM_WIDTH;
   const nowSec = options?.nowSec ?? Date.now() / 1000;
 
-  // Always write the lightweight session metadata envelope even when activity modules are unplugged.
   const convId = resolveConversationId(effectiveData);
+  const env = options?.env ?? process.env;
+  const osc8Target =
+    convId !== null && canEmitOsc8Links(config, convId, env) ? resolveSnapshotMarkdownUri(cliHome, convId) : null;
+  let existingEnvelope: SnapshotEnvelope | null = null;
+  let agyPid = options?.agyPid ?? null;
   let resolvedBypass = options?.bypass;
   let resolvedCliMode = options?.cliMode;
   if (convId !== null) {
-    const existingEnvelope = readSnapshotEnvelope(cliHome, convId);
-    let agyPid = options?.agyPid ?? null;
+    existingEnvelope = readSnapshotEnvelope(cliHome, convId);
     if (options?.agyPid === undefined) {
       const procInfo = detectAgyProcess(cliHome, { knownLiveAgyPid: existingEnvelope?.agyPid ?? null });
       agyPid = procInfo.agyPid;
       resolvedBypass ??= procInfo.bypass;
       resolvedCliMode ??= procInfo.cliMode;
     }
-    writeSnapshotEnvelope(cliHome, effectiveData, agyPid, { nowMs: Math.round(nowSec * 1000) });
   }
+
+  const activityLineOptions: ActivityLineFormatOptions | undefined =
+    options?.activityLineOptions?.formatOverflow !== undefined
+      ? options.activityLineOptions
+      : osc8Target !== null
+        ? {
+            ...options?.activityLineOptions,
+            formatOverflow: (hiddenCount) => formatOsc8Overflow(hiddenCount, osc8Target.uri),
+          }
+        : options?.activityLineOptions;
+
+  const formatActivitySummaryTail: ((remainingCols: number) => string) | undefined =
+    options?.formatActivitySummaryTail !== undefined
+      ? options.formatActivitySummaryTail
+      : osc8Target !== null
+        ? (remainingCols) => formatActivitySummarySnapshotTail(remainingCols, osc8Target.uri)
+        : undefined;
 
   const ctx: HudModuleRenderContext = {
     cliHome,
@@ -197,8 +228,8 @@ export function renderHudLines(cliHome: string, data: StatusLineData, options?: 
       nowSec,
       detectGitBranch: collectors?.detectGitBranch ?? detectGitBranch,
     },
-    activityLineOptions: options?.activityLineOptions,
-    formatActivitySummaryTail: options?.formatActivitySummaryTail,
+    activityLineOptions,
+    formatActivitySummaryTail,
   };
 
   const rendered: string[] = [];
@@ -208,6 +239,34 @@ export function renderHudLines(cliHome: string, data: StatusLineData, options?: 
     if (line.length > 0) {
       rendered.push(line);
     }
+  }
+
+  // Always write the lightweight session metadata envelope; materialize .md only under Gate 1 + Gate 2.
+  if (convId !== null) {
+    const nowMs = Math.round(nowSec * 1000);
+    const emittedOsc8Count = osc8Target !== null ? countEmittedOsc8Links(rendered, osc8Target.uri) : 0;
+    let transcriptStat: TranscriptStatFingerprint | null = null;
+    if (osc8Target !== null && emittedOsc8Count >= 1) {
+      const transcriptPath = resolveTranscriptPath(cliHome, effectiveData);
+      const st = transcriptPath !== null ? statIfPresentSync(transcriptPath) : null;
+      if (st !== null && st.isFile()) {
+        transcriptStat = { ino: st.ino, mtimeMs: st.mtimeMs, size: st.size };
+      }
+    }
+    materializeSnapshotMarkdownIfNeeded({
+      cliHome,
+      convId,
+      target: osc8Target,
+      emittedOsc8Count,
+      data: effectiveData,
+      agyPid,
+      existingEnvelope,
+      transcriptStat,
+      activity,
+      agentsSummary,
+      telemetry,
+      nowMs,
+    });
   }
   return rendered;
 }

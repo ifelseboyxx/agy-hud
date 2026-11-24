@@ -248,7 +248,7 @@ function scanChunkFromOffset(
   };
 }
 
-function resolveTranscriptPath(cliHome: string, data: StatusLineData): string | null {
+export function resolveTranscriptPath(cliHome: string, data: StatusLineData): string | null {
   const convId = resolveConversationId(data);
   if (convId !== null) {
     const candidate = resolveCliSubdirFile(cliHome, 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
