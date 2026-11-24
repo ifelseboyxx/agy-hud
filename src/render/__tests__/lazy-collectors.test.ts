@@ -172,4 +172,30 @@ void describe('lazy collector skipping in renderHudLines', async () => {
     assert.equal(actCalls, 0);
     assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`)), false);
   });
+
+  await it('still writes the lightweight snapshot metadata envelope when activity and telemetry collectors are skipped', () => {
+    const convId = 'conv-lazy-envelope';
+    const cfg: HudConfig = {
+      ...buildPresetConfig('zen'),
+      segments: {
+        model: true,
+        git: false,
+        duration: false,
+        badges: false,
+        cost: false,
+        perf: false,
+        context: false,
+        quota: false,
+      },
+    };
+    renderHudLines(cliHome, makeBaseData(tmpRoot, { conversation_id: convId, exceeds_200k_tokens: false }), {
+      cliSettings: {},
+      hudConfig: cfg,
+      agyPid: process.pid,
+      nowSec: 2000,
+    });
+    assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_snapshot_${convId}.json`)), true);
+    assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`)), false);
+    assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_telemetry_${convId}.json`)), false);
+  });
 });

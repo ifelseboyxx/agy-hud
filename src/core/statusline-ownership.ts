@@ -30,8 +30,9 @@ export function canonicalizeCommandPath(rawCmd: string): string {
   const pluginDir = path.dirname(distDir);
   const pluginName = path.basename(pluginDir);
   const pluginParent = path.dirname(pluginDir);
+  const lowerName = fileName.toLowerCase();
   if (
-    fileName.toLowerCase() === 'hud.mjs' &&
+    (lowerName === 'hud.mjs' || lowerName === 'cli.mjs') &&
     distName.toLowerCase() === 'dist' &&
     pluginName.length > 0 &&
     pluginParent !== pluginDir

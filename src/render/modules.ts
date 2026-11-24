@@ -1,8 +1,8 @@
 import path from 'node:path';
 
 import { formatAgentsBadge, formatAgentsSection, formatRuntimeBadges } from '../collectors/agents.ts';
+import { detectAgyFlags } from '../collectors/proc.ts';
 import {
-  detectAgyFlags,
   detectGitBranch,
   getSessionElapsedSeconds,
   readCliSettings,

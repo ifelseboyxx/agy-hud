@@ -3,6 +3,7 @@ import { configureHud, parseConfigureArgs } from './cli/configure.ts';
 import { isInstallerCommand } from './cli/installer/args.ts';
 import { runInstallerCli } from './cli/installer/index.ts';
 import { exportProfile, importProfile } from './cli/migrate.ts';
+import { isSnapshotFlag, runSnapshotCommand } from './cli/snapshot.ts';
 import { isMainEntry } from './core/paths.ts';
 
 export { runInstallerCli };
@@ -19,12 +20,14 @@ function printMainHelp(): void {
   writeOut(`agy-hud CLI
 
 Usage:
-  agy-hud <command> [options]
+  agy-hud [command] [options]
 
 Commands:
+  snapshot (snap) Inspect full Activity Snapshot across CLI/App/IDE (default)
   configure       Inspect or update <cliHome>/hud-config.json
   export-profile  Export sanitized Antigravity CLI profile bundle
   import-profile  Import sanitized profile bundle without touching config.json
+  wire / unwire   Wire or detach host statusLine and CLI Shim in-place
   install         Install or link agy-hud plugin
   uninstall       Remove agy-hud plugin and optionally restore statusLine
   on / off        Enable or disable agy-hud statusLine and plugin
@@ -180,17 +183,29 @@ function runImportCommand(args: readonly string[]): void {
 
 export function runCliEntry(argv: readonly string[] = process.argv.slice(2)): number {
   const command = argv[0];
-  if (!command || command === '-h' || command === '--help' || command === 'help') {
+  if (command === '-h' || command === '--help' || command === 'help') {
     printMainHelp();
     return 0;
   }
 
-  const rest = argv.slice(1);
   try {
+    if (!command) {
+      writeOut(runSnapshotCommand([]).output);
+      return 0;
+    }
+    if (isSnapshotFlag(command)) {
+      writeOut(runSnapshotCommand(argv).output);
+      return 0;
+    }
+    const rest = argv.slice(1);
     if (isInstallerCommand(command)) {
       return runInstallerCli(argv);
     }
     switch (command) {
+      case 'snapshot':
+      case 'snap':
+        writeOut(runSnapshotCommand(rest).output);
+        return 0;
       case 'configure':
         runConfigureCommand(rest);
         return 0;

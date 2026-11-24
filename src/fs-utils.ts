@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -17,11 +18,12 @@ import { getErrCode, isPlainObject } from './core/guards.ts';
 
 const RANDOM_HEX_START = 2;
 const RANDOM_HEX_END = 8;
+const POSIX_MODE_MASK = 0o777;
 
 export type EntrySnapshotSync =
   | { readonly filePath: string; readonly kind: 'missing' }
   | { readonly filePath: string; readonly kind: 'symlink'; readonly linkTarget: string }
-  | { readonly filePath: string; readonly kind: 'file'; readonly content: Buffer };
+  | { readonly filePath: string; readonly kind: 'file'; readonly content: Buffer; readonly mode?: number };
 
 export function makeTempSuffix(): string {
   return `${process.pid}.${Date.now()}.${Math.random().toString(16).slice(RANDOM_HEX_START, RANDOM_HEX_END)}`;
@@ -113,9 +115,12 @@ function writeTempAtomicSync(filePath: string, writer: (tmpPath: string) => void
   }
 }
 
-export function writeBufferAtomicSync(filePath: string, content: Buffer | string): void {
+export function writeBufferAtomicSync(filePath: string, content: Buffer | string, mode?: number): void {
   writeTempAtomicSync(filePath, (tmpPath) => {
-    writeFileSync(tmpPath, content);
+    writeFileSync(tmpPath, content, mode !== undefined ? { mode } : undefined);
+    if (mode !== undefined && process.platform !== 'win32') {
+      chmodSync(tmpPath, mode);
+    }
   });
 }
 
@@ -136,7 +141,7 @@ export function captureEntrySnapshotSync(
   const st = lstatIfPresentSync(filePath);
   if (!st) return { filePath, kind: 'missing' };
   if (st.isSymbolicLink()) return { filePath, kind: 'symlink', linkTarget: readlinkSync(filePath) };
-  if (st.isFile()) return { filePath, kind: 'file', content: readFileSync(filePath) };
+  if (st.isFile()) return { filePath, kind: 'file', content: readFileSync(filePath), mode: st.mode & POSIX_MODE_MASK };
   throw new Error(`${nonFileErrorPrefix}: ${filePath}`);
 }
 
@@ -155,8 +160,13 @@ export function restoreEntrySnapshotSync(snap: EntrySnapshotSync | null): void {
     return;
   }
   const cur = lstatIfPresentSync(snap.filePath);
-  if (cur?.isFile() && readFileSync(snap.filePath).equals(snap.content)) return;
-  writeBufferAtomicSync(snap.filePath, snap.content);
+  if (cur?.isFile() && readFileSync(snap.filePath).equals(snap.content)) {
+    if (snap.mode !== undefined && process.platform !== 'win32' && (cur.mode & POSIX_MODE_MASK) !== snap.mode) {
+      chmodSync(snap.filePath, snap.mode);
+    }
+    return;
+  }
+  writeBufferAtomicSync(snap.filePath, snap.content, snap.mode);
 }
 
 export function restoreOwnedEntrySnapshotSync(snap: EntrySnapshotSync | null, expectedWritten: Buffer | null): void {

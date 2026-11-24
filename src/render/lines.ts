@@ -1,6 +1,9 @@
 import { loadTodos, loadTranscriptActivity } from '../collectors/activity.ts';
 import { collectAgentsSummary } from '../collectors/agents.ts';
+import { detectAgyProcess } from '../collectors/proc.ts';
+import { resolveConversationId } from '../collectors/safe-path.ts';
 import { detectGitBranch, readCliSettings, readHudConfig, type GitBranchInfo } from '../collectors/settings.ts';
+import { readSnapshotEnvelope, writeSnapshotEnvelope } from '../collectors/snapshot-envelope.ts';
 import { loadSessionTelemetry } from '../collectors/telemetry.ts';
 import { isFiniteNum } from '../core/guards.ts';
 import { buildPresetConfig, cloneHudConfig, PRESET_TEMPLATES } from '../core/hud-config.ts';
@@ -59,6 +62,7 @@ export interface RenderHudOptions {
   agentsSummary?: AgentsSummary;
   todos?: TodoSummary | null;
   nowSec?: number;
+  agyPid?: number | null;
   bypass?: boolean;
   cliMode?: string;
   branch?: string;
@@ -156,6 +160,22 @@ export function renderHudLines(cliHome: string, data: StatusLineData, options?: 
   const termWidth = isFiniteNum(effectiveData.terminal_width) ? effectiveData.terminal_width : DEFAULT_TERM_WIDTH;
   const nowSec = options?.nowSec ?? Date.now() / 1000;
 
+  // Always write the lightweight session metadata envelope even when activity modules are unplugged.
+  const convId = resolveConversationId(effectiveData);
+  let resolvedBypass = options?.bypass;
+  let resolvedCliMode = options?.cliMode;
+  if (convId !== null) {
+    const existingEnvelope = readSnapshotEnvelope(cliHome, convId);
+    let agyPid = options?.agyPid ?? null;
+    if (options?.agyPid === undefined) {
+      const procInfo = detectAgyProcess(cliHome, { knownLiveAgyPid: existingEnvelope?.agyPid ?? null });
+      agyPid = procInfo.agyPid;
+      resolvedBypass ??= procInfo.bypass;
+      resolvedCliMode ??= procInfo.cliMode;
+    }
+    writeSnapshotEnvelope(cliHome, effectiveData, agyPid, { nowMs: Math.round(nowSec * 1000) });
+  }
+
   const ctx: HudModuleRenderContext = {
     cliHome,
     data: effectiveData,
@@ -169,7 +189,7 @@ export function renderHudLines(cliHome: string, data: StatusLineData, options?: 
     hasTodosLine,
     termWidth,
     nowSec,
-    modeOptions: { bypass: options?.bypass, cliMode: options?.cliMode },
+    modeOptions: { bypass: resolvedBypass, cliMode: resolvedCliMode },
     identityOptions: {
       branch: options?.branch,
       dirty: options?.dirty,

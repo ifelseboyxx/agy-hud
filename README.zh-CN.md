@@ -45,35 +45,53 @@
 
 ## 安装
 
-运行前需要 **Antigravity CLI（`agy`）**、**Node.js `^22.20.0 || >=24.0.0`**，从源码构建需要 **`pnpm@11.1.1`**。
+运行前需要 **Antigravity CLI（`agy`）** 与 **Node.js `^22.20.0 || >=24.0.0`**（从源码构建需要 **`pnpm@11.1.1`**）。
+
+### 插件优先安装（推荐）
 
 ```bash
+agy plugin install https://github.com/ifelseboyxx/agy-hud
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire
+```
+
+`wire` 会在已安装插件目录上执行原地宿主接入（不重复复制插件文件）：备份 `~/.gemini/antigravity-cli/settings.json` 中原有的 `statusLine` 并接入 `dist/hud.mjs`，安装带 `agy-hud-shim:v1` 归属头的用户级 `CLI Shim`（macOS/Linux 默认 `~/.local/bin/agy-hud`，Windows 默认 `%LOCALAPPDATA%\agy\bin\agy-hud.cmd` 与伴生 POSIX 脚本，绝不修改 shell rc 或 Windows 注册表），执行 `doctor` 健康检查（含 5 秒 `<shim> --help` 冒烟测试），并在目标目录不在 `PATH` 时打印一行提示。可传 `--no-shim` 跳过 shim 安装，或用 `--bin-dir <dir>`（`AGY_HUD_BIN_DIR`）指定目录。中途任一步失败都会自动回滚。
+
+卸载前可先解绑宿主配置再移除插件包：
+
+```bash
+agy-hud unwire
+agy plugin uninstall agy-hud
+```
+
+若未先执行 `unwire` 而直接运行 `agy plugin uninstall agy-hud`，残留 `CLI Shim` 在被调用时会向 `stderr` 输出可执行的 `rm`/`del` 清理提示并以退出码 `1` 退出，不会自删文件。
+
+<details>
+<summary><strong>从源码构建、开发链接安装、自定义目录、诊断与卸载恢复</strong></summary>
+
+```bash
+# 从本地源码克隆构建并安装（全局安装默认管理 CLI Shim，可加 --no-shim 关闭）
 git clone https://github.com/ifelseboyxx/agy-hud.git agy-hud
 cd agy-hud
 pnpm install && pnpm build
 node scripts/install.mjs install --wire-statusline
-```
 
-该命令会将构建产物复制到 `~/.gemini/config/plugins/agy-hud`，自动备份 `~/.gemini/antigravity-cli/settings.json` 中原有的 `statusLine` 配置并接入 `dist/hud.mjs`，随后执行 `doctor` 健康检查并通过 `agy plugin enable agy-hud` 启用插件。若中途失败，已暂存的文件与配置会自动回滚。
-
-<details>
-<summary><strong>开发链接安装、自定义目录、诊断与卸载恢复</strong></summary>
-
-```bash
-# 开发模式：以符号链接安装到 ~/.gemini/config/plugins/agy-hud 并接入 statusLine
+# 开发模式：以符号链接安装到 ~/.gemini/config/plugins/agy-hud 并接入 statusLine + CLI Shim
 pnpm hud:wire
 
 # 仅符号链接插件，不改动现有 statusLine
 pnpm hud:install
 
 # 安装到项目 .agents/plugins/agy-hud 或自定义目录
+# （--project 与 --target 默认跳过 CLI Shim，除非显式指定 --bin-dir 或 AGY_HUD_BIN_DIR）
 node scripts/install.mjs install --project [dir]
 node scripts/install.mjs install --target <dir> --no-enable
 
-# 运行完整健康检查（Node 版本、node:sqlite、stdin 渲染冒烟、settings、agy plugin validate）
-pnpm hud:doctor
+# 运行完整健康检查（Node 版本、node:sqlite、stdin 渲染冒烟、settings、CLI Shim 冒烟、agy plugin validate）
+agy-hud doctor
+# 无 CLI Shim 回退路径：
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs doctor
 
-# 卸载插件并按备份恢复原有 statusLine（仅在当前 statusLine 归属本次安装时修改）
+# 卸载插件、移除归属本安装的 CLI Shim 并按备份恢复原有 statusLine
 node scripts/install.mjs uninstall --restore-statusline
 ```
 
@@ -82,27 +100,27 @@ node scripts/install.mjs uninstall --restore-statusline
 ### 启停控制
 
 - **Antigravity CLI 会话内**：`/statusline`（快速切换）、`/statusline off` / `/statusline on`、`/statusline delete`（清除自定义配置并回退为内置默认状态栏）。
-- **终端命令**：`pnpm hud:off` / `pnpm hud:on`（或 `node scripts/install.mjs off|on`），联动更新 `statusLine.enabled` 与 `agy plugin disable|enable agy-hud`。
+- **终端命令**：`agy-hud off` / `agy-hud on`（回退：`node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs off|on` 或 `pnpm hud:off` / `pnpm hud:on`），联动更新 `statusLine.enabled` 与 `agy plugin disable|enable agy-hud`，同时保留现有 `CLI Shim`。
 - **仅开关插件包**：`agy plugin disable agy-hud` / `agy plugin enable agy-hud`。
 
 ## 配置与自定义
 
 插件内置了 `agy-hud-setup` 与 `agy-hud-configure` 两个 Skill，你可以直接在 Antigravity CLI 对话中用自然语言下达指令，例如：“把 agy-hud 切换为 compact 预设”、“隐藏费用并把 swarm 芯片上限调到 6”、“运行 agy-hud 健康检查”。
 
-也可以在终端中直接配置：
+也可以在终端中直接配置（若使用了 `--no-shim`，可将 `agy-hud` 替换为 `node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs`）：
 
 ```bash
 # 查看当前生效配置
-node dist/cli.mjs configure --show
+agy-hud configure --show
 
 # 切换预设（full | compact | minimal）
-node dist/cli.mjs configure --preset compact
+agy-hud configure --preset compact
 
 # 单独调整开关或上限
-node dist/cli.mjs configure --set showPerfCapsule=true --set showCost=false --set maxAgentChips=6
+agy-hud configure --set showPerfCapsule=true --set showCost=false --set maxAgentChips=6
 
 # 重置为默认配置
-node dist/cli.mjs configure --reset
+agy-hud configure --reset
 ```
 
 配置文件位于 `~/.gemini/antigravity-cli/hud-config.json`（支持 `GEMINI_CLI_HOME` 覆盖）。在源码仓库根目录也可使用 `pnpm hud:configure -- <参数>`。
@@ -131,11 +149,13 @@ node dist/cli.mjs configure --reset
 
 ```bash
 # 导出脱敏配置模板与 plugins-manifest.json
-node dist/cli.mjs export-profile --out ./agy-profile
+agy-hud export-profile --out ./agy-profile
 
 # 在目标机器导入（追加 --merge-mcp 可仅补充缺失的 MCP 服务）
-node dist/cli.mjs import-profile --in ./agy-profile --merge-mcp
+agy-hud import-profile --in ./agy-profile --merge-mcp
 ```
+
+在 `--no-shim` 模式下，可使用 `node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs export-profile|import-profile ...`。
 
 - **导出产物**：`settings.template.json`、`config.template.json`、`mcp_config.template.json`、`hud-config.json` 与 `plugins-manifest.json`。
 - **自动脱敏规则**：按白名单筛选可迁移字段，剔除机器绑定项（`trustedWorkspaces`、`remoteControlHostname`、`sidecars.*.projectId`），并将密钥/令牌、敏感命令行参数与请求头、URL 鉴权信息统一替换为 `<SET_IN_ENV>`。公开发布或分享前仍建议人工复核。
@@ -145,7 +165,7 @@ node dist/cli.mjs import-profile --in ./agy-profile --merge-mcp
 
 - **零运行时依赖**：构建为独立 ESM 产物（`dist/hud.mjs`、`dist/cli.mjs`），仅使用 Node.js 内置模块（`node:sqlite`、`node:fs`、`node:child_process`）与纯 TypeScript Protobuf 解码器。
 - **只读遥测与路径隔离**：会话 SQLite 数据库以只读模式打开（`?mode=ro` / `?immutable=1`，50ms 超时）并配合本地 `mtime`/大小缓存增量读取；`conversation_id`、`transcript_path` 与 Skill 路径均经可信根目录校验，阻断路径穿越与符号链接逃逸。
-- **归属校验与原子回滚**：`settings.json` 由单一带锁写入模块（`src/cli/installer/settings.ts`）管理；`off` 与 `uninstall --restore-statusline` 严格校验规范路径归属，避免误伤其他状态栏配置；损坏的 JSON 报错并原样保留而非覆盖为空对象，安装失败自动回滚。
+- **归属校验与原子回滚**：`settings.json` 由单一带锁写入模块（`src/cli/installer/settings.ts`）管理，`CLI Shim` 携带 `agy-hud-shim:v1` 归属头；预检阶段拒绝覆盖外部文件或符号链接，`off` 与 `unwire`/`uninstall` 严格校验规范路径归属，损坏的 JSON 报错并原样保留，失败的 `install`/`wire` 事务按字节校验自动回滚。
 - **纯本地数据边界**：仅读取 statusLine stdin JSON、`~/.gemini/antigravity-cli` 本地会话数据、当前目录 `.git/HEAD` 及（迁移命令中的）`~/.gemini/config`，不发起任何网络请求。
 
 ## 运行环境要求

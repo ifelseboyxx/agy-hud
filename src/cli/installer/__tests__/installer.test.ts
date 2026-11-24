@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { isInstallerCommand, parseInstallerArgs } from '../args.ts';
 import { moveVerifiedTarget, removeVerifiedStagedPath } from '../fs-ops.ts';
 import { isSupportedNodeVersion, NODE_RANGE_LABEL } from '../settings.ts';
 
@@ -61,5 +62,52 @@ void describe('installer Node version gate', async () => {
     assert.equal(isSupportedNodeVersion('23.11.0'), false);
     assert.equal(isSupportedNodeVersion('24.0.0'), true);
     assert.equal(isSupportedNodeVersion('25.2.0'), true);
+  });
+});
+
+void describe('installer CLI argument parsing for wire/unwire and shim options', async () => {
+  await it('recognizes wire and unwire as valid installer commands with default manageShim enabled globally', () => {
+    assert.equal(isInstallerCommand('wire'), true);
+    assert.equal(isInstallerCommand('unwire'), true);
+    const env: NodeJS.ProcessEnv = { HOME: '/Users/alice' };
+    assert.equal(parseInstallerArgs(['wire'], env).manageShim, true);
+    assert.equal(parseInstallerArgs(['unwire'], env).manageShim, true);
+    assert.equal(parseInstallerArgs(['install'], env).manageShim, true);
+    assert.equal(parseInstallerArgs(['uninstall'], env).manageShim, true);
+    assert.equal(parseInstallerArgs(['wire', '--no-shim'], env).manageShim, false);
+    assert.equal(parseInstallerArgs(['install', '--no-shim'], env).noShim, true);
+  });
+
+  await it('skips shim management on --project and --target unless --bin-dir or AGY_HUD_BIN_DIR is supplied', () => {
+    const env: NodeJS.ProcessEnv = { HOME: '/Users/alice' };
+    assert.equal(parseInstallerArgs(['install', '--project', '/tmp/proj'], env).manageShim, false);
+    assert.equal(parseInstallerArgs(['install', '--target', '/tmp/dst'], env).manageShim, false);
+    assert.equal(parseInstallerArgs(['wire', '--target', '/tmp/dst'], env).manageShim, false);
+
+    const withFlag = parseInstallerArgs(['install', '--target', '/tmp/dst', '--bin-dir', '/tmp/bin'], env);
+    assert.equal(withFlag.manageShim, true);
+    assert.equal(withFlag.explicitBinDir, true);
+    assert.equal(withFlag.binDir, path.resolve('/tmp/bin'));
+
+    const withInline = parseInstallerArgs(['wire', '--project', '/tmp/proj', '--bin-dir=/tmp/inline-bin'], env);
+    assert.equal(withInline.manageShim, true);
+    assert.equal(withInline.binDir, path.resolve('/tmp/inline-bin'));
+
+    const withEnv = parseInstallerArgs(['install', '--target', '/tmp/dst'], {
+      HOME: '/Users/alice',
+      AGY_HUD_BIN_DIR: '/tmp/env-bin',
+    });
+    assert.equal(withEnv.manageShim, true);
+    assert.equal(withEnv.explicitBinDir, true);
+    assert.equal(withEnv.binDir, path.resolve('/tmp/env-bin'));
+
+    const overriddenByNoShim = parseInstallerArgs(
+      ['install', '--target', '/tmp/dst', '--bin-dir', '/tmp/bin', '--no-shim'],
+      env,
+    );
+    assert.equal(overriddenByNoShim.manageShim, false);
+
+    assert.throws(() => parseInstallerArgs(['wire', '--bin-dir'], env), /Missing directory path after --bin-dir/);
+    assert.throws(() => parseInstallerArgs(['wire', '--bin-dir='], env), /Missing directory path after --bin-dir=/);
   });
 });
