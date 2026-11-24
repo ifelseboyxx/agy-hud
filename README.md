@@ -45,35 +45,53 @@ The default (`full`) layout renders the active mode, identity and performance me
 
 ## Install
 
-Requires **Antigravity CLI (`agy`)**, **Node.js `^22.20.0 || >=24.0.0`**, and **`pnpm@11.1.1`** for building from source.
+Requires **Antigravity CLI (`agy`)** and **Node.js `^22.20.0 || >=24.0.0`** (`pnpm@11.1.1` if building from source).
+
+### Plugin-First Setup (Recommended)
 
 ```bash
+agy plugin install https://github.com/ifelseboyxx/agy-hud
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire
+```
+
+`wire` connects the installed plugin in-place without re-copying files: it backs up any existing `statusLine` in `~/.gemini/antigravity-cli/settings.json`, wires `dist/hud.mjs`, installs an ownership-verified `CLI Shim` (`agy-hud` in `~/.local/bin` on macOS/Linux or `%LOCALAPPDATA%\agy\bin` on Windows — never modifying shell rc files or the Windows Registry), runs `doctor` (including a `5 s` `<shim> --help` smoke check), and prints a single-line `PATH` hint if needed. Pass `--no-shim` to skip the `CLI Shim` or `--bin-dir <dir>` (`AGY_HUD_BIN_DIR`) to choose a custom bin directory. If any step fails, `settings.json` and any prior `agy-hud` shim are rolled back automatically.
+
+To detach host wiring cleanly before uninstalling the plugin:
+
+```bash
+agy-hud unwire
+agy plugin uninstall agy-hud
+```
+
+If you run `agy plugin uninstall agy-hud` without running `unwire` first, the stale `CLI Shim` exits `1` with an actionable `rm`/`del` message on `stderr` without self-deleting.
+
+<details>
+<summary><strong>Build from source, development link install, custom targets, diagnostics, and uninstall</strong></summary>
+
+```bash
+# Build and install directly from a local clone (global installs manage the CLI Shim unless --no-shim)
 git clone https://github.com/ifelseboyxx/agy-hud.git agy-hud
 cd agy-hud
 pnpm install && pnpm build
 node scripts/install.mjs install --wire-statusline
-```
 
-This copies the built plugin files to `~/.gemini/config/plugins/agy-hud`, backs up any existing `statusLine` in `~/.gemini/antigravity-cli/settings.json`, wires `dist/hud.mjs`, runs `doctor` to verify live rendering, and enables the plugin in `agy`. If any step fails, staged files and settings are rolled back automatically.
-
-<details>
-<summary><strong>Development link install, custom targets, diagnostics, and uninstall</strong></summary>
-
-```bash
-# Symlink this repo into ~/.gemini/config/plugins/agy-hud and wire statusLine (dev mode)
+# Symlink this repo into ~/.gemini/config/plugins/agy-hud and wire statusLine + CLI Shim (dev mode)
 pnpm hud:wire
 
 # Symlink plugin only, without modifying existing statusLine
 pnpm hud:install
 
 # Install into a project's .agents/plugins/agy-hud or a custom directory
+# (--project and --target skip CLI Shim unless --bin-dir or AGY_HUD_BIN_DIR is provided)
 node scripts/install.mjs install --project [dir]
 node scripts/install.mjs install --target <dir> --no-enable
 
-# Run health checks (Node, node:sqlite, stdin render smoke test, settings, agy plugin validate)
-pnpm hud:doctor
+# Run health checks (Node, node:sqlite, stdin render smoke, settings, CLI Shim smoke, agy plugin validate)
+agy-hud doctor
+# Fallback without CLI Shim:
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs doctor
 
-# Uninstall plugin and restore the backed-up statusLine (only if still owned by this install)
+# Uninstall plugin, remove owned CLI Shim, and restore backed-up statusLine
 node scripts/install.mjs uninstall --restore-statusline
 ```
 
@@ -82,27 +100,27 @@ node scripts/install.mjs uninstall --restore-statusline
 ### Enable / Disable
 
 - **Inside Antigravity CLI**: `/statusline` (toggle), `/statusline off` / `/statusline on`, or `/statusline delete` (revert to the built-in default status line).
-- **From the terminal**: `pnpm hud:off` / `pnpm hud:on` (or `node scripts/install.mjs off|on`), which toggles `statusLine.enabled` and calls `agy plugin disable|enable agy-hud`.
+- **From the terminal**: `agy-hud off` / `agy-hud on` (fallback: `node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs off|on` or `pnpm hud:off` / `pnpm hud:on`), which toggles `statusLine.enabled` and calls `agy plugin disable|enable agy-hud` while preserving any existing `CLI Shim`.
 - **Plugin package only**: `agy plugin disable agy-hud` / `agy plugin enable agy-hud`.
 
 ## Configure
 
 You can ask Antigravity directly in natural language — the plugin bundles `agy-hud-setup` and `agy-hud-configure` skills — for example: *"Switch agy-hud to compact preset"*, *"Hide cost and show up to 6 swarm chips"*, or *"Run agy-hud diagnostics"*.
 
-Or update settings directly from the terminal:
+Or update settings directly from the terminal (if `--no-shim` was used, replace `agy-hud` with `node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs`):
 
 ```bash
 # Inspect effective configuration
-node dist/cli.mjs configure --show
+agy-hud configure --show
 
 # Switch preset (full | compact | minimal)
-node dist/cli.mjs configure --preset compact
+agy-hud configure --preset compact
 
 # Toggle individual fields
-node dist/cli.mjs configure --set showPerfCapsule=true --set showCost=false --set maxAgentChips=6
+agy-hud configure --set showPerfCapsule=true --set showCost=false --set maxAgentChips=6
 
 # Reset to defaults
-node dist/cli.mjs configure --reset
+agy-hud configure --reset
 ```
 
 Settings are stored in `~/.gemini/antigravity-cli/hud-config.json` (respects `GEMINI_CLI_HOME`). Inside a source checkout, you can also run `pnpm hud:configure -- <flags>`.
@@ -131,11 +149,13 @@ Move your Antigravity CLI preferences, HUD settings, MCP server templates, and p
 
 ```bash
 # Export sanitized templates and plugins-manifest.json
-node dist/cli.mjs export-profile --out ./agy-profile
+agy-hud export-profile --out ./agy-profile
 
 # Import on another machine (add --merge-mcp to merge missing MCP servers)
-node dist/cli.mjs import-profile --in ./agy-profile --merge-mcp
+agy-hud import-profile --in ./agy-profile --merge-mcp
 ```
+
+In `--no-shim` mode, invoke `node ~/.gemini/config/plugins/agy-hud/dist/cli.mjs export-profile|import-profile ...`.
 
 - **Exported bundle**: `settings.template.json`, `config.template.json`, `mcp_config.template.json`, `hud-config.json`, and `plugins-manifest.json`.
 - **Automatic sanitization**: applies key whitelists, drops machine-local bindings (`trustedWorkspaces`, `remoteControlHostname`, `sidecars.*.projectId`), and replaces tokens, secrets, sensitive CLI flags/headers, and URL credentials with `<SET_IN_ENV>`. Always review exported files manually before sharing them publicly.
@@ -145,7 +165,7 @@ node dist/cli.mjs import-profile --in ./agy-profile --merge-mcp
 
 - **Zero runtime dependencies**: bundled into self-contained ESM (`dist/hud.mjs`, `dist/cli.mjs`) using only Node.js built-ins (`node:sqlite`, `node:fs`, `node:child_process`) and a pure-TypeScript Protobuf decoder.
 - **Read-only telemetry & path containment**: session SQLite databases are opened read-only (`?mode=ro` / `?immutable=1`, 50ms timeout) with local `mtime`/size caching. `conversation_id`, `transcript_path`, and skill paths are verified against trusted roots to block path traversal and symlink escapes.
-- **Ownership-gated writes & atomic rollback**: `settings.json` is written through a single locked writer (`src/cli/installer/settings.ts`). `off` and `uninstall --restore-statusline` verify canonical path ownership before touching `statusLine`, corrupt user JSON fails closed instead of being overwritten, and failed installs roll back cleanly.
+- **Ownership-gated writes & atomic rollback**: `settings.json` is written through a single locked writer (`src/cli/installer/settings.ts`), and `CLI Shim` launchers carry explicit `agy-hud-shim:v1` ownership headers. Preflight refuses foreign files or symlinks before staging files or touching `settings.json`, `off` and `unwire`/`uninstall` verify canonical path ownership before modifying `statusLine` or shims, corrupt user JSON fails closed instead of being overwritten, and failed `install`/`wire` transactions roll back byte-verified changes cleanly.
 - **Local-only scope**: reads statusLine stdin JSON, `~/.gemini/antigravity-cli` session state, local `.git/HEAD`, and (during profile commands) `~/.gemini/config`. Makes no network requests.
 
 ## Requirements

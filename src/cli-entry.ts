@@ -25,6 +25,7 @@ Commands:
   configure       Inspect or update <cliHome>/hud-config.json
   export-profile  Export sanitized Antigravity CLI profile bundle
   import-profile  Import sanitized profile bundle without touching config.json
+  wire / unwire   Wire or detach host statusLine and CLI Shim in-place
   install         Install or link agy-hud plugin
   uninstall       Remove agy-hud plugin and optionally restore statusLine
   on / off        Enable or disable agy-hud statusLine and plugin
