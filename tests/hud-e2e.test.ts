@@ -260,4 +260,16 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.ok(kbRes.stdout.includes('text:!agy-hud\\n'));
     assert.ok(kbRes.stdout.includes('Hotkey Window'));
   });
+
+  await it('enforces non-TTY guard on built dist/cli.mjs configure -i without raw escape sequences', () => {
+    const root = makeTempDir('agy-hud-e2e-cfg-tui-');
+    const env = makeIsolatedEnv(root);
+    for (const flag of ['-i', '--interactive']) {
+      const res = runNodeScript(DIST_CLI, ['configure', flag], env);
+      assert.equal(res.status, 1);
+      assert.equal(res.stdout, '');
+      assert.equal(res.stderr.includes('\x1b['), false);
+      assert.ok(res.stderr.includes('agy-hud configure <preset>'));
+    }
+  });
 });

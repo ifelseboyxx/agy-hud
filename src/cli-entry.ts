@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { CONFIGURE_NON_TTY_HINT, runConfigureInteractive } from './cli/configure-tui.ts';
 import { configureHud, parseConfigureArgs } from './cli/configure.ts';
 import { isInstallerCommand } from './cli/installer/args.ts';
 import { runInstallerCli } from './cli/installer/index.ts';
@@ -136,23 +137,23 @@ function parseValueFlag(argv: readonly string[], flag: string): { help: boolean;
   return { help, value, mergeMcp };
 }
 
-function runConfigureCommand(args: readonly string[]): void {
+function runConfigureCommand(args: readonly string[]): number {
   const parsed = parseConfigureArgs(args);
   if (parsed.help) {
     printConfigureHelp();
-    return;
+    return 0;
   }
   if (parsed.interactive) {
-    throw new Error(
-      'Interactive configure TUI (-i/--interactive) is not yet enabled; pass a preset or --enable/--disable/--order/--set flags instead.',
-    );
+    writeErr(CONFIGURE_NON_TTY_HINT);
+    return 1;
   }
   const result = configureHud(parsed.options);
   if (parsed.json || result.action === 'show') {
     writeOut(`${JSON.stringify(result.config, null, 2)}\n`);
-    return;
+    return 0;
   }
   writeOut(`Updated ${result.configPath}\n${JSON.stringify(result.config, null, 2)}\n`);
+  return 0;
 }
 
 function runExportCommand(args: readonly string[]): void {
@@ -225,8 +226,7 @@ export function runCliEntry(argv: readonly string[] = process.argv.slice(2)): nu
         writeOut(runSnapshotCommand(rest).output);
         return 0;
       case 'configure':
-        runConfigureCommand(rest);
-        return 0;
+        return runConfigureCommand(rest);
       case 'export-profile':
         runExportCommand(rest);
         return 0;
@@ -260,6 +260,27 @@ export async function runCliEntryAsync(
   options: CliAsyncEntryOptions = {},
 ): Promise<number> {
   const errStream = options.stderr ?? process.stderr;
+  if (argv[0] === 'configure') {
+    try {
+      const parsed = parseConfigureArgs(argv.slice(1));
+      if (!parsed.help && parsed.interactive) {
+        return await runConfigureInteractive({
+          cliHome: options.cliHome,
+          env: options.env,
+          json: parsed.json,
+          configureOptions: parsed.options,
+          stdin: options.stdin,
+          stdout: options.stdout,
+          stderr: errStream,
+          escTimeoutMs: options.escTimeoutMs,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errStream.write(`Error: ${message}\n`);
+      return 1;
+    }
+  }
   const snapArgs = resolveInteractiveSnapshotArgs(argv);
   if (snapArgs !== null) {
     try {
