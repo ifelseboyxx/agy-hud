@@ -341,10 +341,19 @@ export function importProfile(options: ImportProfileOptions): ImportProfileResul
 
     if (sanitizedHudIncoming) {
       const targetHudPath = path.join(cliHome, 'hud-config.json');
-      const existingHud = readJsonObject(targetHudPath, true) ?? {};
-      const mergedHud = deepMergeObjects(existingHud, sanitizedHudIncoming);
-      hydrateHudConfig(mergedHud);
-      planned.push({ kind: 'write', filePath: targetHudPath, payload: mergedHud });
+      readJsonObject(targetHudPath, true);
+      const canonicalHud = hydrateHudConfig(sanitizedHudIncoming);
+      planned.push({
+        kind: 'write',
+        filePath: targetHudPath,
+        payload: {
+          preset: canonicalHud.preset,
+          maxAgentChips: canonicalHud.maxAgentChips,
+          osc8Links: canonicalHud.osc8Links,
+          lines: [...canonicalHud.lines],
+          segments: { ...canonicalHud.segments },
+        },
+      });
     }
 
     let mcpAction: ImportMcpAction = 'none';

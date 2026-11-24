@@ -58,8 +58,8 @@ void describe('configureHud', async () => {
     });
     assert.equal(updated.changed, true);
     assert.equal(updated.config.preset, 'compact');
-    assert.equal(updated.config.showCost, false);
-    assert.equal(updated.config.showQuota, false);
+    assert.equal(updated.config.segments.cost, false);
+    assert.equal(updated.config.segments.quota, false);
     assert.equal(updated.config.maxAgentChips, 8);
 
     const persisted = readJson(path.join(cliHome, 'hud-config.json'));
@@ -97,7 +97,11 @@ void describe('exportProfile and importProfile', async () => {
       orchestrator: { planner: 'Gemini 4 Carbon' },
       trustedWorkspaces: ['/Users/alice/secret-repo'],
     });
-    writeJson(path.join(cliHome, 'hud-config.json'), { ...DEFAULT_HUD_CONFIG, preset: 'compact', showCost: false });
+    writeJson(path.join(cliHome, 'hud-config.json'), {
+      ...DEFAULT_HUD_CONFIG,
+      preset: 'compact',
+      segments: { ...DEFAULT_HUD_CONFIG.segments, cost: false },
+    });
     writeJson(path.join(geminiRoot, 'config', 'config.json'), {
       plugins: {
         'sample-plugin': { enabled: true },

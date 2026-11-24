@@ -39,15 +39,21 @@ function printConfigureHelp(): void {
   writeOut(`agy-hud configure
 
 Usage:
-  agy-hud configure [options]
+  agy-hud configure [<preset>] [options]
+
+Presets:
+  zen | minimal | compact | swarm | full
 
 Options:
   --show                       Show current hud-config.json (default)
-  --preset <full|compact|minimal>
-                               Set display preset
-  --set <key>=<value>          Set a specific config key (repeatable)
-  --reset                      Reset hud-config.json to defaults
+  --preset <preset>            Seed lines and segments from a persona preset
+  --enable <id,...>            Enable Line Module(s) or Inline Segment(s) (repeatable)
+  --disable <id,...>           Disable Line Module(s) or Inline Segment(s) (repeatable)
+  --order <lineId,...>         Set explicit ordered Line Modules list
+  --set <key>=<value>          Set osc8Links, maxAgentChips, segments.<id>, or legacy show* alias
+  --reset                      Reset hud-config.json to compact defaults
   --json                       Emit JSON output
+  -i, --interactive            Launch interactive configuration editor
   -h, --help                   Show this help
 `);
 }
@@ -114,6 +120,11 @@ function runConfigureCommand(args: readonly string[]): void {
   if (parsed.help) {
     printConfigureHelp();
     return;
+  }
+  if (parsed.interactive) {
+    throw new Error(
+      'Interactive configure TUI (-i/--interactive) is not yet enabled; pass a preset or --enable/--disable/--order/--set flags instead.',
+    );
   }
   const result = configureHud(parsed.options);
   if (parsed.json || result.action === 'show') {

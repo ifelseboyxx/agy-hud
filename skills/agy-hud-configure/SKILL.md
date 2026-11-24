@@ -1,38 +1,49 @@
 ---
 name: agy-hud-configure
-description: 配置 agy-hud 展示预设与开关选项，或在多台机器间导出导入脱敏的 Antigravity CLI 配置包。当需要切换 HUD 预设、调整展示片段或跨机迁移 CLI 配置时使用。
+description: 配置 agy-hud 状态栏模块、预设方案（zen/minimal/compact/swarm/full）与展示选项，或在多台机器间导出导入脱敏的 Antigravity CLI 配置包。当需要切换 HUD 预设、插拔模块或跨机迁移配置时使用。
 ---
 
 # agy-hud 展示配置与跨机迁移
 
-通过 `dist/cli.mjs` 管理 `<cliHome>/hud-config.json` 展示选项，或执行脱敏配置导出与导入。
+通过 `agy-hud`（或 `node dist/cli.mjs`）管理 `<cliHome>/hud-config.json` 模块与展示选项，或执行脱敏配置导出与导入。
 
 ## 展示配置 (`configure`)
 
 - 查看当前生效配置：
   ```bash
-  node dist/cli.mjs configure --show
+  agy-hud configure --show
   ```
-- 切换预设（`full` | `compact` | `minimal`）：
+- 切换 5 种角色预设（默认 `compact`）：
+  - `zen`：极简 1 行（`identity` + 折叠 `Ctx`/`5h` 尾部）
+  - `minimal`：2 行（`identity` + `usage`）
+  - `compact`：3-4 行日常开发默认（`mode` + `identity` + `usage` + `activity` 摘要）
+  - `swarm`：4-5 行多代理编排（`mode` + `identity` + `usage` + `agents` + `todos`）
+  - `full`：最多 8 行全量诊断（含独立 `tools`、`skills`、`mcps`、`agents`、`todos`）
   ```bash
-  node dist/cli.mjs configure --preset compact
+  agy-hud configure zen
+  agy-hud configure --preset swarm
   ```
-- 单独修改开关或芯片上限：
+- 插拔 `Line Module`（`mode|identity|usage|activity|tools|skills|mcps|agents|todos`）与 `Inline Segment`（`model|git|duration|badges|cost|perf|context|quota`），并自定义行顺序：
   ```bash
-  node dist/cli.mjs configure --set showPerfCapsule=true --set maxAgentChips=4
+  agy-hud configure compact --enable tools,agents --disable activity,cost --order identity,usage,tools,agents
   ```
-- 重置为默认配置：
+- 单独修改顶层选项（`osc8Links`、`maxAgentChips`）、片段（`segments.<id>`）或兼容旧 `show*` 别名：
   ```bash
-  node dist/cli.mjs configure --reset
+  agy-hud configure --set osc8Links=false --set maxAgentChips=6 --set segments.perf=true
+  agy-hud configure --set showCost=false --set showSkillsMcpLine=true
+  ```
+- 重置为默认 `compact` 配置：
+  ```bash
+  agy-hud configure --reset
   ```
 
 ## 跨机迁移 (`export-profile` / `import-profile`)
 
-- 导出脱敏配置包（自动剔除 `trustedWorkspaces`、`remoteControlHostname`、`sidecars.*.projectId` 与敏感密钥）：
+- 导出脱敏配置包（自动剔除 `trustedWorkspaces`、`remoteControlHostname`、`sidecars.*.projectId` 与敏感密钥，并对 `hud-config.json` 按白名单校验与去重）：
   ```bash
-  node dist/cli.mjs export-profile --out ./agy-profile-bundle
+  agy-hud export-profile --out ./agy-profile-bundle
   ```
 - 在目标机器导入配置包（深度合并并保留目标机 `trustedWorkspaces`，不直接修改 `config.json`）：
   ```bash
-  node dist/cli.mjs import-profile --in ./agy-profile-bundle
+  agy-hud import-profile --in ./agy-profile-bundle
   ```

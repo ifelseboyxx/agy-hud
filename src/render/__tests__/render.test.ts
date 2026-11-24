@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { buildPresetConfig } from '../../core/hud-config.ts';
 import { renderHudFromData } from '../../hud-entry.ts';
 import type { AgentsSummary, HudConfig, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
 import { DEFAULT_HUD_CONFIG } from '../../types.ts';
@@ -197,7 +198,7 @@ void describe('render and hud-entry', () => {
       cliMode: 'accept-edits',
     };
 
-    const fullOut = stripAnsi(renderHudFromData(baseData, opts));
+    const fullOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: buildPresetConfig('full') }));
     assert.equal(EMOJI_PATTERN.test(fullOut), false);
     assert.ok(fullOut.includes('accept edits on'));
     assert.ok(fullOut.includes('[Orchestrator (Carbon) ◑ high]'));
@@ -212,17 +213,24 @@ void describe('render and hud-entry', () => {
     const fullLine1 = fullOut.split('\n')[1] ?? '';
     assert.equal(fullLine1.includes('BG 2'), false);
 
-    const compactOut = stripAnsi(
-      renderHudFromData(baseData, { ...opts, hudConfig: { preset: 'compact', maxAgentChips: 2 } }),
-    );
+    const compactOut = stripAnsi(renderHudFromData(baseData, opts));
     assert.ok(compactOut.includes('accept edits on'));
-    assert.ok(compactOut.includes('Swarm (2/3):'));
-    assert.ok(compactOut.includes('+1 more'));
+    assert.ok(compactOut.includes('Tools 5'));
+    assert.ok(compactOut.includes('Skills 1'));
+    assert.ok(compactOut.includes('MCPs 1'));
+    assert.ok(compactOut.includes('Swarm 2/3'));
     assert.equal(compactOut.includes('Read ×5'), false);
     assert.equal(compactOut.includes('Skills (1):'), false);
     assert.equal(compactOut.includes('Build tests'), false);
     // Todos line is hidden in compact mode, so BG 2 returns on Line 1.
     assert.ok(compactOut.includes('BG 2'));
+
+    const swarmOut = stripAnsi(
+      renderHudFromData(baseData, { ...opts, hudConfig: { preset: 'swarm', maxAgentChips: 2 } }),
+    );
+    assert.ok(swarmOut.includes('Swarm (2/3):'));
+    assert.ok(swarmOut.includes('+1 more'));
+    assert.ok(swarmOut.includes('Build tests'));
 
     const minimalOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: { preset: 'minimal' } }));
     const minimalLines = minimalOut.split('\n');
@@ -234,13 +242,13 @@ void describe('render and hud-entry', () => {
 
     const customDisabled: Partial<HudConfig> = {
       preset: 'full',
-      showPerfCapsule: false,
-      showQuota: false,
-      showCost: false,
-      showSwarmChips: false,
-      showToolsLine: false,
-      showSkillsMcpLine: false,
-      showTodosLine: false,
+      lines: ['mode', 'identity', 'usage'],
+      segments: {
+        ...DEFAULT_HUD_CONFIG.segments,
+        perf: false,
+        quota: false,
+        cost: false,
+      },
     };
     const strippedOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: customDisabled }));
     assert.equal(strippedOut.includes('112 t/s'), false);

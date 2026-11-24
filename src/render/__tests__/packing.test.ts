@@ -2,12 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { aggregateCompletedTools } from '../../collectors/activity-parse.ts';
-import {
-  type AgentsSummary,
-  DEFAULT_HUD_CONFIG,
-  type TranscriptActivity,
-  type TranscriptToolEntry,
-} from '../../types.ts';
+import { buildPresetConfig } from '../../core/hud-config.ts';
+import { type AgentsSummary, type TranscriptActivity, type TranscriptToolEntry } from '../../types.ts';
 import { formatNamesLine, formatToolsLine } from '../activity-lines.ts';
 import {
   BRIGHT_CYAN,
@@ -402,7 +398,10 @@ void describe('aggregateCompletedTools and formatToolsLine', () => {
         context_window: { used_percentage: 25, context_window_size: 1_000_000 },
       },
       {
-        hudConfig: { ...DEFAULT_HUD_CONFIG, showModeLine: false },
+        hudConfig: {
+          ...buildPresetConfig('full'),
+          lines: ['identity', 'usage', 'tools', 'skills', 'mcps', 'agents', 'todos'],
+        },
         cliSettings: {},
         telemetry: { genCount: 0, tps: null, ttft: null, cachePct: null, ctxUsed: null, ctxMax: null },
         activity,
