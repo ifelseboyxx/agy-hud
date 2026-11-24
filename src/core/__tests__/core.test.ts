@@ -26,14 +26,13 @@ void describe('core paths, config schema, ownership, and stdin boundary', async 
   });
 
   await it('ignores unknown legacy keys such as autoWireStatusLine in hud-config.json', () => {
-    assert.deepEqual(mergeHudConfig({ autoWireStatusLine: true, showCost: false }), {
+    const expected = {
       ...DEFAULT_HUD_CONFIG,
-      showCost: false,
-    });
-    assert.deepEqual(hydrateHudConfig({ autoWireStatusLine: true, showCost: false }), {
-      ...DEFAULT_HUD_CONFIG,
-      showCost: false,
-    });
+      lines: [...DEFAULT_HUD_CONFIG.lines],
+      segments: { ...DEFAULT_HUD_CONFIG.segments, cost: false },
+    };
+    assert.deepEqual(mergeHudConfig({ autoWireStatusLine: true, showCost: false }), expected);
+    assert.deepEqual(hydrateHudConfig({ autoWireStatusLine: true, showCost: false }), expected);
   });
 
   await it('requires non-empty wiredCommand in modern statusLine backup records', () => {

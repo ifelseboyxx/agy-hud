@@ -139,32 +139,37 @@ export interface StatusLineData {
   output_style?: string | { name?: string };
 }
 
-export type HudPreset = 'full' | 'compact' | 'minimal';
+export type HudPreset = 'zen' | 'minimal' | 'compact' | 'swarm' | 'full';
+
+export type HudLineId = 'mode' | 'identity' | 'usage' | 'activity' | 'tools' | 'skills' | 'mcps' | 'agents' | 'todos';
+
+export type HudSegmentId = 'model' | 'git' | 'duration' | 'badges' | 'cost' | 'perf' | 'context' | 'quota';
+
+export type HudSegments = Record<HudSegmentId, boolean>;
 
 export interface HudConfig {
   preset: HudPreset;
-  showModeLine: boolean;
-  showPerfCapsule: boolean;
-  showQuota: boolean;
-  showCost: boolean;
-  showSwarmChips: boolean;
-  showToolsLine: boolean;
-  showSkillsMcpLine: boolean;
-  showTodosLine: boolean;
   maxAgentChips: number;
+  osc8Links: boolean;
+  lines: HudLineId[];
+  segments: HudSegments;
 }
 
 export const DEFAULT_HUD_CONFIG: HudConfig = {
-  preset: 'full',
-  showModeLine: true,
-  showPerfCapsule: true,
-  showQuota: true,
-  showCost: true,
-  showSwarmChips: true,
-  showToolsLine: true,
-  showSkillsMcpLine: true,
-  showTodosLine: true,
+  preset: 'compact',
   maxAgentChips: 8,
+  osc8Links: true,
+  lines: ['mode', 'identity', 'usage', 'activity'],
+  segments: {
+    model: true,
+    git: true,
+    duration: true,
+    badges: true,
+    cost: true,
+    perf: true,
+    context: true,
+    quota: true,
+  },
 };
 
 export interface GenMetadataRow {

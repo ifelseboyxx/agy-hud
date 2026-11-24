@@ -118,9 +118,9 @@ void describe('collectors', () => {
     );
     const hudCfg = readHudConfig(cliHome);
     assert.equal(hudCfg.preset, 'compact');
-    assert.equal(hudCfg.showCost, false);
+    assert.equal(hudCfg.segments.cost, false);
     assert.equal(hudCfg.maxAgentChips, 2);
-    assert.equal(hudCfg.showTodosLine, DEFAULT_HUD_CONFIG.showTodosLine);
+    assert.deepEqual(hudCfg.lines, DEFAULT_HUD_CONFIG.lines);
 
     const repoDir = path.join(tmpRoot, 'repo');
     const nestedDir = path.join(repoDir, 'src', 'nested');

@@ -1,5 +1,5 @@
 import { isPlainObject, UNSAFE_OBJECT_KEYS as UNSAFE_KEYS } from '../core/guards.ts';
-import { hydrateHudConfig } from '../core/hud-config.ts';
+import { HUD_BOOLEAN_KEYS, hydrateHudConfig, isHudLineId, isHudSegmentId } from '../core/hud-config.ts';
 import { DEFAULT_HUD_CONFIG } from '../types.ts';
 
 export const REDACTED_PLACEHOLDER = '<SET_IN_ENV>';
@@ -43,7 +43,7 @@ const ALLOWED_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   'effort',
 ]);
 
-const ALLOWED_HUD_KEYS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_HUD_CONFIG));
+const ALLOWED_HUD_KEYS: ReadonlySet<string> = new Set([...Object.keys(DEFAULT_HUD_CONFIG), ...HUD_BOOLEAN_KEYS]);
 
 const ALLOWED_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
   'command',
@@ -242,10 +242,46 @@ export function sanitizeHudConfigTemplate(raw: Record<string, unknown>): Record<
   const out: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(raw)) {
     if (UNSAFE_KEYS.has(key) || !ALLOWED_HUD_KEYS.has(key)) continue;
+    if (key === 'lines') {
+      if (!Array.isArray(val)) {
+        throw new Error("Invalid 'lines' in hud-config.json (expected array of line IDs)");
+      }
+      const deduped: string[] = [];
+      const seen = new Set<string>();
+      for (const item of val) {
+        if (typeof item !== 'string') {
+          throw new Error(`Invalid line ID '${String(item)}' in hud-config.json (expected string)`);
+        }
+        if (isHudLineId(item) && !seen.has(item)) {
+          seen.add(item);
+          deduped.push(item);
+        }
+      }
+      out.lines = deduped;
+      continue;
+    }
+    if (key === 'segments') {
+      if (!isPlainObject(val)) {
+        throw new Error("Invalid 'segments' in hud-config.json (expected object of segment booleans)");
+      }
+      const cleanSegments: Record<string, unknown> = {};
+      for (const [segKey, segVal] of Object.entries(val)) {
+        if (UNSAFE_KEYS.has(segKey) || !isHudSegmentId(segKey)) continue;
+        cleanSegments[segKey] = cloneValue(segVal);
+      }
+      out.segments = cleanSegments;
+      continue;
+    }
     out[key] = cloneValue(val);
   }
-  hydrateHudConfig(out);
-  return out;
+  const hydrated = hydrateHudConfig(out);
+  return {
+    preset: hydrated.preset,
+    maxAgentChips: hydrated.maxAgentChips,
+    osc8Links: hydrated.osc8Links,
+    lines: [...hydrated.lines],
+    segments: { ...hydrated.segments },
+  };
 }
 
 function sanitizeInstalledFromMeta(installedFrom: Record<string, unknown>): Record<string, unknown> | null {

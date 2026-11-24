@@ -3,10 +3,22 @@ import { configureHud, parseConfigureArgs } from './cli/configure.ts';
 import { isInstallerCommand } from './cli/installer/args.ts';
 import { runInstallerCli } from './cli/installer/index.ts';
 import { exportProfile, importProfile } from './cli/migrate.ts';
-import { isSnapshotFlag, runSnapshotCommand } from './cli/snapshot.ts';
+import type { PopupInputStream, PopupOutputStream } from './cli/snapshot-popup.ts';
+import { isSnapshotFlag, parseSnapshotArgs, runSnapshotCommand, runSnapshotPopupCommand } from './cli/snapshot.ts';
 import { isMainEntry } from './core/paths.ts';
 
 export { runInstallerCli };
+
+export interface CliAsyncEntryOptions {
+  readonly stdin?: PopupInputStream;
+  readonly stdout?: PopupOutputStream;
+  readonly stderr?: { write(chunk: string): boolean };
+  readonly env?: NodeJS.ProcessEnv;
+  readonly cliHome?: string;
+  readonly geminiRoot?: string;
+  readonly cwd?: string;
+  readonly escTimeoutMs?: number;
+}
 
 function writeOut(text: string): void {
   process.stdout.write(text);
@@ -34,7 +46,13 @@ Commands:
   doctor / status Check installation and live HUD health
 
 Options:
+  -p, --popup     Open interactive snapshot overlay on a TTY (degrades when piped)
+  --keybindings   Print terminal popup shortcut snippets (alias: --keymap)
   -h, --help      Show help for agy-hud or a subcommand
+
+Quick inspection:
+  !agy-hud        Inspect active session from the Antigravity CLI prompt box
+  Cmd+Click       Open per-session Markdown snapshot from '+N more' / 'snapshot' links
 `);
 }
 
@@ -42,15 +60,21 @@ function printConfigureHelp(): void {
   writeOut(`agy-hud configure
 
 Usage:
-  agy-hud configure [options]
+  agy-hud configure [<preset>] [options]
+
+Presets:
+  zen | minimal | compact | swarm | full
 
 Options:
   --show                       Show current hud-config.json (default)
-  --preset <full|compact|minimal>
-                               Set display preset
-  --set <key>=<value>          Set a specific config key (repeatable)
-  --reset                      Reset hud-config.json to defaults
+  --preset <preset>            Seed lines and segments from a persona preset
+  --enable <id,...>            Enable Line Module(s) or Inline Segment(s) (repeatable)
+  --disable <id,...>           Disable Line Module(s) or Inline Segment(s) (repeatable)
+  --order <lineId,...>         Set explicit ordered Line Modules list
+  --set <key>=<value>          Set osc8Links, maxAgentChips, segments.<id>, or legacy show* alias
+  --reset                      Reset hud-config.json to compact defaults
   --json                       Emit JSON output
+  -i, --interactive            Launch interactive configuration editor
   -h, --help                   Show this help
 `);
 }
@@ -117,6 +141,11 @@ function runConfigureCommand(args: readonly string[]): void {
   if (parsed.help) {
     printConfigureHelp();
     return;
+  }
+  if (parsed.interactive) {
+    throw new Error(
+      'Interactive configure TUI (-i/--interactive) is not yet enabled; pass a preset or --enable/--disable/--order/--set flags instead.',
+    );
   }
   const result = configureHud(parsed.options);
   if (parsed.json || result.action === 'show') {
@@ -214,7 +243,41 @@ export function runCliEntry(argv: readonly string[] = process.argv.slice(2)): nu
   }
 }
 
+function resolveInteractiveSnapshotArgs(argv: readonly string[]): readonly string[] | null {
+  const command = argv[0];
+  if (!command) return null;
+  if (command === 'snapshot' || command === 'snap') {
+    return argv.slice(1);
+  }
+  if (isSnapshotFlag(command)) {
+    return argv;
+  }
+  return null;
+}
+
+export async function runCliEntryAsync(
+  argv: readonly string[] = process.argv.slice(2),
+  options: CliAsyncEntryOptions = {},
+): Promise<number> {
+  const errStream = options.stderr ?? process.stderr;
+  const snapArgs = resolveInteractiveSnapshotArgs(argv);
+  if (snapArgs !== null) {
+    try {
+      const parsed = parseSnapshotArgs(snapArgs);
+      if (!parsed.help && !parsed.listSessions && !parsed.json && parsed.keybindings === undefined && parsed.popup) {
+        return await runSnapshotPopupCommand(snapArgs, options);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errStream.write(`Error: ${message}\n`);
+      return 1;
+    }
+  }
+  return runCliEntry(argv);
+}
+
 if (isMainEntry(import.meta.url)) {
-  const code = runCliEntry(process.argv.slice(2));
-  if (code !== 0) process.exitCode = code;
+  void runCliEntryAsync(process.argv.slice(2)).then((code) => {
+    if (code !== 0) process.exitCode = code;
+  });
 }

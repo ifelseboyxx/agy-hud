@@ -9,8 +9,14 @@ import {
   type ResolveSessionOptions,
 } from '../collectors/session-index.ts';
 import { resolveProfileRoots } from '../core/paths.ts';
-import { fmtTokens } from '../render/ansi.ts';
 import type { ActivitySnapshot, SessionRecord, SessionSourceFilter, SnapshotSection } from '../snapshot-types.ts';
+import { type KeybindingsTarget, parseKeybindingsTarget, renderKeybindings } from './keybindings.ts';
+import { type PopupInputStream, type PopupOutputStream, runSnapshotPopup } from './snapshot-popup.ts';
+import {
+  renderStructuredInspector,
+  shouldUseSnapshotColor,
+  type StructuredInspectorOptions,
+} from './snapshot-render.ts';
 
 const VALID_SOURCES: ReadonlySet<string> = new Set(['auto', 'cli', 'app', 'all']);
 
@@ -40,14 +46,24 @@ Options:
   -s, --session <id|prefix>    Inspect a specific session by full ID or unique >=4-char prefix
   --sessions                   List active and recent top-level sessions across surfaces
   --source <auto|cli|app|all>  Filter discovery source (default: auto; app includes app + ide)
+  -p, --popup                  Open interactive single-key-dismiss overlay on a TTY (degrades when piped)
+  --keybindings [target]       Print terminal popup shortcut snippets (alias: --keymap)
+                               Targets: tmux | kitty | wezterm | ghostty | iterm2 | all
   --json                       Emit ANSI-free structured JSON output
   --no-color                   Disable ANSI colors in text output
   -h, --help                   Show this help
+
+Channels:
+  !agy-hud                     One-shot Structured Inspector in the Antigravity CLI prompt box
+  agy-hud -p                   Interactive popup overlay (q/Esc/Enter to close, 1-4/a filter, r reload)
+  Cmd+Click                    Open per-session Markdown snapshot from status line '+N more' / 'snapshot'
 `;
 
 export interface SnapshotCliArgs {
   help: boolean;
   listSessions: boolean;
+  popup: boolean;
+  keybindings?: KeybindingsTarget | 'auto';
   json: boolean;
   noColor: boolean;
   source: SessionSourceFilter;
@@ -57,6 +73,16 @@ export interface SnapshotCliArgs {
 
 export interface SnapshotRunOptions extends Omit<ResolveSessionOptions, 'session' | 'source'> {
   env?: NodeJS.ProcessEnv;
+  width?: number;
+  binDir?: string;
+  pluginRoot?: string;
+  platform?: NodeJS.Platform;
+}
+
+export interface SnapshotPopupCommandOptions extends SnapshotRunOptions {
+  stdin?: PopupInputStream;
+  stdout?: PopupOutputStream;
+  escTimeoutMs?: number;
 }
 
 export interface SnapshotRunResult {
@@ -73,6 +99,12 @@ export function isSnapshotFlag(arg: string): boolean {
     arg === '--sessions' ||
     arg === '--source' ||
     arg.startsWith('--source=') ||
+    arg === '-p' ||
+    arg === '--popup' ||
+    arg === '--keybindings' ||
+    arg.startsWith('--keybindings=') ||
+    arg === '--keymap' ||
+    arg.startsWith('--keymap=') ||
     arg === '--json' ||
     arg === '--no-color'
   );
@@ -89,6 +121,8 @@ function parseSourceFlagValue(raw: string): SessionSourceFilter {
 export function parseSnapshotArgs(argv: readonly string[]): SnapshotCliArgs {
   let help = false;
   let listSessions = false;
+  let popup = false;
+  let keybindings: KeybindingsTarget | 'auto' | undefined;
   let json = false;
   let noColor = false;
   let source: SessionSourceFilter = 'auto';
@@ -105,6 +139,30 @@ export function parseSnapshotArgs(argv: readonly string[]): SnapshotCliArgs {
     }
     if (arg === '--sessions') {
       listSessions = true;
+      continue;
+    }
+    if (arg === '-p' || arg === '--popup') {
+      popup = true;
+      continue;
+    }
+    if (arg === '--keybindings' || arg === '--keymap') {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('-')) {
+        keybindings = parseKeybindingsTarget(next);
+        i += 1;
+      } else {
+        keybindings = 'auto';
+      }
+      continue;
+    }
+    if (arg.startsWith('--keybindings=') || arg.startsWith('--keymap=')) {
+      const eqIdx = arg.indexOf('=');
+      const prefix = arg.slice(0, eqIdx + 1);
+      const val = arg.slice(eqIdx + 1);
+      if (val.length === 0) {
+        throw new Error(`Missing value after ${prefix}`);
+      }
+      keybindings = parseKeybindingsTarget(val);
       continue;
     }
     if (arg === '--json') {
@@ -168,6 +226,8 @@ export function parseSnapshotArgs(argv: readonly string[]): SnapshotCliArgs {
   return {
     help,
     listSessions,
+    popup,
+    keybindings,
     json,
     noColor,
     source,
@@ -202,113 +262,20 @@ export function formatSessionsTable(sessions: readonly SessionRecord[], source: 
   return `${lines.join('\n')}\n`;
 }
 
-function formatSnapshotTelemetryStrip(snapshot: ActivitySnapshot): string {
-  const tel = snapshot.telemetry;
-  if (tel.genCount <= 0 && tel.ctxUsed === null && tel.tps === null) return '';
-  const parts: string[] = [];
-  if (snapshot.model.length > 0) parts.push(snapshot.model);
-  if (tel.ctxUsed !== null && tel.ctxMax !== null && tel.ctxMax > 0) {
-    const pct = Math.min(100, Math.round((tel.ctxUsed / tel.ctxMax) * 100));
-    parts.push(`Ctx ${fmtTokens(tel.ctxUsed)}/${fmtTokens(tel.ctxMax)} (${pct}%)`);
-  }
-  if (tel.tps !== null) parts.push(`${tel.tps.toFixed(1)} t/s`);
-  if (tel.ttft !== null) parts.push(`TTFT ${tel.ttft.toFixed(2)}s`);
-  if (tel.cachePct !== null) parts.push(`Cache ${Math.round(tel.cachePct)}%`);
-  return parts.join(' | ');
+export function formatSnapshotText(
+  snapshot: ActivitySnapshot,
+  sections: readonly SnapshotSection[] = [],
+  options: Omit<StructuredInspectorOptions, 'sections'> = {},
+): string {
+  return renderStructuredInspector(snapshot, { ...options, sections });
 }
 
-function includesSnapshotSection(active: ReadonlySet<SnapshotSection>, section: SnapshotSection): boolean {
-  return active.size === 0 || active.has(section);
-}
-
-export function formatSnapshotText(snapshot: ActivitySnapshot, sections: readonly SnapshotSection[] = []): string {
-  const active = new Set<SnapshotSection>(sections);
-  const badge = formatSurfaceBadge(snapshot.surface);
-  const wsName = snapshot.workspace.length > 0 ? path.basename(snapshot.workspace) || snapshot.workspace : '-';
-  const lines: string[] = [
-    `[${badge}] Activity Snapshot  ${snapshot.shortId}  "${snapshot.title}"`,
-    `Workspace: ${wsName} | Matched via ${snapshot.resolutionTier} | ${snapshot.totalToolCalls} calls, ${snapshot.skills.length} skills, ${snapshot.mcps.length} MCPs, ${snapshot.agents.length} ${snapshot.agentsKind}`,
-  ];
-
-  const telLine = formatSnapshotTelemetryStrip(snapshot);
-  if (telLine.length > 0) lines.push(`Telemetry: ${telLine}`);
-  if (snapshot.siblingHint.length > 0) lines.push(`Note: ${snapshot.siblingHint}`);
-
-  if (includesSnapshotSection(active, 'tools')) {
-    lines.push('');
-    lines.push(
-      `-- Tools (${snapshot.runningTools.length} running, ${snapshot.completedTools.length} types, ${snapshot.totalToolCalls} calls) --`,
-    );
-    if (snapshot.runningTools.length === 0 && snapshot.completedTools.length === 0) {
-      lines.push('  (none)');
-    }
-    for (const rt of snapshot.runningTools) {
-      const tgt = rt.target.length > 0 ? `  ${rt.target}` : '';
-      lines.push(`  ◐ ${rt.disp}  running${tgt}`);
-    }
-    for (const ct of snapshot.completedTools) {
-      const tgt = ct.latestTarget.length > 0 ? `  ${ct.latestTarget}` : '';
-      lines.push(`  ✓ ${ct.disp}  x${ct.count}${tgt}`);
-    }
-  }
-
-  if (includesSnapshotSection(active, 'skills')) {
-    lines.push('');
-    lines.push(`-- Skills (${snapshot.skills.length}) --`);
-    lines.push(
-      snapshot.skills.length === 0 ? '  (none)' : `  ${snapshot.skills.map((s, i) => `${i + 1}. ${s}`).join('  ')}`,
-    );
-  }
-
-  if (includesSnapshotSection(active, 'mcps')) {
-    lines.push('');
-    lines.push(`-- MCP Servers (${snapshot.mcps.length}) --`);
-    if (snapshot.mcps.length === 0) {
-      lines.push('  (none)');
-    }
-    for (const srv of snapshot.mcps) {
-      const subs = srv.subtools.map((st) => `${st.name} x${st.count}`).join(', ');
-      lines.push(`  ✓ ${srv.server} (${srv.totalCalls})  ${subs}`);
-    }
-  }
-
-  if (includesSnapshotSection(active, 'agents')) {
-    const heading = snapshot.agentsKind === 'swarm' ? 'Swarm' : 'Agents';
-    lines.push('');
-    lines.push(`-- ${heading} (${snapshot.agents.length}) --`);
-    if (snapshot.agents.length === 0) {
-      lines.push('  (none)');
-    }
-    for (const a of snapshot.agents) {
-      const icon = a.state === 'working' ? '◐' : a.state === 'waiting' ? '◌' : '✓';
-      lines.push(`  ${icon} ${a.name}  ${a.type}  ${a.model}  ${a.state} (${a.ageLabel})`);
-    }
-  }
-
-  return `${lines.join('\n')}\n`;
-}
-
-export function runSnapshotCommand(argv: readonly string[], options: SnapshotRunOptions = {}): SnapshotRunResult {
-  const parsed = parseSnapshotArgs(argv);
-  if (parsed.help) {
-    return { output: SNAPSHOT_HELP_TEXT };
-  }
-
+function loadSnapshotForParsedArgs(
+  parsed: SnapshotCliArgs,
+  options: SnapshotRunOptions,
+): { snapshot: ActivitySnapshot; sessions: SessionRecord[] } {
   const env = options.env ?? process.env;
   const { cliHome, geminiRoot } = resolveProfileRoots(options.cliHome, options.geminiRoot, env);
-
-  if (parsed.listSessions) {
-    const all = discoverSessions({ ...options, cliHome, geminiRoot, env });
-    const filtered = all.filter((s) => matchesSourceFilter(s.surface, parsed.source));
-    if (parsed.json) {
-      return {
-        output: `${JSON.stringify({ source: parsed.source, sessions: filtered }, null, 2)}\n`,
-        sessions: filtered,
-      };
-    }
-    return { output: formatSessionsTable(filtered, parsed.source), sessions: filtered };
-  }
-
   const resolved = resolveSession({
     ...options,
     cliHome,
@@ -323,9 +290,71 @@ export function runSnapshotCommand(argv: readonly string[], options: SnapshotRun
     siblings: resolved.siblings,
     nowMs: options.nowMs,
   });
+  return { snapshot, sessions: resolved.sessions };
+}
 
-  if (parsed.json) {
-    return { output: `${JSON.stringify(snapshot, null, 2)}\n`, snapshot, sessions: resolved.sessions };
+export function runSnapshotCommand(argv: readonly string[], options: SnapshotRunOptions = {}): SnapshotRunResult {
+  const parsed = parseSnapshotArgs(argv);
+  if (parsed.help) {
+    return { output: SNAPSHOT_HELP_TEXT };
   }
-  return { output: formatSnapshotText(snapshot, parsed.sections), snapshot, sessions: resolved.sessions };
+
+  const env = options.env ?? process.env;
+  if (parsed.keybindings !== undefined) {
+    return {
+      output: renderKeybindings({
+        target: parsed.keybindings,
+        env,
+        color: shouldUseSnapshotColor(parsed.noColor, env),
+        binDir: options.binDir,
+        pluginRoot: options.pluginRoot,
+        platform: options.platform,
+      }),
+    };
+  }
+
+  const { cliHome, geminiRoot } = resolveProfileRoots(options.cliHome, options.geminiRoot, env);
+  if (parsed.listSessions) {
+    const all = discoverSessions({ ...options, cliHome, geminiRoot, env });
+    const filtered = all.filter((s) => matchesSourceFilter(s.surface, parsed.source));
+    if (parsed.json) {
+      return {
+        output: `${JSON.stringify({ source: parsed.source, sessions: filtered }, null, 2)}\n`,
+        sessions: filtered,
+      };
+    }
+    return { output: formatSessionsTable(filtered, parsed.source), sessions: filtered };
+  }
+
+  const { snapshot, sessions } = loadSnapshotForParsedArgs(parsed, options);
+  if (parsed.json) {
+    return { output: `${JSON.stringify(snapshot, null, 2)}\n`, snapshot, sessions };
+  }
+  return {
+    output: formatSnapshotText(snapshot, parsed.sections, {
+      width: options.width,
+      color: shouldUseSnapshotColor(parsed.noColor, env),
+      env,
+    }),
+    snapshot,
+    sessions,
+  };
+}
+
+export async function runSnapshotPopupCommand(
+  argv: readonly string[],
+  options: SnapshotPopupCommandOptions = {},
+): Promise<number> {
+  const parsed = parseSnapshotArgs(argv);
+  const env = options.env ?? process.env;
+  return await runSnapshotPopup({
+    loadSnapshot: () => loadSnapshotForParsedArgs(parsed, options).snapshot,
+    initialSections: parsed.sections,
+    color: shouldUseSnapshotColor(parsed.noColor, env),
+    noColor: parsed.noColor,
+    env,
+    stdin: options.stdin,
+    stdout: options.stdout,
+    escTimeoutMs: options.escTimeoutMs,
+  });
 }

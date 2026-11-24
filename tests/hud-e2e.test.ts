@@ -108,8 +108,28 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.equal(cfgShow.status, 0, cfgShow.stderr);
     const shown = JSON.parse(cfgShow.stdout) as Record<string, unknown>;
     assert.equal(shown.preset, 'compact');
-    assert.equal(shown.showCost, false);
+    assert.equal((shown.segments as Record<string, unknown>).cost, false);
     assert.equal(shown.maxAgentChips, 3);
+    assert.deepEqual(shown.lines, ['mode', 'identity', 'usage', 'activity']);
+
+    const zenSet = runNodeScript(
+      DIST_CLI,
+      ['configure', 'zen', '--enable', 'tools', '--order', 'identity,tools', '--set', 'osc8Links=false', '--json'],
+      srcEnv,
+    );
+    assert.equal(zenSet.status, 0, zenSet.stderr);
+    const zenJson = JSON.parse(zenSet.stdout) as Record<string, unknown>;
+    assert.equal(zenJson.preset, 'zen');
+    assert.equal(zenJson.maxAgentChips, 3);
+    assert.equal(zenJson.osc8Links, false);
+    assert.deepEqual(zenJson.lines, ['identity', 'tools']);
+
+    const restoreCompact = runNodeScript(
+      DIST_CLI,
+      ['configure', 'compact', '--set', 'showCost=false', '--set', 'maxAgentChips=3', '--set', 'osc8Links=true'],
+      srcEnv,
+    );
+    assert.equal(restoreCompact.status, 0, restoreCompact.stderr);
 
     const badCfg = runNodeScript(DIST_CLI, ['configure', '--set', 'badKey=true'], srcEnv);
     assert.notEqual(badCfg.status, 0);
@@ -208,7 +228,7 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.equal(typeof mod.configureHud, 'function');
     assert.equal(typeof mod.exportProfile, 'function');
     assert.equal(typeof mod.importProfile, 'function');
-    assert.equal(mod.DEFAULT_HUD_CONFIG.preset, 'full');
+    assert.equal(mod.DEFAULT_HUD_CONFIG.preset, 'compact');
 
     const root = makeTempDir('agy-hud-e2e-lib-');
     const rendered = mod.renderHudFromData(
@@ -306,5 +326,43 @@ void describe('agy-hud built artifacts e2e', async () => {
       result: { structuredContent: { unchanged: boolean; etag: string } };
     };
     assert.deepEqual(pollReply.result.structuredContent, { unchanged: true, etag });
+  });
+
+  await it('degrades built dist/cli.mjs -p to one-shot Structured Inspector when piped', () => {
+    const root = makeTempDir('agy-hud-e2e-snap-');
+    const env = makeIsolatedEnv(root);
+    const cacheDir = path.join(root, '.gemini', 'antigravity-cli', 'cache');
+    mkdirSync(cacheDir, { recursive: true });
+    writeJson(path.join(cacheDir, 'agy_hud_snapshot_e2e-11112222.json'), {
+      v: 1,
+      convId: 'e2e-11112222',
+      conversationTitle: 'Built CLI Inspector',
+      agyPid: process.pid,
+      cwd: root,
+      workspaceCurrentDir: root,
+      workspaceProjectDir: root,
+      subagents: [],
+      taskCount: null,
+      mdDigest: null,
+      updatedAtMs: Date.now(),
+    });
+
+    const popupRes = runNodeScript(DIST_CLI, ['-p', '--no-color'], env);
+    assert.equal(popupRes.status, 0, popupRes.stderr);
+    assert.equal(popupRes.stdout.includes('\x1b[?1049h'), false);
+    assert.ok(popupRes.stdout.includes('[CLI] Activity Snapshot'));
+    assert.ok(popupRes.stdout.includes('Built CLI Inspector'));
+  });
+
+  await it('prints all five terminal templates from built dist/cli.mjs --keybindings all', () => {
+    const root = makeTempDir('agy-hud-e2e-kb-');
+    const env = makeIsolatedEnv(root);
+    const kbRes = runNodeScript(DIST_CLI, ['--keybindings', 'all', '--no-color'], env);
+    assert.equal(kbRes.status, 0, kbRes.stderr);
+    assert.ok(kbRes.stdout.includes('display-popup'));
+    assert.ok(kbRes.stdout.includes('launch --type=overlay --cwd=current'));
+    assert.ok(kbRes.stdout.includes('wezterm.action.SplitPane'));
+    assert.ok(kbRes.stdout.includes('text:!agy-hud\\n'));
+    assert.ok(kbRes.stdout.includes('Hotkey Window'));
   });
 });

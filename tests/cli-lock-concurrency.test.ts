@@ -118,9 +118,9 @@ void describe('CLI configure and import-profile cliHomeLock isolation', async ()
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.equal(cfgSettled, false, 'configure must wait on cliHomeLock while install holds it');
 
-    // Causal state barrier: write showQuota=false while cliHomeLock is still held, right before releasing install.
-    // configure can only preserve showQuota=false if it read hud-config.json AFTER cliHomeLock was released.
-    writeJson(hudConfigPath, { preset: 'minimal', showCost: true, showQuota: false });
+    // Causal state barrier: write custom maxAgentChips and osc8Links while cliHomeLock is held, right before releasing install.
+    // configure can only preserve them across --preset compact if it read hud-config.json AFTER cliHomeLock was released.
+    writeJson(hudConfigPath, { preset: 'minimal', maxAgentChips: 5, osc8Links: false });
     writeFileSync(releaseFlag, 'go', 'utf8');
     const [resInstall, resCfg] = await Promise.all([procInstall, procCfg]);
     assert.equal(resInstall.status, 0, resInstall.stderr);
@@ -128,8 +128,9 @@ void describe('CLI configure and import-profile cliHomeLock isolation', async ()
 
     const persisted = readJson(hudConfigPath);
     assert.equal(persisted.preset, 'compact');
-    assert.equal(persisted.showCost, false);
-    assert.equal(persisted.showQuota, false, 'configure must merge against post-lock hud-config.json state');
+    assert.equal((persisted.segments as Record<string, unknown>).cost, false);
+    assert.equal(persisted.maxAgentChips, 5, 'configure must merge against post-lock hud-config.json state');
+    assert.equal(persisted.osc8Links, false, 'configure must preserve post-lock osc8Links across preset switch');
   });
 
   await it('validates hud-config upfront without creating cliHome and locks MCP-only import-profile --merge-mcp', async () => {

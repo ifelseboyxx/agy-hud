@@ -2,23 +2,35 @@ import path from 'node:path';
 
 import { DEFAULT_CLI_LOCK_TIMEOUT_MS, withCliHomeLockSync } from '../core/file-lock.ts';
 import {
+  applyHudLineToggle,
+  applyLegacyHudBoolean,
+  buildPresetConfig,
+  cloneHudConfig,
   HUD_BOOLEAN_KEYS,
+  HUD_LINE_IDS,
+  HUD_SEGMENT_IDS,
   hydrateHudConfig,
   isHudBooleanKey,
+  isHudLineId,
   isHudPreset,
+  isHudSegmentId,
   MAX_AGENT_CHIPS_LIMIT,
+  PRESET_TEMPLATES,
   VALID_HUD_PRESETS,
   type HudBooleanKey,
 } from '../core/hud-config.ts';
 import { resolveCliHome } from '../core/paths.ts';
 import { hasDanglingSymlinkInChainSync, readJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
-import { DEFAULT_HUD_CONFIG, type HudConfig, type HudPreset } from '../types.ts';
+import { DEFAULT_HUD_CONFIG, type HudConfig, type HudLineId, type HudPreset } from '../types.ts';
 
 export {
   HUD_BOOLEAN_KEYS,
+  HUD_LINE_IDS,
+  HUD_SEGMENT_IDS,
   hydrateHudConfig,
   isHudPreset,
   MAX_AGENT_CHIPS_LIMIT,
+  PRESET_TEMPLATES,
   VALID_HUD_PRESETS,
   type HudBooleanKey,
 };
@@ -26,7 +38,11 @@ export {
 export interface ConfigureHudOptions {
   cliHome?: string;
   show?: boolean;
+  interactive?: boolean;
   preset?: HudPreset;
+  enable?: readonly string[];
+  disable?: readonly string[];
+  order?: readonly string[];
   sets?: readonly string[];
   reset?: boolean;
   env?: NodeJS.ProcessEnv;
@@ -42,6 +58,7 @@ export interface ConfigureHudResult {
 export interface ConfigureCliArgs {
   help: boolean;
   json: boolean;
+  interactive: boolean;
   options: ConfigureHudOptions;
 }
 
@@ -62,6 +79,48 @@ function parseMaxAgentChips(rawVal: string): number {
   return parsed;
 }
 
+function applyPresetSeed(config: HudConfig, preset: HudPreset): void {
+  const tpl = PRESET_TEMPLATES[preset];
+  config.preset = preset;
+  config.lines = [...tpl.lines];
+  config.segments = { ...tpl.segments };
+}
+
+function applyOrderList(config: HudConfig, orderIds: readonly string[]): void {
+  if (orderIds.length === 0) {
+    throw new Error(`Empty --order list (expected line IDs: ${HUD_LINE_IDS.join(', ')})`);
+  }
+  const nextLines: HudLineId[] = [];
+  const seen = new Set<HudLineId>();
+  for (const rawId of orderIds) {
+    const id = rawId.trim();
+    if (!isHudLineId(id)) {
+      throw new Error(`Invalid line ID '${id}' for --order (expected: ${HUD_LINE_IDS.join(' | ')})`);
+    }
+    if (!seen.has(id)) {
+      seen.add(id);
+      nextLines.push(id);
+    }
+  }
+  config.lines = nextLines;
+}
+
+function applyModuleToggle(config: HudConfig, rawId: string, enabled: boolean): void {
+  const id = rawId.trim();
+  if (isHudLineId(id)) {
+    config.lines = applyHudLineToggle(config.lines, id, enabled);
+    return;
+  }
+  const segId = id.startsWith('segments.') ? id.slice('segments.'.length) : id;
+  if (isHudSegmentId(segId)) {
+    config.segments[segId] = enabled;
+    return;
+  }
+  throw new Error(
+    `Unknown module or segment '${id}'. Valid lines: ${HUD_LINE_IDS.join(', ')}; valid segments: ${HUD_SEGMENT_IDS.join(', ')}`,
+  );
+}
+
 function applySetAssignment(config: HudConfig, expr: string): void {
   const eqIdx = expr.indexOf('=');
   if (eqIdx <= 0 || eqIdx === expr.length - 1) {
@@ -77,7 +136,7 @@ function applySetAssignment(config: HudConfig, expr: string): void {
     if (!isHudPreset(rawVal)) {
       throw new Error(`Invalid preset '${rawVal}' (expected: ${VALID_HUD_PRESETS.join(' | ')})`);
     }
-    config.preset = rawVal;
+    applyPresetSeed(config, rawVal);
     return;
   }
 
@@ -86,13 +145,58 @@ function applySetAssignment(config: HudConfig, expr: string): void {
     return;
   }
 
-  if (isHudBooleanKey(key)) {
-    config[key] = parseBooleanValue(key, rawVal);
+  if (key === 'osc8Links') {
+    config.osc8Links = parseBooleanValue(key, rawVal);
     return;
   }
 
-  const validKeys = ['preset', ...HUD_BOOLEAN_KEYS, 'maxAgentChips'].join(', ');
+  if (key.startsWith('segments.')) {
+    const segKey = key.slice('segments.'.length);
+    if (isHudSegmentId(segKey)) {
+      config.segments[segKey] = parseBooleanValue(key, rawVal);
+      return;
+    }
+  }
+
+  if (isHudSegmentId(key)) {
+    config.segments[key] = parseBooleanValue(key, rawVal);
+    return;
+  }
+
+  if (isHudBooleanKey(key)) {
+    applyLegacyHudBoolean(config, key, parseBooleanValue(key, rawVal));
+    return;
+  }
+
+  const validKeys = [
+    'preset',
+    'maxAgentChips',
+    'osc8Links',
+    ...HUD_SEGMENT_IDS.map((id) => `segments.${id}`),
+    ...HUD_BOOLEAN_KEYS,
+  ].join(', ');
   throw new Error(`Unknown configuration key '${key}'. Valid keys: ${validKeys}`);
+}
+
+function applyConfigureMutations(config: HudConfig, options: ConfigureHudOptions): void {
+  if (options.preset !== undefined) {
+    if (!isHudPreset(options.preset)) {
+      throw new Error(`Invalid preset '${String(options.preset)}' (expected: ${VALID_HUD_PRESETS.join(' | ')})`);
+    }
+    applyPresetSeed(config, options.preset);
+  }
+  if (options.order !== undefined) {
+    applyOrderList(config, options.order);
+  }
+  for (const id of options.enable ?? []) {
+    applyModuleToggle(config, id, true);
+  }
+  for (const id of options.disable ?? []) {
+    applyModuleToggle(config, id, false);
+  }
+  for (const expr of options.sets ?? []) {
+    applySetAssignment(config, expr);
+  }
 }
 
 export function configureHud(options: ConfigureHudOptions = {}): ConfigureHudResult {
@@ -100,24 +204,23 @@ export function configureHud(options: ConfigureHudOptions = {}): ConfigureHudRes
   const cliHome = resolveCliHome(options.cliHome, env);
   const configPath = path.join(cliHome, 'hud-config.json');
 
+  const enable = options.enable ?? [];
+  const disable = options.disable ?? [];
   const sets = options.sets ?? [];
   const hasPreset = options.preset !== undefined;
-  const hasMutations = Boolean(options.reset) || hasPreset || sets.length > 0;
-
-  if (hasPreset && !isHudPreset(options.preset)) {
-    throw new Error(`Invalid preset '${String(options.preset)}' (expected: ${VALID_HUD_PRESETS.join(' | ')})`);
-  }
+  const hasOrder = options.order !== undefined;
+  const hasMutations =
+    Boolean(options.reset) || hasPreset || hasOrder || enable.length > 0 || disable.length > 0 || sets.length > 0;
 
   if (!hasMutations) {
     const current = hydrateHudConfig(readJsonObjectSync(configPath, true));
     return { configPath, config: current, changed: false, action: 'show' };
   }
 
-  // Validate assignments upfront before creating cliHome or acquiring the lock.
-  const scratch: HudConfig = { ...DEFAULT_HUD_CONFIG };
-  for (const expr of sets) {
-    applySetAssignment(scratch, expr);
-  }
+  // Validate all mutations upfront before creating cliHome or acquiring the lock.
+  const scratch = buildPresetConfig(DEFAULT_HUD_CONFIG.preset);
+  applyConfigureMutations(scratch, options);
+
   if (hasDanglingSymlinkInChainSync(cliHome)) {
     throw new Error(`Failed to read ${configPath}: dangling symbolic link`);
   }
@@ -126,15 +229,9 @@ export function configureHud(options: ConfigureHudOptions = {}): ConfigureHudRes
     cliHome,
     () => {
       const existingRaw = readJsonObjectSync(configPath, true);
-      const base = options.reset ? { ...DEFAULT_HUD_CONFIG } : hydrateHudConfig(existingRaw);
-      const next: HudConfig = { ...base };
-
-      if (options.preset !== undefined) {
-        next.preset = options.preset;
-      }
-      for (const expr of sets) {
-        applySetAssignment(next, expr);
-      }
+      const base = options.reset ? buildPresetConfig(DEFAULT_HUD_CONFIG.preset) : hydrateHudConfig(existingRaw);
+      const next = cloneHudConfig(base);
+      applyConfigureMutations(next, options);
 
       writeJsonAtomicSync(configPath, next);
       return {
@@ -150,19 +247,44 @@ export function configureHud(options: ConfigureHudOptions = {}): ConfigureHudRes
 
 function readOptionValue(argv: readonly string[], index: number, flag: string): string {
   const val = argv[index + 1];
-  if (!val || val.startsWith('-')) {
+  if (val === undefined || val.startsWith('-')) {
     throw new Error(`Missing value after ${flag}`);
   }
   return val;
 }
 
+function parseCsvIdList(raw: string, flag: string): string[] {
+  if (raw.trim().length === 0) {
+    throw new Error(`Empty value after ${flag}`);
+  }
+  const items = raw.split(',').map((part) => part.trim());
+  if (items.some((item) => item.length === 0)) {
+    throw new Error(`Empty list entry in ${flag} value '${raw}'`);
+  }
+  return items;
+}
+
 export function parseConfigureArgs(argv: readonly string[]): ConfigureCliArgs {
   let help = false;
   let json = false;
+  let interactive = false;
   let show = false;
   let reset = false;
   let preset: HudPreset | undefined;
+  const enable: string[] = [];
+  const disable: string[] = [];
+  let order: string[] | undefined;
   const sets: string[] = [];
+
+  const setPresetValue = (raw: string): void => {
+    if (!isHudPreset(raw)) {
+      throw new Error(`Invalid preset '${raw}' (expected: ${VALID_HUD_PRESETS.join(' | ')})`);
+    }
+    if (preset !== undefined) {
+      throw new Error(`Duplicate preset '${raw}' (preset '${preset}' was already specified)`);
+    }
+    preset = raw;
+  };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? '';
@@ -170,36 +292,59 @@ export function parseConfigureArgs(argv: readonly string[]): ConfigureCliArgs {
       help = true;
     } else if (arg === '--json') {
       json = true;
+    } else if (arg === '-i' || arg === '--interactive') {
+      interactive = true;
     } else if (arg === '--show') {
       show = true;
     } else if (arg === '--reset') {
       reset = true;
     } else if (arg === '--preset') {
-      const raw = readOptionValue(argv, i, '--preset');
-      if (!isHudPreset(raw)) {
-        throw new Error(`Invalid preset '${raw}' (expected: ${VALID_HUD_PRESETS.join(' | ')})`);
-      }
-      preset = raw;
+      setPresetValue(readOptionValue(argv, i, '--preset'));
       i += 1;
     } else if (arg.startsWith('--preset=')) {
-      const raw = arg.slice('--preset='.length);
-      if (!isHudPreset(raw)) {
-        throw new Error(`Invalid preset '${raw}' (expected: ${VALID_HUD_PRESETS.join(' | ')})`);
-      }
-      preset = raw;
+      setPresetValue(arg.slice('--preset='.length));
+    } else if (arg === '--enable') {
+      enable.push(...parseCsvIdList(readOptionValue(argv, i, '--enable'), '--enable'));
+      i += 1;
+    } else if (arg.startsWith('--enable=')) {
+      enable.push(...parseCsvIdList(arg.slice('--enable='.length), '--enable='));
+    } else if (arg === '--disable') {
+      disable.push(...parseCsvIdList(readOptionValue(argv, i, '--disable'), '--disable'));
+      i += 1;
+    } else if (arg.startsWith('--disable=')) {
+      disable.push(...parseCsvIdList(arg.slice('--disable='.length), '--disable='));
+    } else if (arg === '--order') {
+      order = parseCsvIdList(readOptionValue(argv, i, '--order'), '--order');
+      i += 1;
+    } else if (arg.startsWith('--order=')) {
+      order = parseCsvIdList(arg.slice('--order='.length), '--order=');
     } else if (arg === '--set') {
       sets.push(readOptionValue(argv, i, '--set'));
       i += 1;
     } else if (arg.startsWith('--set=')) {
       sets.push(arg.slice('--set='.length));
+    } else if (!arg.startsWith('-') && isHudPreset(arg)) {
+      setPresetValue(arg);
     } else {
       throw new Error(`Unknown configure option: ${arg}`);
     }
   }
 
   const options: ConfigureHudOptions = { show, reset, sets };
+  if (interactive) {
+    options.interactive = true;
+  }
   if (preset !== undefined) {
     options.preset = preset;
   }
-  return { help, json, options };
+  if (enable.length > 0) {
+    options.enable = enable;
+  }
+  if (disable.length > 0) {
+    options.disable = disable;
+  }
+  if (order !== undefined) {
+    options.order = order;
+  }
+  return { help, json, interactive, options };
 }
