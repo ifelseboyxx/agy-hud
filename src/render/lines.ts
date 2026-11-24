@@ -7,13 +7,10 @@ import {
   formatAgentsSection,
   formatRuntimeBadges,
 } from '../collectors/agents.ts';
-import {
-  detectAgyFlags,
-  detectGitBranch,
-  getSessionElapsedSeconds,
-  readCliSettings,
-  readHudConfig,
-} from '../collectors/settings.ts';
+import { detectAgyFlags, detectAgyProcess } from '../collectors/proc.ts';
+import { resolveConversationId } from '../collectors/safe-path.ts';
+import { detectGitBranch, getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../collectors/settings.ts';
+import { readSnapshotEnvelope, writeSnapshotEnvelope } from '../collectors/snapshot-envelope.ts';
 import {
   formatContextCapacity,
   loadSessionTelemetry,
@@ -76,6 +73,7 @@ export interface RenderHudOptions {
   agentsSummary?: AgentsSummary;
   todos?: TodoSummary | null;
   nowSec?: number;
+  agyPid?: number | null;
   bypass?: boolean;
   cliMode?: string;
   branch?: string;
@@ -374,10 +372,27 @@ export function renderHudLines(cliHome: string, data: StatusLineData, options?: 
   const todosLine = config.showTodosLine ? formatTodosLine(todos) : '';
   const hasTodosLine = todosLine.length > 0;
   const nowSec = options?.nowSec ?? Date.now() / 1000;
+  const convId = resolveConversationId(effectiveData);
+  let resolvedBypass = options?.bypass;
+  let resolvedCliMode = options?.cliMode;
+  if (convId !== null) {
+    const existingEnvelope = readSnapshotEnvelope(cliHome, convId);
+    let agyPid = options?.agyPid ?? null;
+    if (options?.agyPid === undefined) {
+      const procInfo = detectAgyProcess(cliHome, { knownLiveAgyPid: existingEnvelope?.agyPid ?? null });
+      agyPid = procInfo.agyPid;
+      resolvedBypass ??= procInfo.bypass;
+      resolvedCliMode ??= procInfo.cliMode;
+    }
+    writeSnapshotEnvelope(cliHome, effectiveData, agyPid, { nowMs: Math.round(nowSec * 1000) });
+  }
 
   const lines: string[] = [];
   if (config.showModeLine) {
-    const modeLine = buildModeLine(cliHome, effectiveData, cliSettings, options);
+    const modeLine = buildModeLine(cliHome, effectiveData, cliSettings, {
+      bypass: resolvedBypass,
+      cliMode: resolvedCliMode,
+    });
     if (modeLine.length > 0) {
       lines.push(modeLine);
     }
