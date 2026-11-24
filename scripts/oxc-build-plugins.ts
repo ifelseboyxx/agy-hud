@@ -6,7 +6,7 @@ import { isolatedDeclaration } from 'oxc-transform';
 import type { Plugin, ResolvedConfig } from 'vite';
 
 const SHEBANG_RE = /^(#![^\r\n]*)\r?\n/;
-const EXECUTABLE_BINS = new Set(['hud.mjs', 'cli.mjs']);
+const EXECUTABLE_BINS = new Set(['hud.mjs', 'cli.mjs', 'mcp-hud.mjs']);
 
 function extractShebangFromFile(filePath: string | null | undefined): string {
   if (!filePath || !existsSync(filePath)) return '';

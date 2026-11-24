@@ -18,6 +18,7 @@ export const INSTALL_SCRIPT: string = path.join(REPO_ROOT, 'scripts', 'install.m
 export const DIST_CLI: string = path.join(REPO_ROOT, 'dist', 'cli.mjs');
 export const DIST_HUD: string = path.join(REPO_ROOT, 'dist', 'hud.mjs');
 export const DIST_INDEX: string = path.join(REPO_ROOT, 'dist', 'index.mjs');
+export const DIST_MCP_HUD: string = path.join(REPO_ROOT, 'dist', 'mcp-hud.mjs');
 
 export interface ScriptResult {
   status: number | null;

@@ -199,6 +199,47 @@ function applyConfigureMutations(config: HudConfig, options: ConfigureHudOptions
   }
 }
 
+export function loadInteractiveDraftConfig(options: ConfigureHudOptions = {}): HudConfig {
+  const env = options.env ?? process.env;
+  const cliHome = resolveCliHome(options.cliHome, env);
+  const configPath = path.join(cliHome, 'hud-config.json');
+  const existingRaw = readJsonObjectSync(configPath, true);
+  const base = options.reset ? buildPresetConfig(DEFAULT_HUD_CONFIG.preset) : hydrateHudConfig(existingRaw);
+  const next = cloneHudConfig(base);
+  applyConfigureMutations(next, options);
+  return next;
+}
+
+export function writeHudConfigAtomic(
+  config: HudConfig,
+  options: { readonly cliHome?: string; readonly env?: NodeJS.ProcessEnv } = {},
+): ConfigureHudResult {
+  const env = options.env ?? process.env;
+  const cliHome = resolveCliHome(options.cliHome, env);
+  const configPath = path.join(cliHome, 'hud-config.json');
+
+  if (hasDanglingSymlinkInChainSync(cliHome)) {
+    throw new Error(`Failed to read ${configPath}: dangling symbolic link`);
+  }
+
+  return withCliHomeLockSync(
+    cliHome,
+    () => {
+      // Re-validate existing file under the lock so corrupted JSON is never overwritten.
+      readJsonObjectSync(configPath, true);
+      const next = cloneHudConfig(config);
+      writeJsonAtomicSync(configPath, next);
+      return {
+        configPath,
+        config: next,
+        changed: true,
+        action: 'update',
+      };
+    },
+    DEFAULT_CLI_LOCK_TIMEOUT_MS,
+  );
+}
+
 export function configureHud(options: ConfigureHudOptions = {}): ConfigureHudResult {
   const env = options.env ?? process.env;
   const cliHome = resolveCliHome(options.cliHome, env);

@@ -15,6 +15,7 @@ const config: UserConfig = defineConfig({
         hud: 'src/hud-entry.ts',
         cli: 'src/cli-entry.ts',
         index: 'src/index.ts',
+        'mcp-hud': 'src/mcp/hud-mcp-entry.ts',
       },
       external: [/^node:/],
       output: {
