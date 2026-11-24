@@ -33,6 +33,7 @@
     "scripts/install.mjs",
     "skills",
     "plugin.json",
+    "mcp_config.json",
     "LICENSE",
     "README.md",
     "README.zh-CN.md"

@@ -50,9 +50,11 @@ const MAX_UNINSTALL_LOCK_RETRIES = 3;
 
 const RUNTIME_FILES: readonly string[] = [
   'plugin.json',
+  'mcp_config.json',
   'assets/logo.svg',
   'dist/hud.mjs',
   'dist/cli.mjs',
+  'dist/mcp-hud.mjs',
   'dist/index.mjs',
   'dist/index.d.mts',
   'dist/types.d.mts',
