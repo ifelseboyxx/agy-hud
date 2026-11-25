@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { isInstallerCommand, parseInstallerArgs } from '../args.ts';
 import { moveVerifiedTarget, removeVerifiedStagedPath } from '../fs-ops.ts';
-import { isSupportedNodeVersion, NODE_RANGE_LABEL } from '../settings.ts';
+import { disableCliStatusLine, isSupportedNodeVersion, NODE_RANGE_LABEL, restoreCliStatusLine } from '../settings.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const tempDirs: string[] = [];
@@ -109,5 +109,46 @@ void describe('installer CLI argument parsing for wire/unwire and shim options',
 
     assert.throws(() => parseInstallerArgs(['wire', '--bin-dir'], env), /Missing directory path after --bin-dir/);
     assert.throws(() => parseInstallerArgs(['wire', '--bin-dir='], env), /Missing directory path after --bin-dir=/);
+  });
+});
+
+void describe('installer statusLine ownership preservation for compound commands', async () => {
+  await it('preserves compound user statusLine command during disableCliStatusLine', () => {
+    const root = makeTempDir('agy-hud-compound-off-');
+    const cliHome = path.join(root, 'cli-home');
+    const targetDir = path.join(root, 'plugin');
+    const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
+    const compoundSl = { type: 'command', command: `node ${hudCmd} && echo custom`, enabled: true };
+    const settingsPath = path.join(cliHome, 'settings.json');
+    mkdirSync(cliHome, { recursive: true });
+    writeFileSync(settingsPath, `${JSON.stringify({ statusLine: compoundSl }, null, 2)}\n`, 'utf8');
+
+    const res = disableCliStatusLine(cliHome, targetDir);
+    assert.deepEqual(res, { changed: false, skippedReason: 'not-owned' });
+    const after = JSON.parse(readFileSync(settingsPath, 'utf8')) as { statusLine: unknown };
+    assert.deepEqual(after.statusLine, compoundSl);
+  });
+
+  await it('preserves compound user statusLine command during restoreCliStatusLine', () => {
+    const root = makeTempDir('agy-hud-compound-restore-');
+    const cliHome = path.join(root, 'cli-home');
+    const targetDir = path.join(root, 'plugin');
+    const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
+    const compoundSl = { type: 'command', command: `node "${hudCmd}" && echo custom`, enabled: true };
+    const settingsPath = path.join(cliHome, 'settings.json');
+    const backupPath = path.join(cliHome, 'cache', 'agy-hud-statusline-backup.json');
+    mkdirSync(path.dirname(backupPath), { recursive: true });
+    writeFileSync(settingsPath, `${JSON.stringify({ statusLine: compoundSl }, null, 2)}\n`, 'utf8');
+    writeFileSync(
+      backupPath,
+      `${JSON.stringify({ wiredCommand: hudCmd, hadStatusLine: false, previousStatusLine: null, savedAt: '2026-06-01T00:00:00Z' })}\n`,
+      'utf8',
+    );
+
+    const res = restoreCliStatusLine(cliHome, targetDir);
+    assert.deepEqual(res, { changed: false, skippedReason: 'not-owned' });
+    const after = JSON.parse(readFileSync(settingsPath, 'utf8')) as { statusLine: unknown };
+    assert.deepEqual(after.statusLine, compoundSl);
+    assert.equal(existsSync(backupPath), true);
   });
 });

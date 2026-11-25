@@ -2,7 +2,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-import { isPlainObject } from '../../core/guards.ts';
+import { isPlainObject, isSupportedNodeVersion, NODE_RANGE_LABEL } from '../../core/guards.ts';
 import {
   getSettingsPaths,
   isSameCommandPath,
@@ -22,11 +22,7 @@ import {
 } from '../../fs-utils.ts';
 import { makeRollbackError, runRollbackSteps, type RollbackStep } from './fs-ops.ts';
 
-export const NODE_RANGE_LABEL = '^22.20.0 || >=24.0.0';
-
-const NODE_LTS_MAJOR = 22;
-const NODE_LTS_MIN_MINOR = 20;
-const NODE_CURRENT_MIN_MAJOR = 24;
+export { isSupportedNodeVersion, NODE_RANGE_LABEL };
 
 export interface RestoreStatusLineResult {
   changed: boolean;
@@ -35,7 +31,7 @@ export interface RestoreStatusLineResult {
 
 export interface DisableStatusLineResult {
   changed: boolean;
-  skippedReason: 'not-owned' | null;
+  skippedReason: 'not-configured' | 'not-owned' | null;
 }
 
 export interface StatusLineInspection {
@@ -64,15 +60,6 @@ export interface WireStatusLineResult {
   writtenStatusLine: WiredStatusLineConfig;
   backupSnapshot: EntrySnapshotSync | null;
   writtenBackupContent: Buffer | null;
-}
-
-export function isSupportedNodeVersion(version: string): boolean {
-  const [rawMajor = 0, rawMinor = 0] = String(version)
-    .split('.')
-    .map((p) => Number.parseInt(p, 10));
-  const major = Number.isFinite(rawMajor) ? rawMajor : 0;
-  const minor = Number.isFinite(rawMinor) ? rawMinor : 0;
-  return (major === NODE_LTS_MAJOR && minor >= NODE_LTS_MIN_MINOR) || major >= NODE_CURRENT_MIN_MAJOR;
 }
 
 interface StatusLineRollbackSpec {
@@ -251,32 +238,19 @@ export function wireCliStatusLine(cliHome: string, targetDir: string): WireStatu
 }
 
 export function disableCliStatusLine(cliHome: string, targetDir: string): DisableStatusLineResult {
-  const { settingsPath, backupPath } = getSettingsPaths(cliHome);
-  const existing = readJsonObjectSync(settingsPath, true) ?? {};
+  const { settingsPath } = getSettingsPaths(cliHome);
+  const existing = readJsonObjectSync(settingsPath, true);
+  if (!existing || existing.statusLine === undefined || existing.statusLine === null) {
+    return { changed: false, skippedReason: 'not-configured' };
+  }
+
   const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
   const rawSl = existing.statusLine;
-  const hasConfiguredSl = rawSl !== undefined && rawSl !== null;
-
-  if (hasConfiguredSl && (!isPlainObject(rawSl) || !isSameCommandPath(rawSl.command, hudCmd))) {
+  if (!isPlainObject(rawSl) || !isSameCommandPath(rawSl.command, hudCmd)) {
     return { changed: false, skippedReason: 'not-owned' };
   }
 
-  const prevSl = isPlainObject(rawSl) ? rawSl : null;
-  if (prevSl === null) readStatusLineBackupStrict(backupPath);
-  const backupSnap = prevSl === null ? captureEntrySnapshotSync(backupPath) : null;
-  let writtenBackupContent: Buffer | null = null;
-  try {
-    if (prevSl === null) {
-      writtenBackupContent = writeBackupPayload(backupPath, hudCmd, null);
-    }
-    const nextSl = prevSl ?? { type: 'command', command: hudCmd, stack_with_default: false };
-    writeJsonAtomicSync(settingsPath, { ...existing, statusLine: { ...nextSl, enabled: false } });
-  } catch (err) {
-    if (writtenBackupContent !== null) {
-      rethrowWithRollback(err, 'restore backup', () => restoreOwnedEntrySnapshotSync(backupSnap, writtenBackupContent));
-    }
-    throw err;
-  }
+  writeJsonAtomicSync(settingsPath, { ...existing, statusLine: { ...rawSl, enabled: false } });
   return { changed: true, skippedReason: null };
 }
 

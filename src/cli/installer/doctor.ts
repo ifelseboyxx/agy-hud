@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 
 import { resolveCliHome, toComparePath } from '../../core/paths.ts';
@@ -118,19 +119,32 @@ export function runHudStdinSmoke(hudPath: string, repoRoot: string): HudSmokeRes
     terminal_width: 120,
   });
 
-  const res = spawnSync(process.execPath, [hudPath], {
-    input: sample,
-    encoding: 'utf8',
-    timeout: HUD_SMOKE_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  const durationMs = Date.now() - start;
-  if (res.error) {
-    const isTimeout = 'code' in res.error && res.error.code === 'ETIMEDOUT';
-    return { ok: false, durationMs, bytes: 0, detail: isTimeout ? 'timed out after 5s' : res.error.message };
+  const smokeRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-doctor-smoke-'));
+  const smokeEnv: NodeJS.ProcessEnv = { ...process.env, GEMINI_CLI_HOME: smokeRoot };
+  delete smokeEnv.GEMINI_HOME;
+
+  try {
+    const res = spawnSync(process.execPath, [hudPath], {
+      input: sample,
+      encoding: 'utf8',
+      timeout: HUD_SMOKE_TIMEOUT_MS,
+      windowsHide: true,
+      env: smokeEnv,
+    });
+    const durationMs = Date.now() - start;
+    if (res.error) {
+      const isTimeout = 'code' in res.error && res.error.code === 'ETIMEDOUT';
+      return { ok: false, durationMs, bytes: 0, detail: isTimeout ? 'timed out after 5s' : res.error.message };
+    }
+    const bytes = Buffer.byteLength((res.stdout ?? '').trim(), 'utf8');
+    return { ok: res.status === 0 && bytes > 0, durationMs, bytes, detail: (res.stderr ?? '').trim() };
+  } finally {
+    try {
+      rmSync(smokeRoot, { recursive: true, force: true });
+    } catch {
+      // Ignore temp smoke directory cleanup failure.
+    }
   }
-  const bytes = Buffer.byteLength((res.stdout ?? '').trim(), 'utf8');
-  return { ok: res.status === 0 && bytes > 0, durationMs, bytes, detail: (res.stderr ?? '').trim() };
 }
 
 function evaluateCliShimDoctor(

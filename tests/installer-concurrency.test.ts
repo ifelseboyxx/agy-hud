@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   createTempDirTracker,
   INSTALL_SCRIPT,
-  makeIsolatedEnv,
+  makeFastIsolatedEnv as makeIsolatedEnv,
   readJson,
   runNodeScript,
   writeJson,

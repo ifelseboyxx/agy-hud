@@ -74,6 +74,17 @@ export function makeIsolatedEnv(root: string, extra: Record<string, string> = {}
   };
 }
 
+export function makeFastIsolatedEnv(root: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  if (process.platform === 'win32' || extra.PATH !== undefined) {
+    return makeIsolatedEnv(root, extra);
+  }
+  const okBin = createFakeAgyBin(root, 'fast-ok', '  exit 0');
+  return makeIsolatedEnv(root, {
+    PATH: `${okBin}${path.delimiter}${process.env.PATH ?? ''}`,
+    ...extra,
+  });
+}
+
 export function writeJson(filePath: string, data: unknown): void {
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');

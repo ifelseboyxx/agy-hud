@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { runDoctor } from '../doctor.ts';
+import { runDoctor, runHudStdinSmoke } from '../doctor.ts';
 import { runInstallerCli } from '../index.ts';
 
 function seedMockPlugin(dir: string): void {
@@ -89,5 +89,30 @@ void describe('doctor malformed CLI shim handling', () => {
       () => runInstallerCli(['wire', '--target', targetDir, '--bin-dir', binDir, '--no-enable', '--quiet']),
       /malformed/i,
     );
+  });
+
+  void it('isolates doctor HUD stdin smoke check from the user CLI Home', () => {
+    const mockHudPath = path.join(tmpRoot, 'mock-hud.mjs');
+    writeFileSync(
+      mockHudPath,
+      [
+        "import { mkdirSync, writeFileSync } from 'node:fs';",
+        "import path from 'node:path';",
+        "const base = process.env.GEMINI_CLI_HOME || '';",
+        "const cacheDir = path.join(base, '.gemini', 'antigravity-cli', 'cache');",
+        'mkdirSync(cacheDir, { recursive: true });',
+        "writeFileSync(path.join(cacheDir, 'agy_hud_snapshot_doctor-smoke.json'), '{\"v\":1}\\n', 'utf8');",
+        "process.stdout.write(base + '\\n');",
+      ].join('\n'),
+      'utf8',
+    );
+
+    const userCliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
+    mkdirSync(userCliHome, { recursive: true });
+
+    const smoke = runHudStdinSmoke(mockHudPath, tmpRoot);
+    assert.equal(smoke.ok, true);
+    assert.equal(existsSync(path.join(userCliHome, 'cache', 'agy_hud_snapshot_doctor-smoke.json')), false);
+    assert.deepEqual(readdirSync(userCliHome), []);
   });
 });

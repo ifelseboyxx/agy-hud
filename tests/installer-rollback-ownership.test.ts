@@ -16,7 +16,7 @@ import { afterEach, describe, it } from 'node:test';
 import {
   createTempDirTracker,
   INSTALL_SCRIPT,
-  makeIsolatedEnv,
+  makeFastIsolatedEnv as makeIsolatedEnv,
   readJson,
   runNodeScript,
   writeJson,
@@ -231,12 +231,12 @@ writeFileSync(${JSON.stringify(backupPath2)}, JSON.stringify(${JSON.stringify(ex
     assert.equal(readFileSync(backupPath, 'utf8'), corruptBackupRaw);
     assert.deepEqual(readJson(settingsPath).statusLine, priorSl);
 
-    // 3. `off` when settings has no statusLine would write backup; must reject non-object JSON backup and preserve it.
+    // 3. `off` when settings has no statusLine must be a no-op without mutating settings or backup.
     writeJson(settingsPath, { model: 'Gemini 4 Carbon' });
     const nonObjectBackupRaw = '["not-an-object"]\n';
     writeFileSync(backupPath, nonObjectBackupRaw, 'utf8');
     const offRes = runNodeScript(INSTALL_SCRIPT, ['off', '--target', targetDir, '--no-enable', '--quiet'], env);
-    assert.notEqual(offRes.status, 0, 'off must reject non-object backup JSON before replacing it');
+    assert.equal(offRes.status, 0, 'off must succeed as a no-op when statusLine is not configured');
     assert.equal(readFileSync(backupPath, 'utf8'), nonObjectBackupRaw);
     assert.equal(readJson(settingsPath).statusLine, undefined);
 

@@ -371,11 +371,12 @@ function runToggle(opts: InstallerOptions, enable: boolean): void {
     const disabled = disableCliStatusLine(cliHome, resolvedDst);
     toggleAgyPlugin(opts, 'disable');
     if (!opts.quiet) {
-      writeInstallerLine(
-        disabled.changed
-          ? `Disabled agy-hud statusLine in ${settingsPath}`
-          : `Skipped statusLine disable: current statusLine does not point to this installation.`,
-      );
+      const msg = disabled.changed
+        ? `Disabled agy-hud statusLine in ${settingsPath}`
+        : disabled.skippedReason === 'not-configured'
+          ? `Skipped statusLine disable: statusLine is not configured in ${settingsPath}.`
+          : `Skipped statusLine disable: current statusLine does not point to this installation.`;
+      writeInstallerLine(msg);
     }
   });
 }
