@@ -10,8 +10,8 @@ import type { SessionRecord, SessionSurface, SnapshotEnvelope } from '../snapsho
 import { RUNNING_STEP_STATUSES } from './activity-parse.ts';
 import { readTailLines } from './agents.ts';
 import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
-import { formatRelativeAge, formatSurfaceBadge, parseEnvelopeRecord } from './snapshot-envelope.ts';
-import { openReadonlyDb } from './telemetry.ts';
+import { formatRelativeAge, formatSurfaceBadge, isExitedCliProcess, parseEnvelopeRecord } from './snapshot-envelope.ts';
+import { withReadonlyDb } from './sqlite-readonly.ts';
 
 const SUMMARY_QUERY_LIMIT = 100;
 const ENVELOPE_FILE_RE = /^agy_hud_snapshot_(.+)\.json$/;
@@ -205,9 +205,7 @@ function scanSummaryDatabases(
   for (const root of roots) {
     const dbPath = path.join(root.dir, 'conversation_summaries.db');
     if (!existsSync(dbPath)) continue;
-    const db = openReadonlyDb(dbPath);
-    if (db === null) continue;
-    try {
+    withReadonlyDb(dbPath, (db) => {
       const excludedRows = db
         .prepare('SELECT conversation_id FROM conversation_summaries WHERE nesting_depth != 0 OR killed != 0')
         .all();
@@ -264,11 +262,7 @@ function scanSummaryDatabases(
           addWorkspacePath(acc, ws);
         }
       }
-    } catch {
-      // Ignore schema or read errors on individual summary DBs.
-    } finally {
-      db.close();
-    }
+    });
   }
 }
 
@@ -310,7 +304,7 @@ function scanSnapshotEnvelopes(
       };
       candidates.set(env.convId, acc);
     } else if (acc.surface === 'cli') {
-      if (!acc.envelope || env.updatedAtMs >= acc.envelope.updatedAtMs) {
+      if (!acc.envelope || env.heartbeatAtMs >= acc.envelope.heartbeatAtMs) {
         acc.envelope = env;
       }
       if (env.conversationTitle.length > 0 && acc.title.length === 0) {
@@ -361,16 +355,52 @@ function scanColdBrainDirectories(
   }
 }
 
+function scanColdConversationDbs(
+  roots: readonly DataRootEntry[],
+  candidates: Map<string, CandidateAccumulator>,
+  excludedIds: ReadonlySet<string>,
+): void {
+  for (const root of roots) {
+    const convDir = resolveTrustedCliDir(root.dir, 'conversations');
+    if (convDir === null) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(convDir);
+    } catch {
+      continue;
+    }
+    for (const name of entries) {
+      if (!name.endsWith('.db')) continue;
+      const safeId = sanitizeSessionId(name.slice(0, -3));
+      if (safeId === null || candidates.has(safeId) || excludedIds.has(safeId)) continue;
+      const fullPath = path.join(convDir, name);
+      const st = lstatIfPresentSync(fullPath);
+      if (st === null || st.isSymbolicLink() || !st.isFile()) continue;
+      candidates.set(safeId, {
+        convId: safeId,
+        surface: root.surface,
+        dataRoot: root.dir,
+        title: '',
+        workspaces: [],
+        workspacesSeen: new Set<string>(),
+        running: false,
+        summaryModifiedMs: 0,
+        envelope: null,
+      });
+    }
+  }
+}
+
 function isLiveOrClientSession(s: SessionRecord): boolean {
   if (s.surface !== 'cli') return true;
   return s.livePid !== null || s.envelope === null || s.envelope.agyPid === null;
 }
 
 function compareSessionsDefault(a: SessionRecord, b: SessionRecord): number {
-  const runDiff = (b.running ? 1 : 0) - (a.running ? 1 : 0);
-  if (runDiff !== 0) return runDiff;
   const liveDiff = (isLiveOrClientSession(b) ? 1 : 0) - (isLiveOrClientSession(a) ? 1 : 0);
   if (liveDiff !== 0) return liveDiff;
+  const runDiff = (b.running ? 1 : 0) - (a.running ? 1 : 0);
+  if (runDiff !== 0) return runDiff;
   const timeDiff = b.updatedAtMs - a.updatedAtMs;
   if (timeDiff !== 0) return timeDiff;
   return a.convId.localeCompare(b.convId);
@@ -388,15 +418,24 @@ export function discoverSessions(options: DiscoverSessionsOptions = {}): Session
   scanSummaryDatabases(roots, candidates, excludedIds);
   scanSnapshotEnvelopes(cliHome, candidates, excludedIds);
   scanColdBrainDirectories(roots, candidates, excludedIds);
+  scanColdConversationDbs(roots, candidates, excludedIds);
 
-  const newestByLivePid = new Map<number, { convId: string; updatedAtMs: number }>();
+  const newestByLivePid = new Map<number, { convId: string; heartbeatAtMs: number; updatedAtMs: number }>();
   for (const acc of candidates.values()) {
     if (acc.surface !== 'cli' || acc.envelope === null || acc.envelope.agyPid === null) continue;
     const pid = acc.envelope.agyPid;
     if (!checkAlive(pid)) continue;
     const cur = newestByLivePid.get(pid);
-    if (!cur || acc.envelope.updatedAtMs > cur.updatedAtMs) {
-      newestByLivePid.set(pid, { convId: acc.convId, updatedAtMs: acc.envelope.updatedAtMs });
+    if (
+      !cur ||
+      acc.envelope.heartbeatAtMs > cur.heartbeatAtMs ||
+      (acc.envelope.heartbeatAtMs === cur.heartbeatAtMs && acc.envelope.updatedAtMs > cur.updatedAtMs)
+    ) {
+      newestByLivePid.set(pid, {
+        convId: acc.convId,
+        heartbeatAtMs: acc.envelope.heartbeatAtMs,
+        updatedAtMs: acc.envelope.updatedAtMs,
+      });
     }
   }
 
@@ -405,8 +444,11 @@ export function discoverSessions(options: DiscoverSessionsOptions = {}): Session
     const probe = probeTranscriptState(acc.dataRoot, acc.convId);
     const envPid = acc.envelope?.agyPid ?? null;
     const livePid = envPid !== null && newestByLivePid.get(envPid)?.convId === acc.convId ? envPid : null;
+    const isExitedCli = isExitedCliProcess(acc.surface, envPid, livePid);
     const updatedAtMs = Math.max(acc.envelope?.updatedAtMs ?? 0, probe.mtimeMs, acc.summaryModifiedMs);
-    const running = acc.running || probe.running || (livePid !== null && envelopeHasActiveSubagent(acc.envelope));
+    const running = isExitedCli
+      ? false
+      : acc.running || probe.running || (livePid !== null && envelopeHasActiveSubagent(acc.envelope));
     const badge = formatSurfaceBadge(acc.surface);
     const title = acc.title.length > 0 ? acc.title : `${badge} session ${acc.convId.slice(0, 8)}`;
 

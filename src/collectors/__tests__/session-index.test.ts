@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -17,7 +18,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { renderHudLines } from '../../render/lines.ts';
 import type { StatusLineData } from '../../types.ts';
-import { readSnapshotEnvelope, sweepStaleSnapshotFiles, writeSnapshotEnvelope } from '../session-index.ts';
+import { readSnapshotEnvelope, sweepStaleSnapshotFiles, writeSnapshotEnvelope } from '../snapshot-envelope.ts';
 import { loadSessionTelemetryFromRoot } from '../telemetry.ts';
 
 function encodeVarint(value: number): number[] {
@@ -148,24 +149,58 @@ void describe('session-index envelopes and read-only telemetry', () => {
 
     const oldJson = path.join(cacheDir, 'agy_hud_snapshot_old-1.json');
     const oldMd = path.join(cacheDir, 'agy_hud_snapshot_old-1.md');
+    const oldActivity = path.join(cacheDir, 'agy_hud_activity_old-1.json');
+    const oldActivitySnap = path.join(cacheDir, 'agy_hud_activity_snapshot_old-1.json');
+    const oldTelemetry = path.join(cacheDir, 'agy_hud_telemetry_old-1.json');
     const freshJson = path.join(cacheDir, 'agy_hud_snapshot_fresh-1.json');
     const otherFile = path.join(cacheDir, 'agy_hud_proc.json');
 
-    writeFileSync(oldJson, '{}', 'utf8');
-    writeFileSync(oldMd, '# old', 'utf8');
-    writeFileSync(freshJson, '{}', 'utf8');
-    writeFileSync(otherFile, '{}', 'utf8');
-    utimesSync(oldJson, oldSec, oldSec);
-    utimesSync(oldMd, oldSec, oldSec);
+    for (const f of [oldJson, oldMd, oldActivity, oldActivitySnap, oldTelemetry, freshJson, otherFile]) {
+      writeFileSync(f, '{}', 'utf8');
+    }
+    for (const f of [oldJson, oldMd, oldActivity, oldActivitySnap, oldTelemetry, otherFile]) {
+      utimesSync(f, oldSec, oldSec);
+    }
     utimesSync(freshJson, freshSec, freshSec);
-    utimesSync(otherFile, oldSec, oldSec);
 
     const removed = sweepStaleSnapshotFiles(cliHome, nowMs);
-    assert.equal(removed, 2);
+    assert.equal(removed, 5);
     assert.equal(existsSync(oldJson), false);
     assert.equal(existsSync(oldMd), false);
+    assert.equal(existsSync(oldActivity), false);
+    assert.equal(existsSync(oldActivitySnap), false);
+    assert.equal(existsSync(oldTelemetry), false);
     assert.equal(existsSync(freshJson), true);
     assert.equal(existsSync(otherFile), true);
+  });
+
+  void it('skips rewriting snapshot envelope when semantic payload is unchanged within heartbeat window', () => {
+    const convId = 'throttle-env-1234';
+    const data: StatusLineData = {
+      conversation_id: convId,
+      conversation_title: 'Steady Session',
+      cwd: '/tmp/ws',
+      task_count: 1,
+    };
+    const t0 = 1_700_000_000_000;
+    writeSnapshotEnvelope(cliHome, data, 4242, { nowMs: t0 });
+    const envPath = path.join(cliHome, 'cache', `agy_hud_snapshot_${convId}.json`);
+    const sentinel = new Date(1_690_000_000_000);
+    utimesSync(envPath, sentinel, sentinel);
+
+    const skipped = writeSnapshotEnvelope(cliHome, data, 4242, { nowMs: t0 + 300 });
+    assert.equal(skipped?.updatedAtMs, t0);
+    assert.equal(skipped?.heartbeatAtMs, t0);
+    assert.equal(Math.trunc(statSync(envPath).mtimeMs), 1_690_000_000_000);
+
+    const refreshed = writeSnapshotEnvelope(cliHome, data, 4242, { nowMs: t0 + 35_000 });
+    assert.equal(refreshed?.updatedAtMs, t0);
+    assert.equal(refreshed?.heartbeatAtMs, t0 + 35_000);
+    assert.notEqual(Math.trunc(statSync(envPath).mtimeMs), 1_690_000_000_000);
+
+    const semanticChanged = writeSnapshotEnvelope(cliHome, { ...data, task_count: 2 }, 4242, { nowMs: t0 + 36_000 });
+    assert.equal(semanticChanged?.updatedAtMs, t0 + 36_000);
+    assert.equal(semanticChanged?.heartbeatAtMs, t0 + 36_000);
   });
 
   void it('writes snapshot metadata envelope automatically during renderHudLines', () => {

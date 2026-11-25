@@ -20,6 +20,7 @@ export interface SnapshotEnvelope {
   taskCount: number | null;
   mdDigest: string | null;
   updatedAtMs: number;
+  heartbeatAtMs: number;
 }
 
 export interface SessionRecord {

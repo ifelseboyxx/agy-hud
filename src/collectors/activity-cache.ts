@@ -1,20 +1,14 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
+import { readFileSync } from 'node:fs';
 
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
+import { writeBufferAtomicSync } from '../fs-utils.ts';
 import type { ActivityAgentEntry, CompletedToolAggregate, TranscriptActivity, TranscriptToolEntry } from '../types.ts';
+import { parseTranscriptCacheMeta, type TranscriptCacheMeta } from './transcript-scanner.ts';
 
 export const ACTIVITY_CACHE_SCHEMA_VERSION: number = 4;
 
-export interface ActivityCacheRecord {
+export interface ActivityCacheRecord extends TranscriptCacheMeta {
   v: number;
-  path: string;
-  ino: number;
-  mtimeMs: number;
-  size: number;
-  stableOffset: number;
-  stableToolsCount: number;
-  stableAgentsCount: number;
   data: TranscriptActivity;
 }
 
@@ -98,30 +92,16 @@ function parseTranscriptActivity(value: unknown): TranscriptActivity | null {
 export function readActivityCache(cacheFile: string): ActivityCacheRecord | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(cacheFile, 'utf8'));
-    if (
-      !isPlainObject(parsed) ||
-      parsed.v !== ACTIVITY_CACHE_SCHEMA_VERSION ||
-      typeof parsed.path !== 'string' ||
-      !isFiniteNum(parsed.ino) ||
-      !isFiniteNum(parsed.mtimeMs) ||
-      !isFiniteNum(parsed.size) ||
-      !isFiniteNum(parsed.stableOffset) ||
-      !isFiniteNum(parsed.stableToolsCount) ||
-      !isFiniteNum(parsed.stableAgentsCount)
-    ) {
+    if (!isPlainObject(parsed) || parsed.v !== ACTIVITY_CACHE_SCHEMA_VERSION) {
       return null;
     }
+    const meta = parseTranscriptCacheMeta(parsed);
+    if (meta === null) return null;
     const data = parseTranscriptActivity(parsed.data);
     if (data === null) return null;
     return {
       v: parsed.v,
-      path: parsed.path,
-      ino: parsed.ino,
-      mtimeMs: parsed.mtimeMs,
-      size: parsed.size,
-      stableOffset: parsed.stableOffset,
-      stableToolsCount: parsed.stableToolsCount,
-      stableAgentsCount: parsed.stableAgentsCount,
+      ...meta,
       data,
     };
   } catch {
@@ -132,8 +112,7 @@ export function readActivityCache(cacheFile: string): ActivityCacheRecord | null
 
 export function writeActivityCache(cacheFile: string, record: ActivityCacheRecord): void {
   try {
-    mkdirSync(path.dirname(cacheFile), { recursive: true });
-    writeFileSync(cacheFile, JSON.stringify(record), 'utf8');
+    writeBufferAtomicSync(cacheFile, JSON.stringify(record));
   } catch {
     // Best-effort cache write.
   }

@@ -1,18 +1,8 @@
-import { aggregateCompletedTools } from '../collectors/activity-parse.ts';
-import { cleanAgentLabel } from '../collectors/agents.ts';
-import { formatRelativeAge, formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
+import { aggregateActivityTools, mergeActivityAgents } from '../collectors/activity-aggregate.ts';
+import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
 import type { SessionSurface } from '../snapshot-types.ts';
-import type {
-  ActivityAgentEntry,
-  AgentEntry,
-  AgentsKind,
-  AgentsSummary,
-  SessionTelemetry,
-  StatusLineData,
-  TranscriptActivity,
-  TranscriptToolEntry,
-} from '../types.ts';
+import type { AgentsSummary, SessionTelemetry, StatusLineData, TranscriptActivity } from '../types.ts';
 import { fmtTokens, stripAnsi } from './ansi.ts';
 
 const HUD_RUNNING_TOOL_CAP = 2;
@@ -26,12 +16,6 @@ export interface SnapshotMarkdownRenderOptions {
   telemetry?: SessionTelemetry | null;
   surface?: SessionSurface;
   nowMs?: number;
-}
-
-interface MarkdownMcpServer {
-  server: string;
-  totalCalls: number;
-  subtools: { name: string; count: number }[];
 }
 
 function escapeMarkdownCell(text: string): string {
@@ -49,97 +33,7 @@ function formatCodeCell(text: string): string {
   return clean.includes('`') ? `\`\` ${clean} \`\`` : `\`${clean}\``;
 }
 
-function extractMcpServerBreakdowns(
-  tools: readonly TranscriptToolEntry[],
-  knownServers: readonly string[],
-): MarkdownMcpServer[] {
-  const order: string[] = [];
-  const serverMap = new Map<string, Map<string, number>>();
-  const ensureServer = (server: string): Map<string, number> => {
-    let subMap = serverMap.get(server);
-    if (!subMap) {
-      order.push(server);
-      subMap = new Map<string, number>();
-      serverMap.set(server, subMap);
-    }
-    return subMap;
-  };
-
-  for (const srv of knownServers) {
-    if (srv.length > 0) {
-      ensureServer(srv);
-    }
-  }
-
-  const knownSet = new Set<string>(knownServers);
-  for (const tool of tools) {
-    const colonIdx = tool.disp.indexOf(':');
-    if (colonIdx <= 0 || colonIdx >= tool.disp.length - 1) {
-      continue;
-    }
-    const prefix = tool.disp.slice(0, colonIdx);
-    const subtool = tool.disp.slice(colonIdx + 1);
-    const isMcpCall =
-      knownSet.has(prefix) ||
-      tool.name.startsWith('mcp') ||
-      tool.name === 'call_mcp_tool' ||
-      tool.name === 'list_resources' ||
-      tool.name === 'read_resource';
-    if (!isMcpCall) {
-      continue;
-    }
-    const subMap = ensureServer(prefix);
-    subMap.set(subtool, (subMap.get(subtool) ?? 0) + 1);
-  }
-
-  return order.map((server) => {
-    const subtools = [...(serverMap.get(server)?.entries() ?? [])]
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => (b.count !== a.count ? b.count - a.count : a.name.localeCompare(b.name)));
-    const totalCalls = subtools.reduce((sum, item) => sum + item.count, 0);
-    return { server, totalCalls, subtools };
-  });
-}
-
-function mergeMarkdownAgents(
-  agentsSummary: AgentsSummary | null,
-  transcriptAgents: readonly ActivityAgentEntry[],
-): { kind: AgentsKind; entries: AgentEntry[] } {
-  const kind: AgentsKind = agentsSummary?.kind ?? 'agents';
-  const combined: AgentEntry[] = agentsSummary ? [...agentsSummary.entries] : [];
-  if (transcriptAgents.length === 0) {
-    return { kind, entries: combined };
-  }
-  if (!agentsSummary) {
-    for (const ta of transcriptAgents) {
-      combined.push({
-        name: cleanAgentLabel(ta.name, '', ta.type),
-        type: ta.type,
-        model: ta.model,
-        state: ta.running ? 'working' : 'done',
-        ts: ta.ts,
-      });
-    }
-    return { kind, entries: combined };
-  }
-  const existingDoneNames = new Set<string>(
-    combined.filter((entry) => entry.state === 'done').map((entry) => entry.name.toLowerCase()),
-  );
-  for (const ta of transcriptAgents) {
-    if (ta.running) {
-      continue;
-    }
-    const label = cleanAgentLabel(ta.name, '', ta.type);
-    if (existingDoneNames.has(label.toLowerCase())) {
-      continue;
-    }
-    existingDoneNames.add(label.toLowerCase());
-    combined.push({ name: label, type: ta.type, model: ta.model, state: 'done', ts: ta.ts });
-  }
-  return { kind, entries: combined };
-}
-
-function formatMarkdownTelemetry(telemetry: SessionTelemetry | null | undefined): string {
+export function formatMarkdownTelemetry(telemetry: SessionTelemetry | null | undefined): string {
   if (!telemetry) {
     return '';
   }
@@ -171,12 +65,14 @@ export function renderSnapshotMarkdown(options: SnapshotMarkdownRenderOptions): 
   const model = nonEmptyStr(data.model?.display_name) ?? nonEmptyStr(data.model?.id);
 
   const skills = activity?.skills ?? [];
-  const rawTools = activity?.tools ?? [];
-  const filteredTools = rawTools.filter((t) => !(skills.length > 0 && t.isSkillRead));
-  const runningTools = filteredTools.filter((t) => t.running).reverse();
-  const completedTools = aggregateCompletedTools(filteredTools, false);
-  const mcps = extractMcpServerBreakdowns(rawTools, activity?.mcps ?? []);
-  const mergedAgents = mergeMarkdownAgents(agentsSummary, activity?.agents ?? []);
+  const aggregatedTools = aggregateActivityTools(activity?.tools ?? [], {
+    knownMcpServers: activity?.mcps ?? [],
+    hideSkillReads: skills.length > 0,
+  });
+  const runningTools = [...aggregatedTools.runningTools].reverse();
+  const completedTools = aggregatedTools.completedTools;
+  const mcps = aggregatedTools.mcps;
+  const mergedAgents = mergeActivityAgents(agentsSummary, activity?.agents ?? [], nowMs);
 
   const lines: string[] = [`# [${badge}] Activity Snapshot — ${escapeMarkdownCell(shortId)}`, ''];
   lines.push(`- **Session**: ${formatCodeCell(convId)}`);
@@ -197,7 +93,7 @@ export function renderSnapshotMarkdown(options: SnapshotMarkdownRenderOptions): 
 
   lines.push(
     '',
-    `## Tools (${runningTools.length} running · ${completedTools.length} types · ${filteredTools.length} calls)`,
+    `## Tools (${runningTools.length} running · ${completedTools.length} types · ${aggregatedTools.totalToolCalls} calls)`,
   );
   if (runningTools.length === 0 && completedTools.length === 0) {
     lines.push('', '_No tool activity recorded._');
@@ -274,10 +170,8 @@ export function renderSnapshotMarkdown(options: SnapshotMarkdownRenderOptions): 
   } else {
     lines.push('', '| Name | Type | Model | State | Updated |', '| --- | --- | --- | --- | --- |');
     for (const agent of mergedAgents.entries) {
-      const age =
-        agent.ts !== null ? formatRelativeAge(nowMs - agent.ts * 1000) : agent.state === 'done' ? 'recent' : 'live';
       lines.push(
-        `| ${formatCodeCell(agent.name)} | ${escapeMarkdownCell(agent.type || 'subagent')} | ${escapeMarkdownCell(agent.model || 'inherit')} | ${agent.state} | ${age} |`,
+        `| ${formatCodeCell(agent.name)} | ${escapeMarkdownCell(agent.type)} | ${escapeMarkdownCell(agent.model)} | ${agent.state} | ${agent.ageLabel} |`,
       );
     }
   }

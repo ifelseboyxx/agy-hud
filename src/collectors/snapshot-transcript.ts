@@ -1,22 +1,19 @@
-import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 
-import { isFiniteNum, isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
+import { isFiniteNum, isPlainObject } from '../core/guards.ts';
 import { readJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
 import type { SessionRecord } from '../snapshot-types.ts';
 import type { ActivityAgentEntry } from '../types.ts';
-import {
-  extractToolTarget,
-  extractUserInputSkills,
-  listMcpServers,
-  parseMcpTool,
-  resolveSkillName,
-  RUNNING_STEP_STATUSES,
-  shortenTarget,
-  unwrapArg,
-} from './activity-parse.ts';
+import { listMcpServers, shortenTarget } from './activity-parse.ts';
 import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
+import {
+  parseTranscriptCacheMeta,
+  scanTranscriptWithCache,
+  type ScannedToolCall,
+  type TranscriptCacheMeta,
+} from './transcript-scanner.ts';
 
-const SNAPSHOT_ACTIVITY_CACHE_VERSION = 1;
+const SNAPSHOT_ACTIVITY_CACHE_VERSION = 2;
 export const SNAPSHOT_TARGET_DISPLAY_LEN = 34;
 
 export interface SnapshotRawToolCall {
@@ -37,48 +34,9 @@ export interface SnapshotTranscriptData {
   lastModel: string;
 }
 
-interface SnapshotScanResult {
+interface SnapshotTranscriptCacheRecord extends TranscriptCacheMeta {
+  v: 2;
   data: SnapshotTranscriptData;
-  stableOffset: number;
-  stableToolsCount: number;
-  stableAgentsCount: number;
-}
-
-interface SnapshotTranscriptCacheRecord {
-  v: 1;
-  path: string;
-  ino: number;
-  mtimeMs: number;
-  size: number;
-  stableOffset: number;
-  stableToolsCount: number;
-  stableAgentsCount: number;
-  data: SnapshotTranscriptData;
-}
-
-function appendUniqueString(seq: string[], seen: Set<string>, value: string): void {
-  if (value.length > 0 && !seen.has(value)) {
-    seen.add(value);
-    seq.push(value);
-  }
-}
-
-function readTranscriptSlice(filePath: string, startOffset: number): Buffer {
-  const fd = openSync(filePath, 'r');
-  try {
-    const st = fstatSync(fd);
-    const readLen = Math.max(0, st.size - startOffset);
-    const buf = Buffer.allocUnsafe(readLen);
-    let readPos = 0;
-    while (readPos < readLen) {
-      const bytesRead = readSync(fd, buf, readPos, readLen - readPos, startOffset + readPos);
-      if (bytesRead <= 0) break;
-      readPos += bytesRead;
-    }
-    return readPos < readLen ? buf.subarray(0, readPos) : buf;
-  } finally {
-    closeSync(fd);
-  }
 }
 
 function parseSnapshotToolRecord(value: unknown): SnapshotRawToolCall | null {
@@ -125,16 +83,12 @@ function parseSnapshotAgentRecord(value: unknown): ActivityAgentEntry | null {
 
 function readSnapshotTranscriptCache(cacheFile: string): SnapshotTranscriptCacheRecord | null {
   const parsed = readJsonObjectSync(cacheFile, false);
+  if (parsed === null || parsed.v !== SNAPSHOT_ACTIVITY_CACHE_VERSION) {
+    return null;
+  }
+  const meta = parseTranscriptCacheMeta(parsed);
   if (
-    parsed === null ||
-    parsed.v !== SNAPSHOT_ACTIVITY_CACHE_VERSION ||
-    typeof parsed.path !== 'string' ||
-    !isFiniteNum(parsed.ino) ||
-    !isFiniteNum(parsed.mtimeMs) ||
-    !isFiniteNum(parsed.size) ||
-    !isFiniteNum(parsed.stableOffset) ||
-    !isFiniteNum(parsed.stableToolsCount) ||
-    !isFiniteNum(parsed.stableAgentsCount) ||
+    meta === null ||
     !isPlainObject(parsed.data) ||
     !Array.isArray(parsed.data.tools) ||
     !Array.isArray(parsed.data.skills) ||
@@ -162,13 +116,7 @@ function readSnapshotTranscriptCache(cacheFile: string): SnapshotTranscriptCache
   }
   return {
     v: SNAPSHOT_ACTIVITY_CACHE_VERSION,
-    path: parsed.path,
-    ino: parsed.ino,
-    mtimeMs: parsed.mtimeMs,
-    size: parsed.size,
-    stableOffset: parsed.stableOffset,
-    stableToolsCount: parsed.stableToolsCount,
-    stableAgentsCount: parsed.stableAgentsCount,
+    ...meta,
     data: { tools, skills, agents, lastModel: parsed.data.lastModel },
   };
 }
@@ -178,162 +126,16 @@ function mergeMcpServerLists(dataRoot: string, cacheCliHome: string): string[] {
   return [...unique].sort((a, b) => b.length - a.length);
 }
 
-interface SnapshotScanContext {
-  readonly dataRoot: string;
-  readonly workspaceDir: string | undefined;
-  readonly mcpServers: readonly string[];
-}
-
-interface SnapshotScanAccumulators {
-  readonly tools: SnapshotRawToolCall[];
-  readonly skills: string[];
-  readonly skillsSeen: Set<string>;
-  readonly agents: ActivityAgentEntry[];
-}
-
-function recordSnapshotToolCall(
-  tc: unknown,
-  ctx: SnapshotScanContext,
-  acc: SnapshotScanAccumulators,
-  isRunning: boolean,
-  stepTs: number | null,
-): void {
-  if (!isPlainObject(tc)) return;
-  const name = typeof tc.name === 'string' ? tc.name.trim() : '';
-  if (name.length === 0) return;
-  const args = isPlainObject(tc.args) ? tc.args : isPlainObject(tc.arguments) ? tc.arguments : undefined;
-  const rawTarget = extractToolTarget(name, args);
-
-  const skillName =
-    (name === 'read_file' || name === 'view_file') && rawTarget.length > 0
-      ? resolveSkillName(rawTarget, ctx.dataRoot, ctx.workspaceDir)
-      : null;
-  if (skillName !== null) {
-    appendUniqueString(acc.skills, acc.skillsSeen, skillName);
-  }
-
-  const mcpInfo = parseMcpTool(name, args, ctx.mcpServers);
-  if (name === 'invoke_subagent' && args) {
-    const role = nonEmptyStr(unwrapArg(args.Role)) ?? nonEmptyStr(unwrapArg(args.TypeName)) ?? 'subagent';
-    const model = unwrapArg(args.Model);
-    acc.agents.push({
-      name: role,
-      type: unwrapArg(args.TypeName),
-      model: model === 'inherit' ? '' : model,
-      running: isRunning,
-      ts: stepTs,
-    });
-  }
-
-  acc.tools.push({
-    name,
-    disp: mcpInfo !== null ? `${mcpInfo[0]}:${mcpInfo[1]}` : name,
-    target: rawTarget.length > 0 ? shortenTarget(rawTarget, SNAPSHOT_TARGET_DISPLAY_LEN) : '',
-    fullTarget: rawTarget,
-    running: isRunning,
-    isSkillRead: skillName !== null,
-    mcpServer: mcpInfo !== null ? mcpInfo[0] : null,
-    mcpSubtool: mcpInfo !== null ? mcpInfo[1] : null,
-  });
-}
-
-function scanSnapshotTranscript(
-  transcriptPath: string,
-  startOffset: number,
-  dataRoot: string,
-  workspaceDir: string | undefined,
-  mcpServers: readonly string[],
-  seed?: SnapshotScanResult,
-): SnapshotScanResult {
-  const tools = seed ? seed.data.tools.slice(0, seed.stableToolsCount) : [];
-  const skills = seed ? [...seed.data.skills] : [];
-  const skillsSeen = new Set<string>(skills);
-  const agents = seed ? seed.data.agents.slice(0, seed.stableAgentsCount) : [];
-  const scanCtx: SnapshotScanContext = { dataRoot, workspaceDir, mcpServers };
-  const acc: SnapshotScanAccumulators = { tools, skills, skillsSeen, agents };
-  let lastModel = seed ? seed.data.lastModel : '';
-
-  let stableOffset = startOffset;
-  let stableToolsCount = tools.length;
-  let stableAgentsCount = agents.length;
-  let sawRunningStep = false;
-
-  const chunkBuf = readTranscriptSlice(transcriptPath, startOffset);
-  let cursor = 0;
-
-  while (cursor < chunkBuf.length) {
-    const nlIdx = chunkBuf.indexOf(0x0a, cursor);
-    if (nlIdx === -1) break;
-    const lineStart = startOffset + cursor;
-    const lineEnd = startOffset + nlIdx + 1;
-    const rawLine = chunkBuf.subarray(cursor, nlIdx).toString('utf8').trim();
-    cursor = nlIdx + 1;
-
-    if (rawLine.length === 0) {
-      if (!sawRunningStep) stableOffset = lineEnd;
-      continue;
-    }
-
-    let step: unknown;
-    try {
-      step = JSON.parse(rawLine);
-    } catch {
-      continue;
-    }
-    if (!isPlainObject(step)) continue;
-
-    if (step.type === 'USER_INPUT') {
-      const content = typeof step.content === 'string' ? step.content : '';
-      for (const sk of extractUserInputSkills(content)) {
-        appendUniqueString(skills, skillsSeen, sk);
-      }
-      if (!sawRunningStep) {
-        stableOffset = lineEnd;
-        stableToolsCount = tools.length;
-        stableAgentsCount = agents.length;
-      }
-      continue;
-    }
-
-    if (step.type !== 'PLANNER_RESPONSE') {
-      if (!sawRunningStep) {
-        stableOffset = lineEnd;
-        stableToolsCount = tools.length;
-        stableAgentsCount = agents.length;
-      }
-      continue;
-    }
-
-    if (typeof step.model === 'string' && step.model.trim().length > 0) {
-      lastModel = step.model.trim();
-    }
-    const status = typeof step.status === 'string' ? step.status.toUpperCase() : '';
-    const isRunning = RUNNING_STEP_STATUSES.has(status);
-    if (isRunning && !sawRunningStep) {
-      sawRunningStep = true;
-      stableOffset = lineStart;
-      stableToolsCount = tools.length;
-      stableAgentsCount = agents.length;
-    }
-
-    const stepTs = parseIsoTimestampSec(step.created_at);
-    const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
-    for (const tc of toolCalls) {
-      recordSnapshotToolCall(tc, scanCtx, acc, isRunning, stepTs);
-    }
-
-    if (!sawRunningStep) {
-      stableOffset = lineEnd;
-      stableToolsCount = tools.length;
-      stableAgentsCount = agents.length;
-    }
-  }
-
+function projectSnapshotToolCall(call: ScannedToolCall): SnapshotRawToolCall {
   return {
-    data: { tools, skills, agents, lastModel },
-    stableOffset,
-    stableToolsCount,
-    stableAgentsCount,
+    name: call.name,
+    disp: call.disp,
+    target: call.fullTarget.length > 0 ? shortenTarget(call.fullTarget, SNAPSHOT_TARGET_DISPLAY_LEN) : '',
+    fullTarget: call.fullTarget,
+    running: call.running,
+    isSkillRead: call.isSkillRead,
+    mcpServer: call.mcpServer,
+    mcpSubtool: call.mcpSubtool,
   };
 }
 
@@ -351,60 +153,53 @@ export function loadSnapshotTranscript(session: SessionRecord, cacheCliHome: str
   );
   if (transcriptPath === null || !existsSync(transcriptPath)) return empty;
 
-  let st;
-  try {
-    st = statSync(transcriptPath);
-  } catch {
-    return empty;
-  }
-  if (!st.isFile()) return empty;
-
   const cacheFile = resolveCliSubdirFile(cacheCliHome, 'cache', `agy_hud_activity_snapshot_${safeId}.json`);
   const cached = cacheFile !== null ? readSnapshotTranscriptCache(cacheFile) : null;
-  if (
-    cached !== null &&
-    cached.path === transcriptPath &&
-    cached.ino === st.ino &&
-    cached.mtimeMs === st.mtimeMs &&
-    cached.size === st.size
-  ) {
+  const cachedMcps: string[] = [];
+  if (cached !== null) {
+    const seenMcp = new Set<string>();
+    for (const tool of cached.data.tools) {
+      if (tool.mcpServer !== null && !seenMcp.has(tool.mcpServer)) {
+        seenMcp.add(tool.mcpServer);
+        cachedMcps.push(tool.mcpServer);
+      }
+    }
+  }
+  const scanned = scanTranscriptWithCache<SnapshotRawToolCall>({
+    transcriptPath,
+    skillRootDir: session.dataRoot,
+    workspaceDir: session.workspace.length > 0 ? session.workspace : undefined,
+    mcpServers: mergeMcpServerLists(session.dataRoot, cacheCliHome),
+    seed:
+      cached !== null
+        ? {
+            meta: cached,
+            tools: cached.data.tools,
+            skills: cached.data.skills,
+            mcps: cachedMcps,
+            agents: cached.data.agents,
+            lastModel: cached.data.lastModel,
+          }
+        : null,
+    projectToolCall: projectSnapshotToolCall,
+  });
+  if (scanned === null) return empty;
+  if (scanned.cacheHit && cached !== null) {
     return cached.data;
   }
 
-  const mcpServers = mergeMcpServerLists(session.dataRoot, cacheCliHome);
-  const wsDir = session.workspace.length > 0 ? session.workspace : undefined;
-  const canResume =
-    cached !== null &&
-    cached.path === transcriptPath &&
-    cached.ino === st.ino &&
-    cached.stableOffset <= st.size &&
-    cached.stableOffset >= 0;
+  const data: SnapshotTranscriptData = {
+    tools: scanned.tools,
+    skills: scanned.skills,
+    agents: scanned.agents,
+    lastModel: scanned.lastModel,
+  };
 
-  let scanned: SnapshotScanResult;
-  try {
-    scanned = canResume
-      ? scanSnapshotTranscript(transcriptPath, cached.stableOffset, session.dataRoot, wsDir, mcpServers, {
-          data: cached.data,
-          stableOffset: cached.stableOffset,
-          stableToolsCount: cached.stableToolsCount,
-          stableAgentsCount: cached.stableAgentsCount,
-        })
-      : scanSnapshotTranscript(transcriptPath, 0, session.dataRoot, wsDir, mcpServers);
-  } catch {
-    return empty;
-  }
-
-  if (cacheFile !== null) {
+  if (cacheFile !== null && scanned.cacheable) {
     const nextRecord: SnapshotTranscriptCacheRecord = {
       v: SNAPSHOT_ACTIVITY_CACHE_VERSION,
-      path: transcriptPath,
-      ino: st.ino,
-      mtimeMs: st.mtimeMs,
-      size: st.size,
-      stableOffset: scanned.stableOffset,
-      stableToolsCount: scanned.stableToolsCount,
-      stableAgentsCount: scanned.stableAgentsCount,
-      data: scanned.data,
+      ...scanned.meta,
+      data,
     };
     try {
       writeJsonAtomicSync(cacheFile, nextRecord);
@@ -413,5 +208,5 @@ export function loadSnapshotTranscript(session: SessionRecord, cacheCliHome: str
     }
   }
 
-  return scanned.data;
+  return data;
 }

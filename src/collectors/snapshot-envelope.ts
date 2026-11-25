@@ -1,15 +1,17 @@
 import { readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
 import { lstatIfPresentSync, readJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
-import type { SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
+import type { SessionRecord, SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
 import type { StatusLineData, SubagentStdinItem } from '../types.ts';
 import { resolveCliSubdirFile, resolveConversationId, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
 
 const ENVELOPE_VERSION = 1;
 const SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const SNAPSHOT_CACHE_FILE_RE = /^agy_hud_snapshot_.+\.(?:json|md)$/;
+export const ENVELOPE_HEARTBEAT_INTERVAL_MS: number = 30_000;
+const SNAPSHOT_CACHE_FILE_RE = /^agy_hud_(?:snapshot|activity|activity_snapshot|telemetry)_.+\.(?:json|md)$/;
 
 export interface WriteSnapshotEnvelopeOptions {
   mdDigest?: string | null;
@@ -30,6 +32,14 @@ export function formatSurfaceBadge(surface: SessionSurface): string {
   if (surface === 'cli') return 'CLI';
   if (surface === 'ide') return 'IDE';
   return 'APP';
+}
+
+export function isExitedCliProcess(surface: SessionSurface, envPid: number | null, livePid: number | null): boolean {
+  return surface === 'cli' && envPid !== null && livePid === null;
+}
+
+export function isExitedCliSession(session: Pick<SessionRecord, 'surface' | 'envelope' | 'livePid'>): boolean {
+  return isExitedCliProcess(session.surface, session.envelope?.agyPid ?? null, session.livePid);
 }
 
 function parseEnvelopeSubagents(raw: unknown): SubagentStdinItem[] {
@@ -56,6 +66,7 @@ export function parseEnvelopeRecord(raw: Record<string, unknown>): SnapshotEnvel
         : null;
   const mdDigest = typeof raw.mdDigest === 'string' ? raw.mdDigest : null;
   const updatedAtMs = isFiniteNum(raw.updatedAtMs) ? raw.updatedAtMs : 0;
+  const heartbeatAtMs = isFiniteNum(raw.heartbeatAtMs) ? raw.heartbeatAtMs : updatedAtMs;
 
   return {
     v: ENVELOPE_VERSION,
@@ -69,6 +80,7 @@ export function parseEnvelopeRecord(raw: Record<string, unknown>): SnapshotEnvel
     taskCount,
     mdDigest,
     updatedAtMs,
+    heartbeatAtMs,
   };
 }
 
@@ -109,6 +121,20 @@ export function sweepStaleSnapshotFiles(cliHome: string, nowMs: number = Date.no
   return removed;
 }
 
+export function isEnvelopeSemanticEqual(a: SnapshotEnvelope, b: SnapshotEnvelope): boolean {
+  return (
+    a.convId === b.convId &&
+    a.conversationTitle === b.conversationTitle &&
+    a.agyPid === b.agyPid &&
+    a.cwd === b.cwd &&
+    a.workspaceCurrentDir === b.workspaceCurrentDir &&
+    a.workspaceProjectDir === b.workspaceProjectDir &&
+    a.taskCount === b.taskCount &&
+    a.mdDigest === b.mdDigest &&
+    isDeepStrictEqual(a.subagents, b.subagents)
+  );
+}
+
 export function writeSnapshotEnvelope(
   cliHome: string,
   data: StatusLineData,
@@ -128,7 +154,7 @@ export function writeSnapshotEnvelope(
       ? data.task_count
       : null;
 
-  const envelope: SnapshotEnvelope = {
+  const candidate: SnapshotEnvelope = {
     v: ENVELOPE_VERSION,
     convId,
     conversationTitle: nonEmptyStr(data.conversation_title) ?? '',
@@ -140,11 +166,24 @@ export function writeSnapshotEnvelope(
     taskCount,
     mdDigest: options.mdDigest !== undefined ? options.mdDigest : (existing?.mdDigest ?? null),
     updatedAtMs: nowMs,
+    heartbeatAtMs: nowMs,
   };
+
+  const semanticUnchanged = existing !== null && isEnvelopeSemanticEqual(existing, candidate);
+  if (semanticUnchanged) {
+    const elapsedMs = nowMs - existing.heartbeatAtMs;
+    if (elapsedMs >= 0 && elapsedMs < ENVELOPE_HEARTBEAT_INTERVAL_MS) {
+      return existing;
+    }
+  }
+
+  const envelope: SnapshotEnvelope = semanticUnchanged
+    ? { ...candidate, updatedAtMs: existing.updatedAtMs, heartbeatAtMs: nowMs }
+    : candidate;
 
   try {
     writeJsonAtomicSync(filePath, envelope);
-    if (existing === null) {
+    if (existing === null || nowMs - existing.heartbeatAtMs >= ENVELOPE_HEARTBEAT_INTERVAL_MS) {
       sweepStaleSnapshotFiles(cliHome, nowMs);
     }
     return envelope;

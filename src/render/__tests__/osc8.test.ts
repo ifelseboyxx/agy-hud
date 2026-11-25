@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -198,6 +198,19 @@ void describe('computeMarkdownDigest', () => {
     };
     assert.notEqual(computeMarkdownDigest(stat, working), computeMarkdownDigest(stat, done));
   });
+
+  void it('invalidates markdown digest when only model name changes', () => {
+    const stat = { ino: 10, mtimeMs: 1000, size: 512 };
+    const d1 = computeMarkdownDigest(stat, null, {
+      convId: 'conv-model',
+      data: { conversation_id: 'conv-model', model: { display_name: 'Gemini 4 Carbon' } },
+    });
+    const d2 = computeMarkdownDigest(stat, null, {
+      convId: 'conv-model',
+      data: { conversation_id: 'conv-model', model: { display_name: 'Claude Opus 4' } },
+    });
+    assert.notEqual(d1, d2);
+  });
 });
 
 void describe('materializeSnapshotMarkdownIfNeeded two-gate discipline', async () => {
@@ -243,12 +256,13 @@ void describe('materializeSnapshotMarkdownIfNeeded two-gate discipline', async (
     const target = resolveSnapshotMarkdownUri(cliHome, convId);
     assert.ok(target !== null);
     const stat = { ino: 7, mtimeMs: 2000, size: 300 };
+    const data = { conversation_id: convId, cwd: tmpRoot };
     const res = materializeSnapshotMarkdownIfNeeded({
       cliHome,
       convId,
       target,
       emittedOsc8Count: 1,
-      data: { conversation_id: convId, cwd: tmpRoot },
+      data,
       agyPid: process.pid,
       existingEnvelope: null,
       transcriptStat: stat,
@@ -263,7 +277,10 @@ void describe('materializeSnapshotMarkdownIfNeeded two-gate discipline', async (
       assert.equal(mode, 0o600);
       assert.equal(mode & 0o111, 0);
     }
-    assert.equal(readSnapshotEnvelope(cliHome, convId)?.mdDigest, computeMarkdownDigest(stat, null));
+    assert.equal(
+      readSnapshotEnvelope(cliHome, convId)?.mdDigest,
+      computeMarkdownDigest(stat, null, { convId, data, activity: null }),
+    );
   });
 
   await it('deduplicates unchanged Gate 2 ticks then rewrites when mdDigest changes', () => {
@@ -272,12 +289,13 @@ void describe('materializeSnapshotMarkdownIfNeeded two-gate discipline', async (
     assert.ok(target !== null);
     const statA = { ino: 7, mtimeMs: 2000, size: 300 };
     const statB = { ino: 7, mtimeMs: 2005, size: 420 };
+    const data = { conversation_id: convId, cwd: tmpRoot };
     const baseOpts = {
       cliHome,
       convId,
       target,
       emittedOsc8Count: 1,
-      data: { conversation_id: convId, cwd: tmpRoot },
+      data,
       agyPid: process.pid,
       activity: null,
       agentsSummary: null,
@@ -309,7 +327,49 @@ void describe('materializeSnapshotMarkdownIfNeeded two-gate discipline', async (
     });
     assert.equal(third.written, true);
     assert.notEqual(Math.trunc(statSync(target.absPath).mtimeMs), 1_700_000_000_000);
-    assert.equal(readSnapshotEnvelope(cliHome, convId)?.mdDigest, computeMarkdownDigest(statB, null));
+    assert.equal(
+      readSnapshotEnvelope(cliHome, convId)?.mdDigest,
+      computeMarkdownDigest(statB, null, { convId, data, activity: null }),
+    );
+  });
+
+  await it('rewrites materialized markdown when only model display name changes', () => {
+    const convId = 'conv-model-rewrite';
+    const target = resolveSnapshotMarkdownUri(cliHome, convId);
+    assert.ok(target !== null);
+    const stat = { ino: 11, mtimeMs: 3000, size: 200 };
+
+    const first = materializeSnapshotMarkdownIfNeeded({
+      cliHome,
+      convId,
+      target,
+      emittedOsc8Count: 1,
+      data: { conversation_id: convId, model: { display_name: 'Gemini 4 Carbon' } },
+      agyPid: process.pid,
+      existingEnvelope: null,
+      transcriptStat: stat,
+      activity: null,
+      agentsSummary: null,
+      nowMs: 40_000,
+    });
+    assert.equal(first.written, true);
+
+    const second = materializeSnapshotMarkdownIfNeeded({
+      cliHome,
+      convId,
+      target,
+      emittedOsc8Count: 1,
+      data: { conversation_id: convId, model: { display_name: 'Claude Opus 4' } },
+      agyPid: process.pid,
+      existingEnvelope: first.envelope,
+      transcriptStat: stat,
+      activity: null,
+      agentsSummary: null,
+      nowMs: 41_000,
+    });
+    assert.equal(second.written, true);
+    assert.notEqual(second.mdDigest, first.mdDigest);
+    assert.ok(readFileSync(target.absPath, 'utf8').includes('`Claude Opus 4`'));
   });
 
   await it('rematerializes markdown when deleted on disk even if mdDigest matches envelope', () => {

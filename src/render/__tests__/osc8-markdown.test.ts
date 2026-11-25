@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 
+import { loadTranscriptActivity } from '../../collectors/activity.ts';
+import { collectAgentsSummary } from '../../collectors/agents.ts';
+import { loadActivitySnapshot } from '../../collectors/snapshot-loader.ts';
+import type { SessionRecord } from '../../snapshot-types.ts';
 import type { AgentsSummary, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
 import { stripAnsi } from '../ansi.ts';
 import { renderSnapshotMarkdown } from '../osc8-markdown.ts';
@@ -147,5 +154,88 @@ void describe('renderSnapshotMarkdown', () => {
     assert.ok(md.includes('_No skills invoked._'));
     assert.ok(md.includes('_No MCP tool calls recorded._'));
     assert.ok(md.includes('_No subagents or swarm workers recorded._'));
+  });
+
+  void it('matches CLI Activity Snapshot when duplicate completed agent names appear on a shared fixture', () => {
+    const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-md-parity-'));
+    try {
+      const cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
+      const convId = 'parity-dup-agents';
+      const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
+      mkdirSync(logsDir, { recursive: true });
+      writeFileSync(
+        path.join(logsDir, 'transcript.jsonl'),
+        [
+          JSON.stringify({
+            type: 'PLANNER_RESPONSE',
+            status: 'DONE',
+            created_at: '2026-06-01T11:58:00Z',
+            tool_calls: [
+              { name: 'invoke_subagent', args: { Role: 'Reviewer', TypeName: 'research', Model: 'flash' } },
+              { name: 'invoke_subagent', args: { Role: 'Reviewer', TypeName: 'research', Model: 'pro' } },
+              { name: 'read_file', args: { Path: '/repo/src/index.ts' } },
+            ],
+          }),
+        ].join('\n') + '\n',
+        'utf8',
+      );
+
+      const nowMs = Date.parse('2026-06-01T12:00:00Z');
+      const liveSubagents = [{ name: 'Coder', role: 'Coder', type_name: 'self', status: 'running' }];
+      const statusData: StatusLineData = {
+        conversation_id: convId,
+        conversation_title: 'Parity Session',
+        cwd: '/repo',
+        model: { display_name: 'Gemini 4 Carbon' },
+        subagents: liveSubagents,
+      };
+      const session: SessionRecord = {
+        convId,
+        shortId: convId.slice(0, 8),
+        surface: 'cli',
+        title: 'Parity Session',
+        workspace: '/repo',
+        workspaces: ['/repo'],
+        dataRoot: cliHome,
+        running: true,
+        livePid: 1234,
+        hasEnvelope: true,
+        envelope: {
+          v: 1,
+          convId,
+          conversationTitle: 'Parity Session',
+          agyPid: 1234,
+          cwd: '/repo',
+          workspaceCurrentDir: '/repo',
+          workspaceProjectDir: '/repo',
+          subagents: liveSubagents,
+          taskCount: null,
+          mdDigest: null,
+          updatedAtMs: nowMs,
+          heartbeatAtMs: nowMs,
+        },
+        updatedAtMs: nowMs,
+        ageLabel: '0s ago',
+      };
+
+      const cliSnapshot = loadActivitySnapshot(session, { cacheCliHome: cliHome, nowMs });
+      const hudActivity = loadTranscriptActivity(cliHome, statusData);
+      const agentsSummary = collectAgentsSummary(cliHome, statusData, hudActivity?.agents);
+      const md = renderSnapshotMarkdown({
+        convId,
+        data: statusData,
+        activity: hudActivity,
+        agentsSummary,
+        nowMs,
+      });
+
+      const cliReviewers = cliSnapshot.agents.filter((a) => a.name === 'Reviewer');
+      const mdReviewerRows = md.split('\n').filter((line) => line.startsWith('| `Reviewer` |'));
+      assert.equal(cliReviewers.length, 2);
+      assert.equal(mdReviewerRows.length, cliReviewers.length);
+      assert.ok(md.includes('## Agents (1 alive · 2 done)'));
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -6,10 +6,10 @@ import { resolveCliSubdirFile, sanitizeSessionId } from '../collectors/safe-path
 import { sweepStaleSnapshotFiles, writeSnapshotEnvelope } from '../collectors/snapshot-envelope.ts';
 import { nonEmptyStr } from '../core/guards.ts';
 import { writeBufferAtomicSync } from '../fs-utils.ts';
-import type { SnapshotEnvelope } from '../snapshot-types.ts';
+import type { SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
 import type { AgentsSummary, HudConfig, SessionTelemetry, StatusLineData, TranscriptActivity } from '../types.ts';
 import { GRAY, RESET } from './ansi.ts';
-import { renderSnapshotMarkdown } from './osc8-markdown.ts';
+import { formatMarkdownTelemetry, renderSnapshotMarkdown } from './osc8-markdown.ts';
 
 export { renderSnapshotMarkdown, type SnapshotMarkdownRenderOptions } from './osc8-markdown.ts';
 
@@ -30,6 +30,14 @@ export interface TranscriptStatFingerprint {
   size: number;
 }
 
+export interface MarkdownDigestContext {
+  convId?: string;
+  surface?: SessionSurface;
+  data?: StatusLineData;
+  activity?: TranscriptActivity | null;
+  telemetry?: SessionTelemetry | null;
+}
+
 export interface MaterializeSnapshotMarkdownOptions {
   cliHome: string;
   convId: string;
@@ -42,6 +50,7 @@ export interface MaterializeSnapshotMarkdownOptions {
   activity: TranscriptActivity | null;
   agentsSummary: AgentsSummary | null;
   telemetry?: SessionTelemetry | null;
+  surface?: SessionSurface;
   nowMs?: number;
 }
 
@@ -141,14 +150,49 @@ function computeAgentsDigest(agentsSummary: AgentsSummary | null | undefined): s
   return createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
 
+function computeRenderedFieldsDigest(context: MarkdownDigestContext): string {
+  const data = context.data;
+  const title = nonEmptyStr(data?.conversation_title) ?? '';
+  const workspace =
+    nonEmptyStr(data?.workspace?.current_dir) ??
+    nonEmptyStr(data?.workspace?.project_dir) ??
+    nonEmptyStr(data?.cwd) ??
+    '';
+  const model = nonEmptyStr(data?.model?.display_name) ?? nonEmptyStr(data?.model?.id) ?? '';
+  const telLine = formatMarkdownTelemetry(context.telemetry);
+  const act = context.activity;
+  const payload = JSON.stringify({
+    convId: context.convId ?? '',
+    surface: context.surface ?? 'cli',
+    title,
+    workspace,
+    model,
+    telLine,
+    activity: act
+      ? {
+          tools: act.tools.map((t) => [t.name, t.disp, t.target, t.fullTarget ?? '', t.running, t.isSkillRead]),
+          skills: act.skills,
+          mcps: act.mcps,
+          agents: act.agents.map((a) => [a.name, a.type, a.model, a.running, a.ts]),
+        }
+      : null,
+  });
+  return createHash('sha256').update(payload).digest('hex').slice(0, 16);
+}
+
 export function computeMarkdownDigest(
   transcriptStat: TranscriptStatFingerprint | null | undefined,
   agentsSummary: AgentsSummary | null | undefined,
+  context?: MarkdownDigestContext,
 ): string {
   const ino = transcriptStat ? transcriptStat.ino : 0;
   const mtimeMs = transcriptStat ? transcriptStat.mtimeMs : 0;
   const size = transcriptStat ? transcriptStat.size : 0;
-  return `${ino}:${mtimeMs}:${size}:${computeAgentsDigest(agentsSummary)}`;
+  const base = `${ino}:${mtimeMs}:${size}:${computeAgentsDigest(agentsSummary)}`;
+  if (context === undefined) {
+    return base;
+  }
+  return `${base}:${computeRenderedFieldsDigest(context)}`;
 }
 
 export function materializeSnapshotMarkdownIfNeeded(
@@ -163,8 +207,14 @@ export function materializeSnapshotMarkdownIfNeeded(
     return { written: false, mdDigest: prevDigest, sweptCount: 0, envelope };
   }
 
-  // Gate 2: write .md only when missing on disk or activity digest changed.
-  const mdDigest = computeMarkdownDigest(options.transcriptStat, options.agentsSummary);
+  // Gate 2: write .md only when missing on disk or rendered content digest changed.
+  const mdDigest = computeMarkdownDigest(options.transcriptStat, options.agentsSummary, {
+    convId: options.convId,
+    surface: options.surface,
+    data: options.data,
+    activity: options.activity,
+    telemetry: options.telemetry,
+  });
   if (existsSync(options.target.absPath) && prevDigest === mdDigest) {
     const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, { nowMs });
     return { written: false, mdDigest, sweptCount: 0, envelope };
@@ -176,6 +226,7 @@ export function materializeSnapshotMarkdownIfNeeded(
     activity: options.activity,
     agentsSummary: options.agentsSummary,
     telemetry: options.telemetry,
+    surface: options.surface,
     nowMs,
   });
 
