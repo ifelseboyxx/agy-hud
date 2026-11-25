@@ -267,4 +267,23 @@ void describe('snapshot interactive popup overlay', () => {
     assert.ok(stdout.joined().endsWith('\x1b[?25h\x1b[?1049l'));
     assert.equal(stdin.paused, true);
   });
+
+  void it('dismisses in applyPopupKey on standalone Esc character', () => {
+    assert.equal(applyPopupKey(createPopupState([]), '\x1b', 10), 'dismiss');
+  });
+
+  void it('dismisses popup immediately on rapid double Esc sequence', async () => {
+    const stdin = new MockTtyInput(true);
+    const stdout = new MockTtyOutput(true, 88, 12);
+    const promise = runSnapshotPopup({
+      loadSnapshot: () => makePopupSnapshot(4),
+      stdin,
+      stdout,
+      color: false,
+      escTimeoutMs: 500,
+    });
+    stdin.emit('data', Buffer.from('\x1b\x1b'));
+    const code = await promise;
+    assert.equal(code, 0);
+  });
 });

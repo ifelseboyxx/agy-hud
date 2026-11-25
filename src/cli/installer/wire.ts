@@ -1,16 +1,14 @@
 import path from 'node:path';
 
 import { getCliHomeLockPath, getTargetLockPath, withFileLocksSync } from '../../core/file-lock.ts';
-import { isPlainObject } from '../../core/guards.ts';
 import { resolveCliHome } from '../../core/paths.ts';
-import { getSettingsPaths, isSameCommandPath } from '../../core/statusline-ownership.ts';
-import { lstatIfPresentSync, readJsonObjectSync } from '../../fs-utils.ts';
+import { lstatIfPresentSync } from '../../fs-utils.ts';
 import type { InstallerOptions } from './args.ts';
 import { hasAgyCli, runDoctor, toggleAgyPlugin, writeInstallerLine } from './doctor.ts';
 import { makeRollbackError, runRollbackSteps, type RollbackStep } from './fs-ops.ts';
 import {
   createWireRollbackSteps,
-  readStatusLineBackupStrict,
+  preflightStatusLineBackup,
   restoreCliStatusLine,
   wireCliStatusLine,
   type RestoreStatusLineResult,
@@ -60,11 +58,7 @@ export function runWire(opts: InstallerOptions, packageRoot: string): void {
 
   withFileLocksSync([getTargetLockPath(resolvedDst), getCliHomeLockPath(cliHome)], () => {
     assertInstalledPluginReady(resolvedDst);
-    const { settingsPath, backupPath } = getSettingsPaths(cliHome);
-    const hudCmd = path.join(resolvedDst, 'dist', 'hud.mjs');
-    const existingSettings = readJsonObjectSync(settingsPath, true);
-    const curCmd = isPlainObject(existingSettings?.statusLine) ? existingSettings.statusLine.command : undefined;
-    if (!isSameCommandPath(curCmd, hudCmd)) readStatusLineBackupStrict(backupPath);
+    preflightStatusLineBackup(cliHome, resolvedDst, 'wire');
     if (opts.manageShim) assertShimWritablePreflight(opts.binDir, resolvedDst);
 
     let wireReceipt: WireStatusLineResult | null = null;
@@ -120,12 +114,8 @@ export function runUnwire(opts: InstallerOptions): void {
         return 'retry';
       }
 
-      const { settingsPath, backupPath } = getSettingsPaths(cliHome);
-      const hudCmd = path.join(resolvedDst, 'dist', 'hud.mjs');
       if (lockCliHome) {
-        const existingSettings = readJsonObjectSync(settingsPath, true);
-        const curCmd = isPlainObject(existingSettings?.statusLine) ? existingSettings.statusLine.command : undefined;
-        if (isSameCommandPath(curCmd, hudCmd)) readStatusLineBackupStrict(backupPath);
+        preflightStatusLineBackup(cliHome, resolvedDst, 'restore');
       }
 
       let removedShim: RemoveCliShimResult | null = null;

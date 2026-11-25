@@ -1,16 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import {
-  detectAgyFlags,
-  detectAgyProcess,
-  findAncestorAgyPid,
-  parseLinuxProcStat,
-  type AncestorProcSample,
-} from '../proc.ts';
+import { withFileLocksSync } from '../../core/file-lock.ts';
+import { detectAgyProcess, findAncestorAgyPid, parseLinuxProcStat, type AncestorProcSample } from '../proc.ts';
 
 function makeProcReader(
   table: Readonly<Record<number, AncestorProcSample>>,
@@ -194,15 +189,222 @@ void describe('proc ancestor walk and PID-keyed cache', () => {
     assert.equal(parseLinuxProcStat('malformed'), null);
   });
 
-  void it('upgrades legacy single-slot agy_hud_proc.json safely via detectAgyFlags', () => {
+  void it('re-walks Windows ancestors when knownLiveAgyPid is absent from proc cache', () => {
+    let psCalls = 0;
+    const alive = new Set<number>([5555, 6003]);
+    const readWin32 = (): AncestorProcSample[] => {
+      psCalls += 1;
+      return [
+        { pid: 6003, ppid: 5555, comm: 'cmd.exe', args: 'cmd.exe /c node hud.mjs' },
+        { pid: 5555, ppid: 100, comm: 'agy.exe', args: 'agy.exe --mode plan --dangerously-skip-permissions' },
+      ];
+    };
+
+    const recovered = detectAgyProcess(cliHome, {
+      platform: 'win32',
+      startPid: 6003,
+      knownLiveAgyPid: 5555,
+      readWin32Ancestors: readWin32,
+      isAlive: (p) => alive.has(p),
+    });
+    assert.equal(psCalls, 1);
+    assert.deepEqual(recovered, { agyPid: 5555, bypass: true, cliMode: 'plan' });
+  });
+
+  void it('ignores invalid non-v2 proc cache and repopulates v2 entry from ancestor walk', () => {
     mkdirSync(path.join(cliHome, 'cache'), { recursive: true });
     writeFileSync(
       path.join(cliHome, 'cache', 'agy_hud_proc.json'),
       JSON.stringify({ ppid: 999, bypass: true, cliMode: 'plan' }),
       'utf8',
     );
-    const flags = detectAgyFlags(cliHome);
-    assert.equal(typeof flags.bypass, 'boolean');
-    assert.equal(typeof flags.cliMode, 'string');
+    const alive = new Set<number>([2001, 2000]);
+    const info = detectAgyProcess(cliHome, {
+      platform: 'darwin',
+      startPid: 2001,
+      isAlive: (p) => alive.has(p),
+      readProc: (pid) => {
+        if (pid === 2001) return { pid: 2001, ppid: 2000, comm: 'sh', args: 'sh -c hud.mjs' };
+        if (pid === 2000) return { pid: 2000, ppid: 1, comm: 'agy', args: 'agy --mode accept-edits' };
+        return null;
+      },
+    });
+    assert.deepEqual(info, { agyPid: 2000, bypass: false, cliMode: 'accept-edits' });
+    const persisted = JSON.parse(readFileSync(path.join(cliHome, 'cache', 'agy_hud_proc.json'), 'utf8')) as {
+      v: number;
+      byAgyPid: Record<string, { cliMode: string }>;
+    };
+    assert.equal(persisted.v, 2);
+    assert.equal(persisted.byAgyPid['2000']?.cliMode, 'accept-edits');
+  });
+
+  void it('preserves knownLiveAgyPid when Windows ancestor lookup times out', () => {
+    const alive = new Set<number>([5555, 6004]);
+    const degraded = detectAgyProcess(cliHome, {
+      platform: 'win32',
+      startPid: 6004,
+      knownLiveAgyPid: 5555,
+      readWin32Ancestors: () => null,
+      isAlive: (p) => alive.has(p),
+    });
+    assert.deepEqual(degraded, { agyPid: 5555, bypass: false, cliMode: '' });
+  });
+
+  void it('skips repeated Windows PowerShell walks on subsequent ticks after timeout fallback', () => {
+    let psCalls = 0;
+    const alive = new Set<number>([5555, 6005, 6006]);
+    const timedOut = (): AncestorProcSample[] | null => {
+      psCalls += 1;
+      return null;
+    };
+
+    const tick1 = detectAgyProcess(cliHome, {
+      platform: 'win32',
+      startPid: 6005,
+      knownLiveAgyPid: 5555,
+      readWin32Ancestors: timedOut,
+      isAlive: (p) => alive.has(p),
+    });
+    const tick2 = detectAgyProcess(cliHome, {
+      platform: 'win32',
+      startPid: 6006,
+      knownLiveAgyPid: 5555,
+      readWin32Ancestors: timedOut,
+      isAlive: (p) => alive.has(p),
+    });
+    assert.equal(tick1.agyPid, 5555);
+    assert.equal(tick2.agyPid, 5555);
+    assert.equal(psCalls, 1);
+  });
+
+  void it('skips Windows PowerShell walk when proc cache lock is held for a known live agyPid', () => {
+    let psCalls = 0;
+    const alive = new Set<number>([5555, 6007, 6008]);
+    const lockFile = path.join(cliHome, 'cache', '.agy_hud_proc.lock');
+    const reader = (): AncestorProcSample[] => {
+      psCalls += 1;
+      return [
+        { pid: 6007, ppid: 5555, comm: 'cmd.exe', args: 'cmd.exe /c node hud.mjs' },
+        { pid: 5555, ppid: 100, comm: 'agy.exe', args: 'agy.exe --mode plan' },
+      ];
+    };
+
+    withFileLocksSync([lockFile], () => {
+      const tick1 = detectAgyProcess(cliHome, {
+        platform: 'win32',
+        startPid: 6007,
+        knownLiveAgyPid: 5555,
+        readWin32Ancestors: reader,
+        isAlive: (p) => alive.has(p),
+      });
+      const tick2 = detectAgyProcess(cliHome, {
+        platform: 'win32',
+        startPid: 6008,
+        knownLiveAgyPid: 5555,
+        readWin32Ancestors: reader,
+        isAlive: (p) => alive.has(p),
+      });
+      assert.deepEqual(tick1, { agyPid: 5555, bypass: false, cliMode: '' });
+      assert.deepEqual(tick2, { agyPid: 5555, bypass: false, cliMode: '' });
+    });
+    assert.equal(psCalls, 0);
+  });
+
+  void it('preserves knownLiveAgyPid when byPpid holds a stale null entry', () => {
+    mkdirSync(path.join(cliHome, 'cache'), { recursive: true });
+    writeFileSync(
+      path.join(cliHome, 'cache', 'agy_hud_proc.json'),
+      JSON.stringify({
+        v: 2,
+        byPpid: { '6009': { agyPid: null, bypass: false, cliMode: '', updatedAtMs: 1_000 } },
+        byAgyPid: {},
+      }),
+      'utf8',
+    );
+    const alive = new Set<number>([5555, 6009]);
+    const info = detectAgyProcess(cliHome, {
+      platform: 'win32',
+      startPid: 6009,
+      knownLiveAgyPid: 5555,
+      readWin32Ancestors: () => null,
+      isAlive: (p) => alive.has(p),
+    });
+    assert.equal(info.agyPid, 5555);
+  });
+
+  void it('skips Windows PowerShell walk when proc lock path is an untrusted symlink', () => {
+    if (process.platform === 'win32') return;
+    let psCalls = 0;
+    const cacheDir = path.join(cliHome, 'cache');
+    mkdirSync(cacheDir, { recursive: true });
+    const target = path.join(tmpRoot, 'outside.lock');
+    writeFileSync(target, 'x', 'utf8');
+    symlinkSync(target, path.join(cacheDir, '.agy_hud_proc.lock'));
+
+    const info = detectAgyProcess(cliHome, {
+      platform: 'win32',
+      startPid: 6010,
+      knownLiveAgyPid: 5555,
+      readWin32Ancestors: () => {
+        psCalls += 1;
+        return null;
+      },
+      isAlive: (p) => p === 5555 || p === 6010,
+    });
+    assert.deepEqual(info, { agyPid: 5555, bypass: false, cliMode: '' });
+    assert.equal(psCalls, 0);
+  });
+
+  void it('serializes concurrent Windows PowerShell probe so same knownLiveAgyPid walks at most once', () => {
+    let psCalls = 0;
+    const alive = new Set<number>([5555, 6011, 6012]);
+    let concurrentResult: ReturnType<typeof detectAgyProcess> | null = null;
+
+    const readWin32 = (): AncestorProcSample[] => {
+      psCalls += 1;
+      if (psCalls === 1) {
+        concurrentResult = detectAgyProcess(cliHome, {
+          platform: 'win32',
+          startPid: 6012,
+          knownLiveAgyPid: 5555,
+          readWin32Ancestors: readWin32,
+          isAlive: (p) => alive.has(p),
+        });
+      }
+      return [
+        { pid: 6011, ppid: 5555, comm: 'cmd.exe', args: 'cmd.exe /c node hud.mjs' },
+        { pid: 5555, ppid: 100, comm: 'agy.exe', args: 'agy.exe --mode plan --dangerously-skip-permissions' },
+      ];
+    };
+
+    const primary = detectAgyProcess(cliHome, {
+      platform: 'win32',
+      startPid: 6011,
+      knownLiveAgyPid: 5555,
+      readWin32Ancestors: readWin32,
+      isAlive: (p) => alive.has(p),
+    });
+
+    assert.equal(psCalls, 1);
+    assert.deepEqual(primary, { agyPid: 5555, bypass: true, cliMode: 'plan' });
+    assert.deepEqual(concurrentResult, { agyPid: 5555, bypass: false, cliMode: '' });
+  });
+
+  void it('skips persisting proc cache when .agy_hud_proc.lock is replaced by a directory', () => {
+    const cacheDir = path.join(cliHome, 'cache');
+    mkdirSync(path.join(cacheDir, '.agy_hud_proc.lock'), { recursive: true });
+    const alive = new Set<number>([2001, 2000]);
+    const info = detectAgyProcess(cliHome, {
+      platform: 'darwin',
+      startPid: 2001,
+      isAlive: (p) => alive.has(p),
+      readProc: (pid) => {
+        if (pid === 2001) return { pid: 2001, ppid: 2000, comm: 'sh', args: 'sh -c hud.mjs' };
+        if (pid === 2000) return { pid: 2000, ppid: 1, comm: 'agy', args: 'agy --mode plan' };
+        return null;
+      },
+    });
+    assert.deepEqual(info, { agyPid: 2000, bypass: false, cliMode: 'plan' });
+    assert.equal(existsSync(path.join(cacheDir, 'agy_hud_proc.json')), false);
   });
 });

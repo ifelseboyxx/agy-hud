@@ -265,4 +265,40 @@ void describe('Structured Inspector terminal renderer', () => {
     assert.ok(out.includes('(no MCP tool calls)'));
     assert.ok(out.includes('(no subagents or swarm workers)'));
   });
+
+  void it('clamps oversized single ASCII and CJK skill or MCP subtool chips to cols - 1', () => {
+    const snap = makeSnapshot({
+      skills: ['a'.repeat(90), '中文超长技能名称'.repeat(10)],
+      mcps: [
+        {
+          server: 'srv',
+          totalCalls: 2,
+          subtools: [{ name: 'very_long_subtool_name_'.repeat(5), count: 2 }],
+        },
+      ],
+    });
+    const lines = renderStructuredInspectorLines(snap, {
+      sections: ['skills', 'mcps'],
+      color: false,
+      width: 60,
+    });
+    for (const line of lines) {
+      assert.ok(visibleLen(line) <= 59, `line exceeded cols-1 (59): len=${visibleLen(line)} -> ${line}`);
+    }
+  });
+
+  void it('strips terminal escape sequences and newlines from untrusted session fields', () => {
+    const osc52 = '\x1b]52;c;SGVsbG8=\x07';
+    const clearScreen = '\x1b[2J';
+    const snap = makeSnapshot({
+      title: `safe${osc52}${clearScreen}\ninjected`,
+      workspace: `/repo/ws${clearScreen}`,
+      skills: [`skill${osc52}\r\nnext`],
+    });
+    const out = renderStructuredInspector(snap, { color: false, width: 100 });
+    assert.equal(out.includes('\x1b'), false, 'output must not contain raw ESC sequences from session data');
+    assert.equal(out.includes('\x07'), false, 'output must not contain raw BEL characters from session data');
+    const lines = renderStructuredInspectorLines(snap, { color: false, width: 100 });
+    assert.ok(lines[0]?.includes('"safe injected"'));
+  });
 });

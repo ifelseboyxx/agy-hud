@@ -41,3 +41,8 @@ export function parseIsoTimestampSec(raw: unknown): number | null {
 export function getErrCode(err: unknown): string | undefined {
   return err && typeof err === 'object' && 'code' in err && typeof err.code === 'string' ? err.code : undefined;
 }
+
+export function selectNewestFirst<T>(items: readonly T[], maxCount?: number): T[] {
+  const slice = maxCount !== undefined ? (maxCount <= 0 ? [] : items.slice(-maxCount)) : items.slice();
+  return slice.reverse();
+}

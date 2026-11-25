@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import { isPidAlive } from '../core/file-lock.ts';
 import { toComparePath } from '../core/paths.ts';
+import { sanitizeTerminalText } from '../core/terminal-text.ts';
 import type {
   SessionRecord,
   SessionSourceFilter,
@@ -80,10 +81,11 @@ function resolveTier0Explicit(
   const exact = filtered.find((s) => s.convId === trimmed || s.convId.toLowerCase() === lower);
   if (exact) return exact;
 
+  const safeQuery = sanitizeTerminalText(trimmed);
   if (trimmed.length < MIN_PREFIX_LEN) {
     throw new SessionResolutionError(
       'invalid-prefix',
-      `Session prefix "${trimmed}" must be at least ${MIN_PREFIX_LEN} characters (or pass a full conversation ID).`,
+      `Session prefix "${safeQuery}" must be at least ${MIN_PREFIX_LEN} characters (or pass a full conversation ID).`,
     );
   }
   const matches = filtered.filter((s) => s.convId.toLowerCase().startsWith(lower));
@@ -92,17 +94,19 @@ function resolveTier0Explicit(
   }
   if (matches.length > 1) {
     const listed = matches
-      .map((s) => `  - [${formatSurfaceBadge(s.surface)}] ${s.convId} (${s.ageLabel}) "${s.title}"`)
+      .map(
+        (s) => `  - [${formatSurfaceBadge(s.surface)}] ${s.convId} (${s.ageLabel}) "${sanitizeTerminalText(s.title)}"`,
+      )
       .join('\n');
     throw new SessionResolutionError(
       'ambiguous',
-      `Ambiguous session prefix "${trimmed}" matched ${matches.length} sessions:\n${listed}`,
+      `Ambiguous session prefix "${safeQuery}" matched ${matches.length} sessions:\n${listed}`,
       matches,
     );
   }
   throw new SessionResolutionError(
     'not-found',
-    `No session matching "${trimmed}" found (source: ${source}). Run "agy-hud snapshot --sessions" to list sessions.`,
+    `No session matching "${safeQuery}" found (source: ${source}). Run "agy-hud snapshot --sessions" to list sessions.`,
   );
 }
 
@@ -156,6 +160,23 @@ function resolveTier2Workspace(
   return { session: winner, siblings };
 }
 
+function pickNewestFallbackSession(filtered: readonly SessionRecord[]): SessionRecord | undefined {
+  const eligible = filtered.filter((s) => !isExitedCliSession(s));
+  const pool = eligible.length > 0 ? eligible : filtered;
+  let best: SessionRecord | undefined;
+  for (const candidate of pool) {
+    if (
+      !best ||
+      candidate.updatedAtMs > best.updatedAtMs ||
+      (candidate.updatedAtMs === best.updatedAtMs &&
+        (candidate.running !== best.running ? candidate.running : candidate.convId.localeCompare(best.convId) < 0))
+    ) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
 export function resolveSession(options: ResolveSessionOptions = {}): ResolvedSessionResult {
   const source = options.source ?? 'auto';
   const nowMs = options.nowMs ?? Date.now();
@@ -189,7 +210,7 @@ export function resolveSession(options: ResolveSessionOptions = {}): ResolvedSes
     return { session: tier2.session, tier: 'workspace', siblings: tier2.siblings, sessions: filtered };
   }
 
-  const fallback = filtered.find((s) => !isExitedCliSession(s)) ?? filtered[0];
+  const fallback = pickNewestFallbackSession(filtered);
   if (!fallback) {
     throw new SessionResolutionError('no-sessions', `No Antigravity sessions found (source: ${source}).`);
   }

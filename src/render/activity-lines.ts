@@ -1,8 +1,11 @@
 import { aggregateCompletedTools } from '../collectors/activity-parse.ts';
+import { selectNewestFirst } from '../core/guards.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { CompletedToolAggregate, TodoSummary, TranscriptToolEntry } from '../types.ts';
 import { CYAN, DEFAULT_TERM_WIDTH, GRAY, GREEN, RESET, truncateToWidth, visibleLen, YELLOW } from './ansi.ts';
 import {
   type ActivityLineFormatOptions,
+  fitSinglePackableItem,
   formatDefaultOverflow,
   packActivityLine,
   type PackableLineItem,
@@ -36,8 +39,9 @@ interface ToolsLineLayout {
 }
 
 export function makeRunningToolItem(entry: TranscriptToolEntry): PackableLineItem {
-  const disp = entry.disp.length > 0 ? entry.disp : entry.name;
-  const tgt = entry.target.length > 0 ? `${GRAY}: ${entry.target}${RESET}` : '';
+  const disp = sanitizeTerminalLabel(entry.disp.length > 0 ? entry.disp : entry.name);
+  const target = sanitizeTerminalLabel(entry.target);
+  const tgt = target.length > 0 ? `${GRAY}: ${target}${RESET}` : '';
   const full = `${YELLOW}◐${RESET} ${CYAN}${disp}${RESET}${tgt}`;
   return {
     render: () => full,
@@ -49,12 +53,12 @@ export function makeRunningToolItem(entry: TranscriptToolEntry): PackableLineIte
         return truncateToWidth(`◐ ${disp}`, maxCols);
       }
       const labelAvail = maxCols - 2;
-      if (entry.target.length > 0) {
+      if (target.length > 0) {
         const dispCols = visibleLen(disp);
         if (dispCols + 3 <= labelAvail) {
-          return `${YELLOW}◐${RESET} ${CYAN}${disp}${RESET}${GRAY}: ${truncateToWidth(entry.target, labelAvail - dispCols - 2)}${RESET}`;
+          return `${YELLOW}◐${RESET} ${CYAN}${disp}${RESET}${GRAY}: ${truncateToWidth(target, labelAvail - dispCols - 2)}${RESET}`;
         }
-        return `${YELLOW}◐${RESET} ${CYAN}${truncateToWidth(`${disp}: ${entry.target}`, labelAvail)}${RESET}`;
+        return `${YELLOW}◐${RESET} ${CYAN}${truncateToWidth(`${disp}: ${target}`, labelAvail)}${RESET}`;
       }
       return `${YELLOW}◐${RESET} ${CYAN}${truncateToWidth(disp, labelAvail)}${RESET}`;
     },
@@ -62,8 +66,9 @@ export function makeRunningToolItem(entry: TranscriptToolEntry): PackableLineIte
 }
 
 function makeCompletedToolItem(agg: CompletedToolAggregate): PackableLineItem {
+  const disp = sanitizeTerminalLabel(agg.disp);
   const countStr = `×${agg.count}`;
-  const full = `${GREEN}✓${RESET} ${agg.disp} ${GRAY}${countStr}${RESET}`;
+  const full = `${GREEN}✓${RESET} ${disp} ${GRAY}${countStr}${RESET}`;
   return {
     render: () => full,
     renderEllipsized: (maxCols: number) => {
@@ -71,13 +76,13 @@ function makeCompletedToolItem(agg: CompletedToolAggregate): PackableLineItem {
         return full;
       }
       if (maxCols <= 2) {
-        return truncateToWidth(`✓ ${agg.disp}`, maxCols);
+        return truncateToWidth(`✓ ${disp}`, maxCols);
       }
       const nameAvail = maxCols - 2 - (1 + countStr.length);
       if (nameAvail >= 2) {
-        return `${GREEN}✓${RESET} ${truncateToWidth(agg.disp, nameAvail)} ${GRAY}${countStr}${RESET}`;
+        return `${GREEN}✓${RESET} ${truncateToWidth(disp, nameAvail)} ${GRAY}${countStr}${RESET}`;
       }
-      return `${GREEN}✓${RESET} ${truncateToWidth(`${agg.disp} ${countStr}`, maxCols - 2)}`;
+      return `${GREEN}✓${RESET} ${truncateToWidth(`${disp} ${countStr}`, maxCols - 2)}`;
     },
   };
 }
@@ -162,16 +167,14 @@ export function computeHudVisibleToolsCap(
   if (runningTools.length === 0 && completedTools.length === 0) {
     return { shownRunning: 0, shownCompleted: 0 };
   }
-  const runningWidths = runningTools
-    .slice(-MAX_RUNNING_TOOLS)
-    .reverse()
-    .map((rt) => {
-      const disp = rt.disp.length > 0 ? rt.disp : (rt.name ?? '');
-      return visibleLen(rt.target.length > 0 ? `◐ ${disp}: ${rt.target}` : `◐ ${disp}`);
-    });
+  const runningWidths = selectNewestFirst(runningTools, MAX_RUNNING_TOOLS).map((rt) => {
+    const disp = sanitizeTerminalLabel(rt.disp.length > 0 ? rt.disp : (rt.name ?? ''));
+    const target = sanitizeTerminalLabel(rt.target);
+    return visibleLen(target.length > 0 ? `◐ ${disp}: ${target}` : `◐ ${disp}`);
+  });
   const completedWidths = completedTools
     .slice(0, MAX_TOOL_SUMMARY)
-    .map((ct) => visibleLen(`✓ ${ct.disp} ×${ct.count}`));
+    .map((ct) => visibleLen(`✓ ${sanitizeTerminalLabel(ct.disp)} ×${ct.count}`));
   const layout = computeToolsLineLayout(
     runningWidths,
     runningTools.length,
@@ -181,15 +184,6 @@ export function computeHudVisibleToolsCap(
     formatOverflow,
   );
   return { shownRunning: layout.shownRunning, shownCompleted: layout.shownCompleted };
-}
-
-export function computeHudVisibleCompletedCap(
-  runningTools: readonly HudToolRunningSpec[],
-  completedTools: readonly HudToolCompletedSpec[],
-  maxCols: number,
-  formatOverflow: (hiddenCount: number) => string = formatDefaultOverflow,
-): number {
-  return computeHudVisibleToolsCap(runningTools, completedTools, maxCols, formatOverflow).shownCompleted;
 }
 
 export function formatToolsLine(
@@ -225,7 +219,7 @@ export function formatToolsLine(
   const totalCompleted = completed.length;
   const totalSlots = totalRunning + totalCompleted;
 
-  const runningCandidates = allRunning.slice(-MAX_RUNNING_TOOLS).reverse().map(makeRunningToolItem);
+  const runningCandidates = selectNewestFirst(allRunning, MAX_RUNNING_TOOLS).map(makeRunningToolItem);
   const completedCandidates = completed.slice(0, MAX_TOOL_SUMMARY).map(makeCompletedToolItem);
   const runningRendered = runningCandidates.map((item) => item.render());
   const runningWidths = runningRendered.map(visibleLen);
@@ -245,7 +239,7 @@ export function formatToolsLine(
   }
   if (totalSlots === 1) {
     const only = runningCandidates[0];
-    return only ? `${prefix}${only.renderEllipsized(Math.max(1, budget - HUD_TOOLS_PREFIX_COLS))}` : '';
+    return only ? fitSinglePackableItem(prefix, only, '', budget) : '';
   }
 
   if (layout.shownRunning === 1) {
@@ -253,11 +247,7 @@ export function formatToolsLine(
     const oneCols = HUD_TOOLS_PREFIX_COLS + (runningWidths[0] ?? 0) + HUD_TOOLS_SEP_COLS + visibleLen(overflowIfOne);
     if (oneCols > budget) {
       const firstRunning = runningCandidates[0];
-      if (!firstRunning) {
-        return '';
-      }
-      const avail = Math.max(1, budget - HUD_TOOLS_PREFIX_COLS - HUD_TOOLS_SEP_COLS - visibleLen(overflowIfOne));
-      return `${prefix}${firstRunning.renderEllipsized(avail)}${separator}${overflowIfOne}`;
+      return firstRunning ? fitSinglePackableItem(prefix, firstRunning, `${separator}${overflowIfOne}`, budget) : '';
     }
   }
 
@@ -280,10 +270,13 @@ export function formatNamesLine(
   if (names.length === 0 || maxVisible <= 0) {
     return '';
   }
-  const items: PackableLineItem[] = names.map((name) => ({
-    render: () => `${CYAN}${name}${RESET}`,
-    renderEllipsized: (maxCols) => `${CYAN}${truncateToWidth(name, maxCols)}${RESET}`,
-  }));
+  const items: PackableLineItem[] = names.map((rawName) => {
+    const name = sanitizeTerminalLabel(rawName);
+    return {
+      render: () => `${CYAN}${name}${RESET}`,
+      renderEllipsized: (maxCols) => `${CYAN}${truncateToWidth(name, maxCols)}${RESET}`,
+    };
+  });
   return packActivityLine({
     prefix: `  ${GREEN}✓${RESET} ${title} ${GRAY}(${names.length}):${RESET} `,
     separator: ', ',
@@ -307,10 +300,12 @@ export function formatTodosLine(todoInfo: TodoSummary | null | undefined): strin
     const total = todoInfo.total;
     const done = todoInfo.completed ?? 0;
     const prog = `${GRAY}(${done}/${total})${RESET}`;
-    if (typeof todoInfo.current === 'string' && todoInfo.current.length > 0) {
-      const text =
-        todoInfo.current.length > MAX_TODO_LEN ? `${todoInfo.current.slice(0, MAX_TODO_LEN)}…` : todoInfo.current;
-      return `  ${YELLOW}▸${RESET} ${text} ${prog}${bgSuffix}`;
+    if (typeof todoInfo.current === 'string') {
+      const cleanCurrent = sanitizeTerminalLabel(todoInfo.current);
+      if (cleanCurrent.length > 0) {
+        const text = cleanCurrent.length > MAX_TODO_LEN ? `${cleanCurrent.slice(0, MAX_TODO_LEN)}…` : cleanCurrent;
+        return `  ${YELLOW}▸${RESET} ${text} ${prog}${bgSuffix}`;
+      }
     }
     if (done === total) {
       return `  ${GREEN}✓${RESET} All todos complete ${prog}${bgSuffix}`;

@@ -75,15 +75,15 @@ void describe('transcript activity v4 cache and target persistence', () => {
 
     const cachePath = path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
     const cachedJson = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>;
-    assert.equal(cachedJson.v, 4);
+    assert.equal(cachedJson.v, 5);
 
     // Second call hits v4 disk cache and returns identical persisted fullTarget and completedTools.
     const second = loadTranscriptActivity(cliHome, { conversation_id: convId });
     assert.deepEqual(second, first);
   });
 
-  void it('invalidates legacy v3 activity cache and upgrades disk cache to v4', () => {
-    const convId = 'act-v3-upgrade';
+  void it('invalidates mismatched schema version activity cache and rescans from transcript', () => {
+    const convId = 'act-schema-mismatch';
     const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
     mkdirSync(logsDir, { recursive: true });
 
@@ -104,12 +104,12 @@ void describe('transcript activity v4 cache and target persistence', () => {
     const cachePath = path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
     const v4Record = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>;
 
-    // Downgrade on-disk cache to v3 without fullTarget/completedTools.
+    // Downgrade on-disk cache to v4 without sanitized-name schema upgrade.
     writeFileSync(
       cachePath,
       JSON.stringify({
         ...v4Record,
-        v: 3,
+        v: 4,
         data: {
           tools: [{ name: 'read_file', disp: 'read_file', target: 'ansi.ts', running: false, isSkillRead: false }],
           skills: [],
@@ -125,7 +125,7 @@ void describe('transcript activity v4 cache and target persistence', () => {
     assert.equal(reloaded.tools[0]?.fullTarget, targetPath);
     assert.equal(reloaded.completedTools?.[0]?.fullTarget, targetPath);
     const upgraded = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>;
-    assert.equal(upgraded.v, 4);
+    assert.equal(upgraded.v, 5);
   });
 
   void it('falls back to rescanning when v4 cache has invalid fullTarget or completedTools types', () => {
@@ -239,7 +239,7 @@ void describe('transcript activity v4 cache and target persistence', () => {
     assert.equal(snapAfter.completedTools[0]?.fullTarget, '/workspace/src/bravo.ts');
   });
 
-  void it('drops stale skills, MCPs, and model on running-suffix rewrite to match cold scan', () => {
+  void it('matches cold scan after running-suffix rewrite drops transient state', () => {
     const convId = 'act-running-suffix';
     const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
     mkdirSync(logsDir, { recursive: true });
@@ -466,5 +466,27 @@ void describe('transcript activity v4 cache and target persistence', () => {
     samples.sort((a, b) => a - b);
     const medianMs = samples[2] ?? 999;
     assert.ok(medianMs < 15, `expected 64 MiB hot-hit median < 15 ms, got ${medianMs.toFixed(2)} ms`);
+  });
+
+  void it('drops control-only skill and MCP names from cached v4 activity', () => {
+    const convId = 'act-ctrl-only-cache';
+    const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(
+      path.join(logsDir, 'transcript.jsonl'),
+      `${JSON.stringify({ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [{ name: 'read_file', args: { Path: '/repo/a.ts' } }] })}\n`,
+      'utf8',
+    );
+    const warm = loadTranscriptActivity(cliHome, { conversation_id: convId });
+    assert.ok(warm !== null);
+    const cachePath = path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
+    const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as { data: Record<string, unknown> };
+    saved.data.skills = ['\x1b[31m', 'valid-skill'];
+    saved.data.mcps = ['\x1b]52;c;x\x07'];
+    writeFileSync(cachePath, JSON.stringify(saved), 'utf8');
+
+    const reloaded = loadTranscriptActivity(cliHome, { conversation_id: convId });
+    assert.deepEqual(reloaded?.skills, ['valid-skill']);
+    assert.deepEqual(reloaded?.mcps, []);
   });
 });

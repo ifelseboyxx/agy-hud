@@ -3,8 +3,10 @@ import path from 'node:path';
 
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
 import { mergeHudConfig } from '../core/hud-config.ts';
-import { readJsonObjectSync, writeBufferAtomicSync } from '../fs-utils.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import { DEFAULT_MAX_REGULAR_JSON_BYTES, readBoundedJsonObjectSync, readRegularJsonObjectSync } from '../fs-utils.ts';
 import type { CliSettings, HudConfig, StatusLineData, StatusLineVcs } from '../types.ts';
+import { writeBoundedPrivateJsonCache } from './activity-cache.ts';
 import { detectAgyFlags, type AgyProcFlags } from './proc.ts';
 import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
 
@@ -18,12 +20,16 @@ export interface GitBranchInfo {
 }
 
 export function readCliSettings(cliHome: string): CliSettings {
-  const loaded = readJsonObjectSync(path.join(cliHome, 'settings.json'), false);
+  const loaded = readBoundedJsonObjectSync(path.join(cliHome, 'settings.json'));
   return loaded !== null ? (loaded as CliSettings) : {};
 }
 
+export function readCliFallbackModel(cliHome: string): string {
+  return sanitizeTerminalLabel(nonEmptyStr(readCliSettings(cliHome).model) ?? '');
+}
+
 export function readHudConfig(cliHome: string): HudConfig {
-  const loaded = readJsonObjectSync(path.join(cliHome, 'hud-config.json'), false);
+  const loaded = readBoundedJsonObjectSync(path.join(cliHome, 'hud-config.json'));
   return mergeHudConfig(loaded);
 }
 
@@ -110,7 +116,7 @@ export function getSessionElapsedSeconds(
     return null;
   }
   const nowSec = Date.now() / 1000;
-  const loaded = readJsonObjectSync(cacheFile, false);
+  const loaded = readRegularJsonObjectSync(cacheFile, DEFAULT_MAX_REGULAR_JSON_BYTES, { requirePrivateMode: true });
   const records: Record<string, number> = Object.create(null) as Record<string, number>;
 
   if (loaded) {
@@ -125,11 +131,7 @@ export function getSessionElapsedSeconds(
   if (!isFiniteNum(startTs)) {
     startTs = nowSec;
     records[sessionKey] = nowSec;
-    try {
-      writeBufferAtomicSync(cacheFile, JSON.stringify(records));
-    } catch {
-      // Best-effort session timestamp persistence.
-    }
+    writeBoundedPrivateJsonCache(cacheFile, records, DEFAULT_MAX_REGULAR_JSON_BYTES);
   }
 
   return Math.max(0, nowSec - startTs);

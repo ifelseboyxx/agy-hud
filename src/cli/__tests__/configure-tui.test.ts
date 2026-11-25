@@ -60,7 +60,7 @@ void describe('configure TUI state machine', () => {
     }
   });
 
-  void it('returns cancel on q, Q, Esc, or Ctrl+C in either tier', () => {
+  void it('returns cancel on exit keys in either tier', () => {
     for (const tier of ['presets', 'modules'] as const) {
       for (const cancelKey of ['q', 'Q', '\x1b', '\x03']) {
         const st = createConfigureTuiState(buildPresetConfig('compact'));

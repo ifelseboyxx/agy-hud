@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 import { nonEmptyStr } from './guards.ts';
 
+export const SAFE_POSIX_SHELL_PATH_RE: RegExp = /^[A-Za-z0-9_./:@%+,-]+$/;
+export const SAFE_WIN_SHELL_PATH_RE: RegExp = /^[A-Za-z0-9_.:\\/+-]+$/;
+
 export interface ResolvedProfileRoots {
   cliHome: string;
   geminiRoot: string;

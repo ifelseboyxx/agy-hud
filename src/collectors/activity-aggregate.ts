@@ -1,4 +1,5 @@
 import { nonEmptyStr } from '../core/guards.ts';
+import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
 import type {
   SnapshotAgent,
   SnapshotCompletedTool,
@@ -18,6 +19,7 @@ export interface AggregatableToolCall {
   disp: string;
   target: string;
   fullTarget?: string;
+  targetLinkable?: boolean;
   running: boolean;
   isSkillRead: boolean;
   mcpServer?: string | null;
@@ -46,8 +48,11 @@ function resolveToolMcpPair(
   call: AggregatableToolCall,
   knownSet: ReadonlySet<string>,
 ): readonly [string, string] | null {
-  if (typeof call.mcpServer === 'string' && call.mcpServer.length > 0 && typeof call.mcpSubtool === 'string') {
-    return [call.mcpServer, call.mcpSubtool];
+  if (typeof call.mcpServer === 'string' && typeof call.mcpSubtool === 'string') {
+    return call.mcpServer.length > 0 && call.mcpSubtool.length > 0 ? [call.mcpServer, call.mcpSubtool] : null;
+  }
+  if (call.mcpServer === null || call.mcpSubtool === null) {
+    return null;
   }
   const colonIdx = call.disp.indexOf(':');
   if (colonIdx <= 0 || colonIdx >= call.disp.length - 1) {
@@ -57,10 +62,11 @@ function resolveToolMcpPair(
   const subtool = call.disp.slice(colonIdx + 1);
   const isMcpCall =
     knownSet.has(prefix) ||
-    call.name.startsWith('mcp') ||
-    call.name === 'call_mcp_tool' ||
-    call.name === 'list_resources' ||
-    call.name === 'read_resource';
+    (prefix !== 'mcp' &&
+      (call.name.startsWith('mcp') ||
+        call.name === 'call_mcp_tool' ||
+        call.name === 'list_resources' ||
+        call.name === 'read_resource'));
   return isMcpCall ? [prefix, subtool] : null;
 }
 
@@ -73,7 +79,10 @@ export function aggregateActivityTools(
   const hideSkillReads = options.hideSkillReads ?? true;
 
   const runningTools: SnapshotRunningTool[] = [];
-  const completedMap = new Map<string, { count: number; targets: string[]; latestShort: string; isMcp: boolean }>();
+  const completedMap = new Map<
+    string,
+    { count: number; targets: string[]; unlinkedTargets: Set<string>; latestShort: string; isMcp: boolean }
+  >();
   const mcpOrder: string[] = [];
   const mcpSubMap = new Map<string, Map<string, number>>();
   const ensureServer = (server: string): Map<string, number> => {
@@ -113,12 +122,19 @@ export function aggregateActivityTools(
         disp,
         target: call.target,
         fullTarget: rawTarget,
+        ...(call.targetLinkable === false ? { targetLinkable: false } : {}),
         isMcp: mcpPair !== null,
       });
       continue;
     }
 
-    const prev = completedMap.get(disp) ?? { count: 0, targets: [], latestShort: '', isMcp: mcpPair !== null };
+    const prev = completedMap.get(disp) ?? {
+      count: 0,
+      targets: [],
+      unlinkedTargets: new Set<string>(),
+      latestShort: '',
+      isMcp: mcpPair !== null,
+    };
     prev.count += 1;
     if (call.target.length > 0) {
       prev.latestShort = call.target;
@@ -128,6 +144,9 @@ export function aggregateActivityTools(
       if (existingIdx !== -1) prev.targets.splice(existingIdx, 1);
       prev.targets.unshift(rawTarget);
       if (prev.targets.length > MAX_RECENT_TARGETS) prev.targets.pop();
+      if (call.targetLinkable === false) {
+        prev.unlinkedTargets.add(rawTarget);
+      }
     }
     completedMap.set(disp, prev);
   }
@@ -135,12 +154,14 @@ export function aggregateActivityTools(
   const completedTools: SnapshotCompletedTool[] = [...completedMap.entries()]
     .map(([disp, info]) => {
       const fullTarget = info.targets[0] ?? '';
+      const unlinkedTargets = info.targets.filter((target) => info.unlinkedTargets.has(target));
       return {
         disp,
         count: info.count,
         latestTarget: fullTarget.length > 0 ? shortenTarget(fullTarget, targetDisplayLen) : info.latestShort,
         fullTarget,
         recentTargets: info.targets,
+        ...(unlinkedTargets.length > 0 ? { unlinkedTargets } : {}),
         isMcp: info.isMcp,
       };
     })
@@ -198,9 +219,9 @@ export function mergeActivityAgents(
   return {
     kind,
     entries: combined.map((entry) => ({
-      name: entry.name,
-      type: nonEmptyStr(entry.type) ?? (kind === 'swarm' ? 'worker' : 'subagent'),
-      model: nonEmptyStr(entry.model) ?? 'inherit',
+      name: sanitizeTerminalLabel(entry.name),
+      type: nonEmptyStr(sanitizeTerminalText(entry.type)) ?? (kind === 'swarm' ? 'worker' : 'subagent'),
+      model: nonEmptyStr(sanitizeTerminalText(entry.model)) ?? 'inherit',
       state: entry.state,
       ts: entry.ts,
       ageLabel:

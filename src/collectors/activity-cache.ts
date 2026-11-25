@@ -1,23 +1,26 @@
-import { readFileSync } from 'node:fs';
-
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
-import { writeBufferAtomicSync } from '../fs-utils.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import { PRIVATE_FILE_MODE, readRegularJsonObjectSync, writeBufferAtomicSync } from '../fs-utils.ts';
 import type { ActivityAgentEntry, CompletedToolAggregate, TranscriptActivity, TranscriptToolEntry } from '../types.ts';
 import { parseTranscriptCacheMeta, type TranscriptCacheMeta } from './transcript-scanner.ts';
 
-export const ACTIVITY_CACHE_SCHEMA_VERSION: number = 4;
+export const ACTIVITY_CACHE_SCHEMA_VERSION: number = 5;
+export const MAX_ACTIVITY_CACHE_BYTES: number = 16 * 1024 * 1024;
 
 export interface ActivityCacheRecord extends TranscriptCacheMeta {
   v: number;
   data: TranscriptActivity;
 }
 
-function parseStringList(value: unknown): string[] | null {
+export function parseSanitizedStringList(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   const items: string[] = [];
   for (const item of value) {
     if (typeof item !== 'string') return null;
-    items.push(item);
+    const clean = sanitizeTerminalLabel(item);
+    if (clean.length > 0) {
+      items.push(clean);
+    }
   }
   return items;
 }
@@ -44,10 +47,10 @@ function isCompletedToolAggregate(value: unknown): value is CompletedToolAggrega
   ) {
     return false;
   }
-  return parseStringList(value.recentTargets) !== null;
+  return Array.isArray(value.recentTargets) && value.recentTargets.every((item) => typeof item === 'string');
 }
 
-function isActivityAgentEntry(value: unknown): value is ActivityAgentEntry {
+export function isActivityAgentEntry(value: unknown): value is ActivityAgentEntry {
   return (
     isPlainObject(value) &&
     typeof value.name === 'string' &&
@@ -58,22 +61,41 @@ function isActivityAgentEntry(value: unknown): value is ActivityAgentEntry {
   );
 }
 
+export function parseActivityAgents(value: unknown): ActivityAgentEntry[] | null {
+  if (!Array.isArray(value)) return null;
+  const agents: ActivityAgentEntry[] = [];
+  for (const entry of value) {
+    if (!isActivityAgentEntry(entry)) return null;
+    agents.push({
+      name: sanitizeTerminalLabel(entry.name),
+      type: sanitizeTerminalLabel(entry.type),
+      model: sanitizeTerminalLabel(entry.model),
+      running: entry.running,
+      ts: entry.ts,
+    });
+  }
+  return agents;
+}
+
 function parseTranscriptActivity(value: unknown): TranscriptActivity | null {
-  if (!isPlainObject(value) || !Array.isArray(value.tools) || !Array.isArray(value.agents)) {
+  if (!isPlainObject(value) || !Array.isArray(value.tools)) {
     return null;
   }
-  const skills = parseStringList(value.skills);
-  const mcps = parseStringList(value.mcps);
-  if (skills === null || mcps === null) return null;
+  const skills = parseSanitizedStringList(value.skills);
+  const mcps = parseSanitizedStringList(value.mcps);
+  const agents = parseActivityAgents(value.agents);
+  if (skills === null || mcps === null || agents === null) return null;
   const tools: TranscriptToolEntry[] = [];
   for (const entry of value.tools) {
     if (!isTranscriptToolEntry(entry)) return null;
-    tools.push(entry);
-  }
-  const agents: ActivityAgentEntry[] = [];
-  for (const entry of value.agents) {
-    if (!isActivityAgentEntry(entry)) return null;
-    agents.push(entry);
+    tools.push({
+      name: sanitizeTerminalLabel(entry.name),
+      disp: sanitizeTerminalLabel(entry.disp),
+      target: sanitizeTerminalLabel(entry.target),
+      ...(entry.fullTarget !== undefined ? { fullTarget: sanitizeTerminalLabel(entry.fullTarget) } : {}),
+      running: entry.running,
+      isSkillRead: entry.isSkillRead,
+    });
   }
   let completedTools: CompletedToolAggregate[] | undefined;
   if (value.completedTools !== undefined) {
@@ -81,7 +103,15 @@ function parseTranscriptActivity(value: unknown): TranscriptActivity | null {
     completedTools = [];
     for (const entry of value.completedTools) {
       if (!isCompletedToolAggregate(entry)) return null;
-      completedTools.push(entry);
+      const recentTargets = parseSanitizedStringList(entry.recentTargets);
+      if (recentTargets === null) return null;
+      completedTools.push({
+        disp: sanitizeTerminalLabel(entry.disp),
+        count: entry.count,
+        latestTarget: sanitizeTerminalLabel(entry.latestTarget),
+        fullTarget: sanitizeTerminalLabel(entry.fullTarget),
+        recentTargets,
+      });
     }
   }
   return completedTools !== undefined
@@ -90,30 +120,40 @@ function parseTranscriptActivity(value: unknown): TranscriptActivity | null {
 }
 
 export function readActivityCache(cacheFile: string): ActivityCacheRecord | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(cacheFile, 'utf8'));
-    if (!isPlainObject(parsed) || parsed.v !== ACTIVITY_CACHE_SCHEMA_VERSION) {
-      return null;
-    }
-    const meta = parseTranscriptCacheMeta(parsed);
-    if (meta === null) return null;
-    const data = parseTranscriptActivity(parsed.data);
-    if (data === null) return null;
-    return {
-      v: parsed.v,
-      ...meta,
-      data,
-    };
-  } catch {
-    // Ignore missing or corrupt cache.
+  const parsed = readRegularJsonObjectSync(cacheFile, MAX_ACTIVITY_CACHE_BYTES, { requirePrivateMode: true });
+  if (parsed === null || parsed.v !== ACTIVITY_CACHE_SCHEMA_VERSION) {
+    return null;
   }
-  return null;
+  const meta = parseTranscriptCacheMeta(parsed);
+  if (meta === null) return null;
+  const data = parseTranscriptActivity(parsed.data);
+  if (data === null) return null;
+  return {
+    v: parsed.v,
+    ...meta,
+    data,
+  };
 }
 
-export function writeActivityCache(cacheFile: string, record: ActivityCacheRecord): void {
+export function writeBoundedPrivateJsonCache(
+  cacheFile: string,
+  record: unknown,
+  maxBytes: number = MAX_ACTIVITY_CACHE_BYTES,
+): boolean {
   try {
-    writeBufferAtomicSync(cacheFile, JSON.stringify(record));
+    const serialized = Buffer.from(JSON.stringify(record), 'utf8');
+    if (serialized.byteLength > maxBytes) return false;
+    writeBufferAtomicSync(cacheFile, serialized, PRIVATE_FILE_MODE);
+    return true;
   } catch {
-    // Best-effort cache write.
+    return false;
   }
+}
+
+export function writeActivityCache(
+  cacheFile: string,
+  record: ActivityCacheRecord,
+  maxBytes: number = MAX_ACTIVITY_CACHE_BYTES,
+): void {
+  writeBoundedPrivateJsonCache(cacheFile, record, maxBytes);
 }

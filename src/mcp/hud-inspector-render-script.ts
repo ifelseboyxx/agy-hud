@@ -1,12 +1,27 @@
 export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback) {
     return typeof val === "string" && val.length > 0 ? val : fallback;
   }
+  function safeCount(val) {
+    return typeof val === "number" && Number.isFinite(val) && val >= 0 ? Math.trunc(val) : 0;
+  }
+  function safeArray(val) {
+    return Array.isArray(val) ? val : [];
+  }
+  function safeObjArray(val) {
+    return safeArray(val).filter(function (item) {
+      return item !== null && typeof item === "object";
+    });
+  }
+  function safeFinite(val) {
+    return typeof val === "number" && Number.isFinite(val) ? val : null;
+  }
   function esc(val) {
     return String(val == null ? "" : val)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
   function fmtTok(n) {
     if (typeof n !== "number" || !Number.isFinite(n)) return "\u2014";
@@ -23,7 +38,7 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback
     return pct < 50 ? "danger" : pct < 80 ? "warn" : "ok";
   }
   function shortWorkspace(ws) {
-    if (!ws) return "workspace";
+    if (typeof ws !== "string" || ws.length === 0) return "workspace";
     var parts = ws.split(/[\\\\/]/).filter(Boolean);
     return parts.length > 0 ? parts[parts.length - 1] : ws;
   }
@@ -86,7 +101,8 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback
   }
   function renderToolsTab(d) {
     var q = state.query.trim().toLowerCase();
-    var runTools = Array.isArray(d.runningTools) ? d.runningTools : [];
+    var runTools = safeObjArray(d.runningTools);
+    var completedTools = safeObjArray(d.completedTools);
     var matchedRunning = runTools.filter(function (rt) {
       if (!q) return true;
       if (pickStr(rt.disp, "").toLowerCase().indexOf(q) !== -1) return true;
@@ -97,67 +113,74 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback
       ? ""
       : '<div class="va-run-banner">' + matchedRunning.map(renderRunningToolItem).join("") + "</div>";
     var maxCnt = 1;
-    for (var i = 0; i < d.completedTools.length; i++) {
-      if (d.completedTools[i].count > maxCnt) maxCnt = d.completedTools[i].count;
+    for (var i = 0; i < completedTools.length; i++) {
+      var c = safeCount(completedTools[i].count);
+      if (c > maxCnt) maxCnt = c;
     }
-    var filtered = d.completedTools.filter(function (t) {
+    var filtered = completedTools.filter(function (t) {
       if (!q) return true;
-      if (t.disp.toLowerCase().indexOf(q) !== -1) return true;
+      if (pickStr(t.disp, "").toLowerCase().indexOf(q) !== -1) return true;
       if (pickStr(t.latestTarget, "").toLowerCase().indexOf(q) !== -1) return true;
-      return (Array.isArray(t.recentTargets) ? t.recentTargets : []).some(function (rt) { return rt.toLowerCase().indexOf(q) !== -1; });
+      return safeArray(t.recentTargets).some(function (rt) { return typeof rt === "string" && rt.toLowerCase().indexOf(q) !== -1; });
     });
     var completedCard = filtered.length === 0
       ? (matchedRunning.length > 0 ? "" : '<div class="va-card"><div class="va-row" style="color:var(--text-tertiary)">No matching tools.</div></div>')
       : '<div class="va-card">' + filtered.map(function (t) {
-          var open = state.expandedTool === t.disp;
-          var pct = Math.max(4, Math.round((t.count / maxCnt) * 100));
-          var targets = Array.isArray(t.recentTargets) ? t.recentTargets : [];
-          var uris = t.targetUris != null ? t.targetUris : {};
+          var disp = pickStr(t.disp, "");
+          var cnt = safeCount(t.count);
+          var open = state.expandedTool === disp;
+          var pct = Math.max(4, Math.min(100, Math.round((cnt / maxCnt) * 100)));
+          var targets = safeArray(t.recentTargets).filter(function (p) { return typeof p === "string"; });
+          var uris = t.targetUris != null && typeof t.targetUris === "object" ? t.targetUris : {};
           var targetsHtml = open && targets.length > 0
             ? '<div class="va-targets">' + targets.map(function (p) { return renderToolTargetItem(p, pickStr(uris[p], null)); }).join("") + "</div>"
             : "";
           return (
-            '<div class="va-row"><div class="va-row-main clickable" data-va-tool="' + esc(t.disp) + '">' +
-            '<span class="va-name">' + esc(t.disp) + '</span><span class="num" style="color:var(--text-tertiary)">&times;' + t.count + "</span>" +
+            '<div class="va-row"><div class="va-row-main clickable" data-va-tool="' + esc(disp) + '">' +
+            '<span class="va-name">' + esc(disp) + '</span><span class="num" style="color:var(--text-tertiary)">&times;' + cnt + "</span>" +
             '<span class="va-tgt">' + esc(pickStr(t.latestTarget, "\u2014")) + "</span></div>" +
             '<div class="va-bar-bg"><div class="va-bar-fg" style="width:' + pct + '%"></div></div>' + targetsHtml + "</div>"
           );
         }).join("") + "</div>";
     return (
       '<input id="va-search" class="search-input" type="search" placeholder="Filter ' +
-      (runTools.length + d.completedTools.length) + ' tools or file paths\u2026" value="' + esc(state.query) + '">' +
+      (runTools.length + completedTools.length) + ' tools or file paths\u2026" value="' + esc(state.query) + '">' +
       runHtml + completedCard
     );
   }
   function renderContextTab(d) {
-    var mcpRows = d.mcps.length === 0
+    var mcps = safeObjArray(d.mcps);
+    var skills = safeArray(d.skills).filter(function (s) { return typeof s === "string"; });
+    var mcpRows = mcps.length === 0
       ? '<div class="va-row" style="color:var(--text-tertiary)">No MCP server calls recorded.</div>'
-      : d.mcps.map(function (m) {
-          var subs = m.subtools.map(function (s) {
-            return '<span class="va-chip num">' + esc(s.name) + " &times;" + s.count + "</span>";
-          }).join("");
+      : mcps.map(function (m) {
+          var subs = safeObjArray(m.subtools)
+            .map(function (s) {
+              return '<span class="va-chip num">' + esc(pickStr(s.name, "")) + " &times;" + safeCount(s.count) + "</span>";
+            }).join("");
           return (
             '<div class="va-row"><div class="va-row-main"><span class="dot" style="background:var(--accent-mcp)"></span>' +
-            '<span class="va-name">' + esc(m.server) + '</span><span class="va-tgt num">' + m.totalCalls + " calls</span></div>" +
+            '<span class="va-name">' + esc(pickStr(m.server, "")) + '</span><span class="va-tgt num">' + safeCount(m.totalCalls) + " calls</span></div>" +
             '<div class="va-chips">' + subs + "</div></div>"
           );
         }).join("");
-    var skillChips = d.skills.length === 0
+    var skillChips = skills.length === 0
       ? '<span style="color:var(--text-tertiary)">No skills loaded.</span>'
-      : d.skills.map(function (s, idx) {
+      : skills.map(function (s, idx) {
           return '<span class="va-chip"><span class="num" style="color:var(--text-tertiary)">' + (idx + 1) + ".</span>" + esc(s) + "</span>";
         }).join("");
     return (
-      '<div class="va-card"><div class="va-card-hd"><span>MCP Servers (' + d.mcps.length + ")</span></div>" + mcpRows + "</div>" +
-      '<div class="va-card"><div class="va-card-hd"><span>Loaded Skills (Chronological &middot; ' + d.skills.length + ")</span></div>" +
+      '<div class="va-card"><div class="va-card-hd"><span>MCP Servers (' + mcps.length + ")</span></div>" + mcpRows + "</div>" +
+      '<div class="va-card"><div class="va-card-hd"><span>Loaded Skills (Chronological &middot; ' + skills.length + ")</span></div>" +
       '<div class="va-row"><div class="va-chips">' + skillChips + "</div></div></div>"
     );
   }
   function renderAgentsTab(d) {
-    var title = (d.agentsKind === "swarm" ? "Swarm Members" : "Session Subagents") + " (" + d.agents.length + ")";
-    var rows = d.agents.length === 0
+    var agents = safeObjArray(d.agents);
+    var title = (d.agentsKind === "swarm" ? "Swarm Members" : "Session Subagents") + " (" + agents.length + ")";
+    var rows = agents.length === 0
       ? '<div class="va-row" style="color:var(--text-tertiary)">No subagents or swarm workers.</div>'
-      : d.agents.map(function (a) {
+      : agents.map(function (a) {
           return (
             '<div class="va-row"><div class="va-row-main"><span class="dot ' + agentDotClass(a.state) + '"></span>' +
             '<span class="va-name">' + esc(a.name) + '</span><span class="badge-surf">' + esc(a.type) + "</span>" +
@@ -167,71 +190,83 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback
     return '<div class="va-card"><div class="va-card-hd"><span>' + title + "</span></div>" + rows + "</div>";
   }
   function renderOverviewTab(d) {
-    var runTools = Array.isArray(d.runningTools) ? d.runningTools : [];
+    var runTools = safeObjArray(d.runningTools);
+    var completedTools = safeObjArray(d.completedTools);
+    var mcps = safeObjArray(d.mcps);
+    var skills = safeArray(d.skills).filter(function (s) { return typeof s === "string"; });
+    var agents = safeObjArray(d.agents);
     var runHtml = runTools.length === 0 ? "" :
       '<div class="va-run-banner">' + runTools.map(renderRunningToolItem).join("") + "</div>";
-    var hiddenTools = Math.max(0, d.completedTools.length - 4);
-    var hiddenAgents = Math.max(0, d.agents.length - 4);
-    var topTools = d.completedTools.length === 0
+    var hiddenTools = Math.max(0, completedTools.length - 4);
+    var hiddenAgents = Math.max(0, agents.length - 4);
+    var topTools = completedTools.length === 0
       ? '<div class="va-row" style="color:var(--text-tertiary)">No tool calls yet.</div>'
-      : d.completedTools.slice(0, 4).map(function (t) {
-          var firstTarget = Array.isArray(t.recentTargets) && t.recentTargets.length > 0 ? t.recentTargets[0] : "";
+      : completedTools.slice(0, 4).map(function (t) {
+          var recent = safeArray(t.recentTargets);
+          var firstTarget = recent.length > 0 ? recent[0] : "";
           var first = pickStr(firstTarget, pickStr(t.fullTarget, ""));
-          var uri = first.length > 0 && t.targetUris != null ? pickStr(t.targetUris[first], "") : "";
+          var uri = first.length > 0 && t.targetUris != null && typeof t.targetUris === "object" ? pickStr(t.targetUris[first], "") : "";
           var attr = uri.length > 0 ? ' data-file-uri="' + esc(uri) + '" class="va-row-main clickable"' : ' class="va-row-main"';
-          return '<div class="va-row"><div' + attr + '><span class="dot ok"></span><span class="va-name">' + esc(t.disp) +
-            '</span><span class="num" style="color:var(--text-tertiary)">&times;' + t.count +
+          return '<div class="va-row"><div' + attr + '><span class="dot ok"></span><span class="va-name">' + esc(pickStr(t.disp, "")) +
+            '</span><span class="num" style="color:var(--text-tertiary)">&times;' + safeCount(t.count) +
             '</span><span class="va-tgt">' + esc(pickStr(t.latestTarget, "\u2014")) + "</span></div></div>";
         }).join("");
-    var mcpChips = d.mcps.map(function (m) {
+    var mcpChips = mcps.map(function (m) {
       return '<span class="va-chip"><span class="dot" style="background:var(--accent-mcp)"></span><span class="num">' +
-        esc(m.server) + " (" + m.totalCalls + ")</span></span>";
+        esc(pickStr(m.server, "")) + " (" + safeCount(m.totalCalls) + ")</span></span>";
     }).join("");
-    var skillChips = d.skills.slice(0, 5).map(function (s) { return '<span class="va-chip">' + esc(s) + "</span>"; }).join("");
-    var moreSkills = d.skills.length > 5
-      ? '<button type="button" data-va-jump="context" class="va-more-btn">+' + (d.skills.length - 5) + " more</button>"
+    var skillChips = skills.slice(0, 5).map(function (s) { return '<span class="va-chip">' + esc(s) + "</span>"; }).join("");
+    var moreSkills = skills.length > 5
+      ? '<button type="button" data-va-jump="context" class="va-more-btn">+' + (skills.length - 5) + " more</button>"
       : "";
-    var emptyCtx = d.mcps.length === 0 && d.skills.length === 0 ? '<span style="color:var(--text-tertiary)">None recorded.</span>' : "";
-    var agentRows = d.agents.length === 0
+    var emptyCtx = mcps.length === 0 && skills.length === 0 ? '<span style="color:var(--text-tertiary)">None recorded.</span>' : "";
+    var agentRows = agents.length === 0
       ? '<div class="va-row" style="color:var(--text-tertiary)">No subagents spawned in this session.</div>'
-      : d.agents.slice(0, 4).map(function (a) {
+      : agents.slice(0, 4).map(function (a) {
           return '<div class="va-row"><div class="va-row-main"><span class="dot ' + agentDotClass(a.state) +
             '"></span><span class="va-name">' + esc(a.name) + '</span><span class="badge-surf">' + esc(a.model) +
             '</span><span class="va-tgt">' + esc(a.ageLabel) + "</span></div></div>";
         }).join("");
     return (
       runHtml +
-      '<div class="va-card"><div class="va-card-hd"><span>Top Tools (' + d.totalToolCalls + " calls)</span>" +
+      '<div class="va-card"><div class="va-card-hd"><span>Top Tools (' + safeCount(d.totalToolCalls) + " calls)</span>" +
       (hiddenTools > 0 ? '<button type="button" data-va-jump="tools" class="action-link">+' + hiddenTools + " more &rarr;</button>" : "") +
       "</div>" + topTools + "</div>" +
-      '<div class="va-card"><div class="va-card-hd"><span>Skills (' + d.skills.length + ") &amp; MCPs (" + d.mcps.length +
+      '<div class="va-card"><div class="va-card-hd"><span>Skills (' + skills.length + ") &amp; MCPs (" + mcps.length +
       ')</span><button type="button" data-va-jump="context" class="action-link">Inspect &rarr;</button></div>' +
       '<div class="va-row"><div class="va-chips">' + mcpChips + skillChips + moreSkills + emptyCtx + "</div></div></div>" +
       '<div class="va-card"><div class="va-card-hd"><span>' + (d.agentsKind === "swarm" ? "Swarm Roster" : "Subagents") +
-      " (" + d.agents.length + ")</span>" +
+      " (" + agents.length + ")</span>" +
       (hiddenAgents > 0 ? '<button type="button" data-va-jump="agents" class="action-link">+' + hiddenAgents + " more &rarr;</button>" : "") +
       "</div>" + agentRows + "</div>"
     );
   }
   function renderHeader(d) {
-    var tel = d.telemetry || {};
-    var ctxPct = typeof tel.ctxPct === "number" ? tel.ctxPct : null;
+    var tel = d.telemetry && typeof d.telemetry === "object" ? d.telemetry : {};
+    var ctxPct = safeFinite(tel.ctxPct);
+    var tpsVal = safeFinite(tel.tps);
+    var ttftVal = safeFinite(tel.ttft);
+    var cachePctVal = safeFinite(tel.cachePct);
     var ctxTone = toneForCtx(ctxPct);
-    var cacheTone = toneForCache(tel.cachePct);
+    var cacheTone = toneForCache(cachePctVal);
     var barColor = ctxTone === "danger" ? "var(--accent-danger)" : ctxTone === "warn" ? "var(--accent-warn)" : "var(--accent-ok)";
     var activeId = state.selectedSessionId || d.convId;
     var selectHtml = state.sessions.length > 1
       ? '<select id="va-sess-select" class="va-sess-select" aria-label="Select session">' +
         state.sessions.map(function (s) {
           var sel = s.convId === activeId ? " selected" : "";
-          return '<option value="' + esc(s.convId) + '"' + sel + ">[" + esc(s.surface.toUpperCase()) + "] " + esc(s.title) + "</option>";
+          return '<option value="' + esc(s.convId) + '"' + sel + ">[" + esc(pickStr(s.surface, "app").toUpperCase()) + "] " + esc(s.title) + "</option>";
         }).join("") + "</select>"
       : "";
     var agentTabLabel = d.agentsKind === "swarm" ? "Swarm" : "Agents";
-    var runningCount = Array.isArray(d.runningTools) ? d.runningTools.length : 0;
+    var runningCount = safeArray(d.runningTools).length;
+    var completedCount = safeArray(d.completedTools).length;
+    var skillsCount = safeArray(d.skills).length;
+    var mcpsCount = safeArray(d.mcps).length;
+    var agentsCount = safeArray(d.agents).length;
     var tabBtn = function (id, label, cnt) {
       var active = state.tab === id;
-      var cntHtml = cnt == null ? "" : '<span class="va-cnt">' + cnt + "</span>";
+      var cntHtml = cnt == null ? "" : '<span class="va-cnt">' + safeCount(cnt) + "</span>";
       return '<button type="button" role="tab" aria-selected="' + active + '" data-va-tab="' + id +
         '" class="va-tab ' + (active ? "active" : "") + '">' + label + cntHtml + "</button>";
     };
@@ -244,18 +279,18 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback
       '<button type="button" id="va-refresh" class="icon-btn" title="Refresh snapshot" aria-label="Refresh">' + REFRESH_ICO + "</button></div>" +
       selectHtml +
       '<div class="va-ribbon num"><span title="Context window usage"><span class="va-ctx-track"><span class="va-ctx-fill" style="width:' +
-      (ctxPct != null ? Math.min(100, ctxPct) : 0) + "%;background:" + barColor + '"></span></span><strong>' +
+      (ctxPct != null ? Math.max(0, Math.min(100, ctxPct)) : 0) + "%;background:" + barColor + '"></span></span><strong>' +
       (ctxPct != null ? ctxPct.toFixed(0) + "%" : "\u2014") + '</strong> <span style="color:var(--text-tertiary)">(' +
       fmtTok(tel.ctxUsed) + "/" + fmtTok(tel.ctxMax) + ")</span></span>" +
-      "<span>TPS <strong>" + (typeof tel.tps === "number" ? tel.tps.toFixed(0) : "\u2014") + "</strong></span>" +
-      "<span>TTFT <strong>" + (typeof tel.ttft === "number" ? tel.ttft.toFixed(2) + "s" : "\u2014") + "</strong></span>" +
+      "<span>TPS <strong>" + (tpsVal != null ? tpsVal.toFixed(0) : "\u2014") + "</strong></span>" +
+      "<span>TTFT <strong>" + (ttftVal != null ? ttftVal.toFixed(2) + "s" : "\u2014") + "</strong></span>" +
       '<span>Cache <strong style="color:var(--accent-' + cacheTone + ')">' +
-      (typeof tel.cachePct === "number" ? tel.cachePct.toFixed(0) + "%" : "\u2014") + "</strong></span></div>" +
+      (cachePctVal != null ? cachePctVal.toFixed(0) + "%" : "\u2014") + "</strong></span></div>" +
       '<nav class="va-tabs" role="tablist">' +
       tabBtn("overview", "Overview", null) +
-      tabBtn("tools", "Tools", runningCount + d.completedTools.length) +
-      tabBtn("context", "Skills &amp; MCP", d.skills.length + d.mcps.length) +
-      tabBtn("agents", agentTabLabel, d.agents.length) +
+      tabBtn("tools", "Tools", runningCount + completedCount) +
+      tabBtn("context", "Skills &amp; MCP", skillsCount + mcpsCount) +
+      tabBtn("agents", agentTabLabel, agentsCount) +
       "</nav></div>"
     );
   }

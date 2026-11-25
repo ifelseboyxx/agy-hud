@@ -1,14 +1,8 @@
 import path from 'node:path';
 
-import { detectAgyFlags } from '../collectors/proc.ts';
-import {
-  detectGitBranch,
-  getSessionElapsedSeconds,
-  readCliSettings,
-  type GitBranchInfo,
-} from '../collectors/settings.ts';
 import { parseModelAndEffort, resolveQuotaReset } from '../collectors/telemetry.ts';
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
+import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
 import type {
   AgentsSummary,
   CliSettings,
@@ -17,7 +11,6 @@ import type {
   QuotaBucketItem,
   SessionTelemetry,
   StatusLineData,
-  StatusLineVcs,
   TodoSummary,
   TranscriptActivity,
 } from '../types.ts';
@@ -74,11 +67,9 @@ export interface IdentityLineOptions {
   dirty?: boolean;
   elapsedSeconds?: number | null;
   nowSec?: number;
-  detectGitBranch?: (cwd: string | undefined, stdinVcs?: StatusLineVcs) => GitBranchInfo;
 }
 
 export interface HudModuleRenderContext {
-  cliHome: string;
   data: StatusLineData;
   config: HudConfig;
   enabledLines: ReadonlySet<HudLineId>;
@@ -143,7 +134,7 @@ function formatCompactPrimaryQuotaTail(data: StatusLineData, nowSec: number): st
     return `${GRAY}5h ${colorForRemainingPct(pct)}${pctStr}${RESET}`;
   }
   if (entry.remaining_amount !== undefined && entry.remaining_amount !== null) {
-    return `${GRAY}5h ${BRIGHT_WHITE}${String(entry.remaining_amount)}${RESET}`;
+    return `${GRAY}5h ${BRIGHT_WHITE}${sanitizeTerminalText(String(entry.remaining_amount))}${RESET}`;
   }
   return '';
 }
@@ -172,7 +163,7 @@ export function formatQuotaItem(
     valColor = muted ? GRAY : colorForRemainingPct(pct);
     showReset = !isFull && isFiniteNum(remainingSeconds) && remainingSeconds > 0;
   } else if (amt !== undefined && amt !== null) {
-    pctText = String(amt);
+    pctText = sanitizeTerminalText(String(amt));
     valColor = muted ? GRAY : BRIGHT_WHITE;
     showReset = isFiniteNum(remainingSeconds) && remainingSeconds > 0;
   } else {
@@ -182,22 +173,12 @@ export function formatQuotaItem(
   const rst = showReset ? fmtDuration(remainingSeconds, true, false) : '';
   const labelColor = muted ? GRAY : BRIGHT_WHITE;
   const rstPart = rst.length > 0 ? ` ${GRAY}(${rst})${RESET}` : '';
-  return `${labelColor}${label}: ${valColor}${pctText}${RESET}${rstPart}`;
+  return `${labelColor}${sanitizeTerminalText(label)}: ${valColor}${pctText}${RESET}${rstPart}`;
 }
 
-export function buildModeLine(
-  cliHome: string,
-  data: StatusLineData,
-  cliSettings?: CliSettings,
-  options?: ModeLineOptions,
-): string {
-  const procFlags =
-    options?.bypass !== undefined && options.cliMode !== undefined
-      ? { bypass: options.bypass, cliMode: options.cliMode }
-      : detectAgyFlags(cliHome);
-
-  let bypass = options?.bypass ?? procFlags.bypass;
-  const cliMode = options?.cliMode ?? procFlags.cliMode;
+export function buildModeLine(data: StatusLineData, cliSettings: CliSettings = {}, options?: ModeLineOptions): string {
+  let bypass = options?.bypass ?? false;
+  const cliMode = options?.cliMode ?? '';
 
   const rawPerm =
     nonEmptyStr(data.cycle_mode) ??
@@ -219,12 +200,11 @@ export function buildModeLine(
 
   let mode = stdinPerm.length > 0 && stdinPerm !== 'bypasspermissions' && stdinPerm !== 'bypass' ? stdinPerm : '';
   if (mode.length === 0) {
-    const saved = cliSettings ?? readCliSettings(cliHome);
-    const savedMode = nonEmptyStr(saved.agentMode)?.toLowerCase() ?? '';
+    const savedMode = nonEmptyStr(cliSettings.agentMode)?.toLowerCase() ?? '';
     mode = nonEmptyStr(cliMode)?.toLowerCase() ?? (savedMode.length > 0 ? savedMode : 'default');
   }
 
-  const vimMode = nonEmptyStr(data.vim?.mode)?.toUpperCase() ?? '';
+  const vimMode = sanitizeTerminalLabel(nonEmptyStr(data.vim?.mode)?.toUpperCase() ?? '');
   const vimTag = vimMode.length > 0 ? ` ${BRIGHT_YELLOW}[${vimMode}]${RESET}` : '';
   const hint = `${GRAY}(shift+tab to cycle)${RESET}`;
 
@@ -242,11 +222,12 @@ export function buildModeLine(
   if (mode === 'auto') {
     return ` ${BRIGHT_YELLOW}⏵ auto mode on${RESET}${vimTag} ${hint}`;
   }
-  return ` ${GRAY}▸ ${mode} mode${RESET}${vimTag} ${hint}`;
+  const cleanMode = nonEmptyStr(sanitizeTerminalText(mode)) ?? 'default';
+  return ` ${GRAY}▸ ${cleanMode} mode${RESET}${vimTag} ${hint}`;
 }
 
 export function buildIdentityLine(ctx: HudModuleRenderContext): string {
-  const { cliHome, data, config, telemetry, cliSettings, agentsSummary, hasTodosLine, identityOptions: options } = ctx;
+  const { data, config, telemetry, cliSettings, agentsSummary, hasTodosLine, identityOptions: options } = ctx;
   const sep = ` ${GRAY}│${RESET} `;
   const parts: string[] = [];
   const termWidth =
@@ -258,7 +239,9 @@ export function buildIdentityLine(ctx: HudModuleRenderContext): string {
   const budget = resolveLineBudget(termWidth);
 
   if (config.segments.model) {
-    const { name: modelName, effort } = parseModelAndEffort(data, cliSettings);
+    const parsedModel = parseModelAndEffort(data, cliSettings);
+    const modelName = sanitizeTerminalLabel(parsedModel.name);
+    const effort = sanitizeTerminalLabel(parsedModel.effort);
     const effortText = effort.length > 0 ? ` ${GRAY}◑ ${YELLOW}${effort}${RESET}` : '';
     parts.push(`${GRAY}[${BRIGHT_CYAN}${BOLD}${modelName}${RESET}${effortText}${GRAY}]${RESET}`);
   }
@@ -269,20 +252,17 @@ export function buildIdentityLine(ctx: HudModuleRenderContext): string {
       nonEmptyStr(data.workspace?.project_dir) ??
       nonEmptyStr(data.cwd) ??
       '';
-    const dirName = curDir.length > 0 ? path.basename(curDir.replace(/\/+$/, '')) : '';
-    const gitDetector = options?.detectGitBranch ?? detectGitBranch;
-    const gitInfo =
-      options?.branch !== undefined
-        ? { branch: options.branch, dirty: Boolean(options.dirty ?? data.vcs?.dirty) }
-        : gitDetector(curDir, data.vcs);
+    const dirName = curDir.length > 0 ? sanitizeTerminalLabel(path.basename(curDir.replace(/\/+$/, ''))) : '';
+    const branch = sanitizeTerminalLabel(options?.branch ?? nonEmptyStr(data.vcs?.branch) ?? '');
+    const dirty = Boolean(options?.dirty ?? data.vcs?.dirty);
 
     const locItems: string[] = [];
     if (dirName.length > 0) {
       locItems.push(`${BRIGHT_BLUE}${BOLD}${dirName}${RESET}`);
     }
-    if (gitInfo.branch.length > 0) {
-      const dirtyMark = gitInfo.dirty ? `${BRIGHT_YELLOW}*${RESET}` : '';
-      locItems.push(`${CYAN}git:(${GREEN}${gitInfo.branch}${dirtyMark}${CYAN})${RESET}`);
+    if (branch.length > 0) {
+      const dirtyMark = dirty ? `${BRIGHT_YELLOW}*${RESET}` : '';
+      locItems.push(`${CYAN}git:(${GREEN}${branch}${dirtyMark}${CYAN})${RESET}`);
     }
     if (locItems.length > 0) {
       parts.push(locItems.join(' '));
@@ -290,9 +270,7 @@ export function buildIdentityLine(ctx: HudModuleRenderContext): string {
   }
 
   if (config.segments.duration) {
-    const convId = nonEmptyStr(data.conversation_id) ?? nonEmptyStr(data.session_id);
-    const elapsed =
-      options?.elapsedSeconds !== undefined ? options.elapsedSeconds : getSessionElapsedSeconds(cliHome, convId, data);
+    const elapsed = options?.elapsedSeconds ?? null;
     if (elapsed !== null) {
       parts.push(`${GRAY}◷ ${BRIGHT_WHITE}${fmtDuration(elapsed, true)}${RESET}`);
     }
@@ -432,7 +410,7 @@ export function buildUsageLine(
 }
 
 export const LINE_MODULE_REGISTRY: Readonly<Record<HudLineId, LineModuleRenderer>> = {
-  mode: (ctx) => buildModeLine(ctx.cliHome, ctx.data, ctx.cliSettings, ctx.modeOptions),
+  mode: (ctx) => buildModeLine(ctx.data, ctx.cliSettings, ctx.modeOptions),
   identity: (ctx) => buildIdentityLine(ctx),
   usage: (ctx) => buildUsageLine(ctx.data, ctx.config, ctx.telemetry, ctx.nowSec, ctx.termWidth),
   activity: (ctx) =>

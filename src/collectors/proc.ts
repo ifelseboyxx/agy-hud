@@ -2,9 +2,9 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { isPidAlive } from '../core/file-lock.ts';
+import { isPidAlive, withFileLocksSync } from '../core/file-lock.ts';
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
-import { readJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
+import { PRIVATE_FILE_MODE, readRegularJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
 import { resolveCliSubdirFile } from './safe-path.ts';
 
 const MAX_ANCESTOR_HOPS = 8;
@@ -12,6 +12,7 @@ const PROC_CACHE_VERSION = 2;
 const MAX_CACHE_ENTRIES = 64;
 const POSIX_PS_TIMEOUT_MS = 300;
 const WIN32_PS_TIMEOUT_MS = 800;
+const PROC_CACHE_LOCK_TIMEOUT_MS = 25;
 
 const SHELL_AND_NODE_WRAPPERS: ReadonlySet<string> = new Set([
   'sh',
@@ -254,7 +255,7 @@ function readWin32AncestorsViaPowerShell(startPid: number): AncestorProcSample[]
 }
 
 function readProcCache(cacheFile: string): ProcCacheStore {
-  const parsed = readJsonObjectSync(cacheFile, false);
+  const parsed = readRegularJsonObjectSync(cacheFile);
   if (parsed === null || parsed.v !== PROC_CACHE_VERSION) {
     return emptyProcCache();
   }
@@ -359,6 +360,62 @@ export function findAncestorAgyPid(options: DetectAgyProcessOptions = {}): numbe
   return found.agyPid !== null && checkAlive(found.agyPid) ? found.agyPid : null;
 }
 
+function lookupProcCache(
+  store: ProcCacheStore,
+  startPid: number,
+  knownLiveAgyPid: number | null,
+  checkAlive: (pid: number) => boolean,
+): AgyProcessInfo | null {
+  if (knownLiveAgyPid !== null) {
+    const knownEntry = store.byAgyPid[String(knownLiveAgyPid)];
+    if (knownEntry !== undefined) {
+      return { agyPid: knownLiveAgyPid, bypass: knownEntry.bypass, cliMode: knownEntry.cliMode };
+    }
+  }
+  const cachedByPpid = store.byPpid[String(startPid)];
+  if (
+    cachedByPpid !== undefined &&
+    checkAlive(startPid) &&
+    (cachedByPpid.agyPid === null ? knownLiveAgyPid === null : checkAlive(cachedByPpid.agyPid))
+  ) {
+    return { agyPid: cachedByPpid.agyPid, bypass: cachedByPpid.bypass, cliMode: cachedByPpid.cliMode };
+  }
+  return null;
+}
+
+function persistProcCache(
+  cacheFile: string,
+  startPid: number,
+  detected: AgyProcessInfo,
+  checkAlive: (pid: number) => boolean,
+  nowMs: number,
+): void {
+  const latestStore = readProcCache(cacheFile);
+  const nextByPpid: Record<string, CachedPpidEntry> = { ...latestStore.byPpid };
+  if (Number.isInteger(startPid) && startPid > 1 && checkAlive(startPid)) {
+    nextByPpid[String(startPid)] = {
+      agyPid: detected.agyPid,
+      bypass: detected.bypass,
+      cliMode: detected.cliMode,
+      updatedAtMs: nowMs,
+    };
+  }
+  const nextByAgyPid: Record<string, CachedAgyEntry> = { ...latestStore.byAgyPid };
+  if (detected.agyPid !== null && checkAlive(detected.agyPid)) {
+    nextByAgyPid[String(detected.agyPid)] = {
+      bypass: detected.bypass,
+      cliMode: detected.cliMode,
+      updatedAtMs: nowMs,
+    };
+  }
+  const pruned: ProcCacheStore = {
+    v: PROC_CACHE_VERSION,
+    byPpid: prunePidMap(nextByPpid, checkAlive, (e) => e.agyPid === null || checkAlive(e.agyPid)),
+    byAgyPid: prunePidMap(nextByAgyPid, checkAlive),
+  };
+  writeJsonAtomicSync(cacheFile, pruned, PRIVATE_FILE_MODE);
+}
+
 export function detectAgyProcess(cliHome: string, options: DetectAgyProcessOptions = {}): AgyProcessInfo {
   const platform = options.platform ?? process.platform;
   const startPid = options.startPid ?? process.ppid;
@@ -367,65 +424,58 @@ export function detectAgyProcess(cliHome: string, options: DetectAgyProcessOptio
   const cacheFile = resolveCliSubdirFile(cliHome, 'cache', 'agy_hud_proc.json');
   const store = cacheFile !== null ? readProcCache(cacheFile) : emptyProcCache();
 
-  if (
+  const knownLiveAgyPid =
     platform === 'win32' &&
     options.knownLiveAgyPid !== undefined &&
     options.knownLiveAgyPid !== null &&
     checkAlive(options.knownLiveAgyPid)
-  ) {
-    const knownEntry = store.byAgyPid[String(options.knownLiveAgyPid)];
-    return {
-      agyPid: options.knownLiveAgyPid,
-      bypass: knownEntry?.bypass ?? false,
-      cliMode: knownEntry?.cliMode ?? '',
-    };
-  }
+      ? options.knownLiveAgyPid
+      : null;
+  const cached = lookupProcCache(store, startPid, knownLiveAgyPid, checkAlive);
+  if (cached !== null) return cached;
 
-  const cachedByPpid = store.byPpid[String(startPid)];
-  if (
-    cachedByPpid !== undefined &&
-    checkAlive(startPid) &&
-    (cachedByPpid.agyPid === null || checkAlive(cachedByPpid.agyPid))
-  ) {
-    return {
-      agyPid: cachedByPpid.agyPid,
-      bypass: cachedByPpid.bypass,
-      cliMode: cachedByPpid.cliMode,
-    };
+  const lockFile = cacheFile !== null ? resolveCliSubdirFile(cliHome, 'cache', '.agy_hud_proc.lock') : null;
+  if (platform === 'win32') {
+    if (cacheFile === null || lockFile === null) {
+      return { agyPid: knownLiveAgyPid, bypass: false, cliMode: '' };
+    }
+    try {
+      return withFileLocksSync(
+        [lockFile],
+        () => {
+          const lockedCached = lookupProcCache(readProcCache(cacheFile), startPid, knownLiveAgyPid, checkAlive);
+          if (lockedCached !== null) return lockedCached;
+          const rawDetected = walkAncestors(options);
+          const detected: AgyProcessInfo =
+            rawDetected.agyPid === null && knownLiveAgyPid !== null
+              ? { agyPid: knownLiveAgyPid, bypass: false, cliMode: '' }
+              : rawDetected;
+          try {
+            persistProcCache(cacheFile, startPid, detected, checkAlive, nowMs);
+          } catch {
+            // Best-effort process cache write.
+          }
+          return detected;
+        },
+        PROC_CACHE_LOCK_TIMEOUT_MS,
+      );
+    } catch {
+      return { agyPid: knownLiveAgyPid, bypass: false, cliMode: '' };
+    }
   }
 
   const detected = walkAncestors(options);
-  if (cacheFile !== null) {
-    const nextByPpid: Record<string, CachedPpidEntry> = { ...store.byPpid };
-    if (Number.isInteger(startPid) && startPid > 1 && checkAlive(startPid)) {
-      nextByPpid[String(startPid)] = {
-        agyPid: detected.agyPid,
-        bypass: detected.bypass,
-        cliMode: detected.cliMode,
-        updatedAtMs: nowMs,
-      };
-    }
-    const nextByAgyPid: Record<string, CachedAgyEntry> = { ...store.byAgyPid };
-    if (detected.agyPid !== null && checkAlive(detected.agyPid)) {
-      nextByAgyPid[String(detected.agyPid)] = {
-        bypass: detected.bypass,
-        cliMode: detected.cliMode,
-        updatedAtMs: nowMs,
-      };
-    }
-
-    const pruned: ProcCacheStore = {
-      v: PROC_CACHE_VERSION,
-      byPpid: prunePidMap(nextByPpid, checkAlive, (e) => e.agyPid === null || checkAlive(e.agyPid)),
-      byAgyPid: prunePidMap(nextByAgyPid, checkAlive),
-    };
+  if (cacheFile !== null && lockFile !== null) {
     try {
-      writeJsonAtomicSync(cacheFile, pruned);
+      withFileLocksSync(
+        [lockFile],
+        () => persistProcCache(cacheFile, startPid, detected, checkAlive, nowMs),
+        PROC_CACHE_LOCK_TIMEOUT_MS,
+      );
     } catch {
       // Best-effort process cache write.
     }
   }
-
   return detected;
 }
 

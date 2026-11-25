@@ -145,7 +145,7 @@ function mountInspectorSandbox(): MountedInspector {
     getHtml: (id) => elements.get(id)?.innerHTML ?? '',
     emitHost: (data) => {
       for (const fn of winListeners.get('message') ?? []) {
-        fn({ data });
+        fn({ data, source: sandbox.window.parent });
       }
     },
     click: (matchMap) => {
@@ -480,5 +480,12 @@ void describe('hud-inspector-ui self-contained MCP App HTML', () => {
     await completeHandshake(mounted);
     mounted.setVisibility('hidden');
     assert.equal(mounted.isTimerCleared(), true);
+  });
+
+  void it('keeps the sticky Telemetry Ribbon single-row on narrow aux panes', () => {
+    const html = buildInspectorHtml();
+    const ribbonRule = /\.va-ribbon\s*\{([^}]*)\}/.exec(html)?.[1] ?? '';
+    assert.ok(ribbonRule.includes('flex-wrap: nowrap'), 'expected .va-ribbon to prevent multi-row wrapping');
+    assert.ok(ribbonRule.includes('overflow-x: auto'), 'expected .va-ribbon to scroll horizontally when narrow');
   });
 });

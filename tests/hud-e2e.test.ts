@@ -323,7 +323,7 @@ void describe('agy-hud built artifacts e2e', async () => {
       jsonrpc: '2.0',
       id: 5,
       method: 'tools/call',
-      params: { name: 'hud_poll_snapshot', arguments: { sessionId: convId, etag } },
+      params: { name: 'hud_poll_snapshot', arguments: { etag } },
     })}\n`;
     const res2 = runNodeScript(DIST_MCP_HUD, [], env, pollInput);
     assert.equal(res2.status, 0, res2.stderr);

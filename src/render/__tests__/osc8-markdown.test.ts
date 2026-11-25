@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -11,6 +11,7 @@ import type { SessionRecord } from '../../snapshot-types.ts';
 import type { AgentsSummary, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
 import { stripAnsi } from '../ansi.ts';
 import { renderSnapshotMarkdown } from '../osc8-markdown.ts';
+import { materializeSnapshotMarkdownIfNeeded, resolveSnapshotMarkdownUri } from '../osc8.ts';
 
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
 
@@ -237,5 +238,190 @@ void describe('renderSnapshotMarkdown', () => {
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }
+  });
+
+  void it('allows a newer render sharing the same baseline envelope to overwrite an older concurrent publish', () => {
+    const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-md-newer-'));
+    try {
+      const cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
+      const convId = 'conv-newer-wins';
+      const target = resolveSnapshotMarkdownUri(cliHome, convId);
+      assert.ok(target !== null);
+      const t0 = Date.parse('2026-06-01T12:00:00Z');
+      const baseOpts = {
+        cliHome,
+        convId,
+        target,
+        emittedOsc8Count: 1,
+        agyPid: null,
+        activity: null,
+        agentsSummary: null,
+      };
+      const initial = materializeSnapshotMarkdownIfNeeded({
+        ...baseOpts,
+        data: { conversation_id: convId, conversation_title: 'V0', cwd: tmpRoot },
+        existingEnvelope: null,
+        transcriptStat: { ino: 1, mtimeMs: 100, size: 10 },
+        nowMs: t0,
+      });
+      const older = materializeSnapshotMarkdownIfNeeded({
+        ...baseOpts,
+        data: { conversation_id: convId, conversation_title: 'Older V1', cwd: tmpRoot },
+        existingEnvelope: initial.envelope,
+        transcriptStat: { ino: 1, mtimeMs: 200, size: 20 },
+        nowMs: t0 + 1000,
+      });
+      assert.equal(older.written, true);
+      const newer = materializeSnapshotMarkdownIfNeeded({
+        ...baseOpts,
+        data: { conversation_id: convId, conversation_title: 'Newer V2', cwd: tmpRoot },
+        existingEnvelope: initial.envelope,
+        transcriptStat: { ino: 1, mtimeMs: 300, size: 30 },
+        nowMs: t0 + 2000,
+      });
+      assert.equal(newer.written, true);
+      assert.ok(readFileSync(target.absPath, 'utf8').includes('Newer V2'));
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  void it('strips CSI, DCS, unterminated OSC, C1, and bidi controls from rendered Markdown cells', () => {
+    const md = renderSnapshotMarkdown({
+      convId: 'conv-escape-1234',
+      data: {
+        conversation_id: 'conv-escape-1234',
+        conversation_title: 'Clean\x1b[2J\x1bPq#0\x1b\\\u202ETitle\x1b]52;c;unterminated',
+        cwd: '/repo/ws\x9b31m',
+        model: { display_name: 'Model\x1b]8;;https://evil.test\x07Name' },
+      },
+      activity: {
+        tools: [
+          {
+            name: 'tool\x1b[2J',
+            disp: 'tool\x1b[2J',
+            target: 'f.ts',
+            fullTarget: '/repo/f\x1b]52;c;abc\x07.ts',
+            running: true,
+            isSkillRead: false,
+          },
+        ],
+        skills: ['skill\x1b[31m\x1b[2J'],
+        mcps: ['srv\x1b]52;c;abc\x07'],
+        agents: [],
+      },
+      agentsSummary: {
+        kind: 'agents',
+        working: 1,
+        waiting: 0,
+        alive: 1,
+        total: 1,
+        entries: [
+          { name: 'worker\x1b[2J', type: 'type\x9d52;c;x\x07', model: 'flash\u202E', state: 'working', ts: null },
+        ],
+      },
+      nowMs: 1_000_000,
+    });
+
+    assert.equal(md.includes('\x1b'), false);
+    assert.equal(md.includes('\x07'), false);
+    assert.equal(md.includes('\x9b'), false);
+    assert.equal(md.includes('\x9d'), false);
+    assert.equal(md.includes('\u202E'), false);
+    assert.equal(md.includes('unterminated'), false);
+    assert.ok(md.includes('- **Title**: CleanTitle'));
+    assert.ok(md.includes('- **Model**: `ModelName`'));
+  });
+
+  void it('escapes Markdown image and HTML syntax in snapshot title', () => {
+    const md = renderSnapshotMarkdown({
+      convId: 'conv-md-title',
+      data: {
+        conversation_id: 'conv-md-title',
+        conversation_title: '![x](https://attacker.example/pixel) <img src=x>',
+      },
+      activity: null,
+      agentsSummary: null,
+      nowMs: 1_000_000,
+    });
+    assert.equal(md.includes('![x](https://attacker.example/pixel)'), false);
+    assert.equal(md.includes('<img src=x>'), false);
+    assert.ok(md.includes('\\!\\[x\\]\\(https://attacker.example/pixel\\)'));
+  });
+
+  void it('escapes Markdown links in agent table cells', () => {
+    const md = renderSnapshotMarkdown({
+      convId: 'conv-md-agent',
+      data: { conversation_id: 'conv-md-agent' },
+      activity: null,
+      agentsSummary: {
+        kind: 'agents',
+        working: 1,
+        waiting: 0,
+        alive: 1,
+        total: 1,
+        entries: [
+          {
+            name: 'worker',
+            type: '[click](https://evil.test)',
+            model: '![px](https://evil.test/p.png)',
+            state: 'working',
+            ts: 990,
+          },
+        ],
+      },
+      nowMs: 1_000_000,
+    });
+    assert.equal(md.includes('[click](https://evil.test)'), false);
+    assert.equal(md.includes('![px](https://evil.test/p.png)'), false);
+  });
+
+  void it('expands code-span fence length beyond double backticks in tool targets', () => {
+    const payload = 'x`` [click](https://evil.test) ``y';
+    const md = renderSnapshotMarkdown({
+      convId: 'conv-md-fence',
+      data: { conversation_id: 'conv-md-fence' },
+      activity: {
+        tools: [
+          {
+            name: 'run_command',
+            disp: 'run_command',
+            target: payload,
+            fullTarget: payload,
+            running: true,
+            isSkillRead: false,
+          },
+        ],
+        skills: [],
+        mcps: [],
+        agents: [],
+      },
+      agentsSummary: null,
+      nowMs: 1_000_000,
+    });
+    assert.ok(md.includes(`\`\`\`${payload}\`\`\``));
+  });
+
+  void it('pads code-span fences with spaces when payload starts or ends with a backtick', () => {
+    const payload = '``wrapped``';
+    const md = renderSnapshotMarkdown({
+      convId: 'conv-md-pad',
+      data: { conversation_id: 'conv-md-pad', model: { display_name: payload } },
+      activity: null,
+      agentsSummary: null,
+      nowMs: 1_000_000,
+    });
+    assert.ok(md.includes(`- **Model**: \`\`\` ${payload} \`\`\``));
+  });
+
+  void it('keeps literal pipe characters unescaped inside non-table Markdown code spans', () => {
+    const md = renderSnapshotMarkdown({
+      convId: 'conv-md-pipe',
+      data: { conversation_id: 'conv-md-pipe', cwd: '/repo/a|b' },
+      activity: null,
+      agentsSummary: null,
+      nowMs: 1_000_000,
+    });
+    assert.ok(md.includes('- **Workspace**: `/repo/a|b`'));
   });
 });

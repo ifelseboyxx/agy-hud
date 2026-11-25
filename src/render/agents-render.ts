@@ -1,4 +1,5 @@
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { AgentEntry, AgentsSummary, StatusLineData } from '../types.ts';
 import {
   BRIGHT_CYAN,
@@ -25,8 +26,9 @@ export interface RuntimeBadgesOptions {
 
 export function formatRuntimeBadges(data: StatusLineData, options?: RuntimeBadgesOptions): string[] {
   const badges: string[] = [];
-  const aname = nonEmptyStr(data.agent?.name);
-  if (aname !== undefined) {
+  const rawAgentName = nonEmptyStr(data.agent?.name);
+  const aname = rawAgentName !== undefined ? sanitizeTerminalLabel(rawAgentName) : '';
+  if (aname.length > 0) {
     badges.push(`${BRIGHT_CYAN}@${aname.slice(0, 20)}${RESET}`);
   }
 
@@ -40,8 +42,9 @@ export function formatRuntimeBadges(data: StatusLineData, options?: RuntimeBadge
       bstatus !== 'ended' &&
       bstatus !== 'idle'
     ) {
-      const arm = nonEmptyStr(battle.focused_arm);
-      const armStr = arm !== undefined ? ` ${arm}` : '';
+      const rawArm = nonEmptyStr(battle.focused_arm);
+      const arm = rawArm !== undefined ? sanitizeTerminalLabel(rawArm) : '';
+      const armStr = arm.length > 0 ? ` ${arm}` : '';
       badges.push(`${BRIGHT_YELLOW}Battle${armStr}${RESET}`);
     }
   }
@@ -78,12 +81,13 @@ export function formatAgentsBadge(summary: AgentsSummary | null | undefined): st
 
 function makeMemberChipItem(entry: AgentEntry): PackableLineItem {
   const icon = entry.state === 'working' ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`;
+  const cleanName = sanitizeTerminalLabel(entry.name);
   return {
-    render: () => `${icon} ${MAGENTA}${entry.name}${RESET}`,
+    render: () => `${icon} ${MAGENTA}${cleanName}${RESET}`,
     renderEllipsized: (maxCols: number) =>
       maxCols >= 3
-        ? `${icon} ${MAGENTA}${truncateToWidth(entry.name, maxCols - 2)}${RESET}`
-        : `${MAGENTA}${truncateToWidth(entry.name, maxCols)}${RESET}`,
+        ? `${icon} ${MAGENTA}${truncateToWidth(cleanName, maxCols - 2)}${RESET}`
+        : `${MAGENTA}${truncateToWidth(cleanName, maxCols)}${RESET}`,
   };
 }
 
@@ -127,10 +131,13 @@ export function formatAgentsSection(
   }
 
   const byNewest = [...recent].sort((a, b) => (b.ts !== a.ts ? b.ts - a.ts : b.idx - a.idx));
-  const doneItems: PackableLineItem[] = byNewest.map(({ entry }) => ({
-    render: () => `${MAGENTA}${entry.name}${RESET}`,
-    renderEllipsized: (maxCols: number) => `${MAGENTA}${truncateToWidth(entry.name, maxCols)}${RESET}`,
-  }));
+  const doneItems: PackableLineItem[] = byNewest.map(({ entry }) => {
+    const cleanName = sanitizeTerminalLabel(entry.name);
+    return {
+      render: () => `${MAGENTA}${cleanName}${RESET}`,
+      renderEllipsized: (maxCols: number) => `${MAGENTA}${truncateToWidth(cleanName, maxCols)}${RESET}`,
+    };
+  });
   const donePrefix =
     kind === 'swarm'
       ? `  ${GREEN}✓${RESET} Swarm ${GRAY}(${recent.length} stopped):${RESET} `

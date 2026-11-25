@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import { isPlainObject, isSupportedNodeVersion, NODE_RANGE_LABEL } from '../../core/guards.ts';
 import {
+  formatStatusLineCommand,
   getSettingsPaths,
   isSameCommandPath,
   isValidBackupRecord,
@@ -11,8 +12,11 @@ import {
 } from '../../core/statusline-ownership.ts';
 import {
   captureEntrySnapshotSync,
+  decodeStrictUtf8,
   type EntrySnapshotSync,
   lstatIfPresentSync,
+  POSIX_MODE_MASK,
+  PRIVATE_FILE_MODE,
   readJsonObjectSync,
   restoreEntrySnapshotSync,
   restoreOwnedEntrySnapshotSync,
@@ -68,6 +72,10 @@ interface StatusLineRollbackSpec {
   expectedStatusLine: unknown;
 }
 
+function getCapturedFileMode(snap: EntrySnapshotSync): number | undefined {
+  return snap.kind === 'file' ? snap.mode : undefined;
+}
+
 function rollbackStatusLineField(spec: StatusLineRollbackSpec): void {
   const { settingsSnapshot, writtenSettingsContent, hadPreviousStatusLine, previousStatusLine } = spec.receipt;
   if (!settingsSnapshot || !writtenSettingsContent) return;
@@ -80,7 +88,7 @@ function rollbackStatusLineField(spec: StatusLineRollbackSpec): void {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(currentBytes.toString('utf8'));
+    parsed = JSON.parse(decodeStrictUtf8(currentBytes));
   } catch {
     return;
   }
@@ -92,7 +100,11 @@ function rollbackStatusLineField(spec: StatusLineRollbackSpec): void {
   } else {
     delete next.statusLine;
   }
-  writeJsonAtomicSync(settingsSnapshot.filePath, next);
+  writeJsonAtomicSync(
+    settingsSnapshot.filePath,
+    next,
+    process.platform === 'win32' ? undefined : cur.mode & POSIX_MODE_MASK,
+  );
 }
 
 export function readStatusLineBackupStrict(backupPath: string): Record<string, unknown> | null {
@@ -102,6 +114,17 @@ export function readStatusLineBackupStrict(backupPath: string): Record<string, u
     throw new Error(`Invalid statusLine backup format in ${backupPath}`);
   }
   return parsed;
+}
+
+export function preflightStatusLineBackup(cliHome: string, targetDir: string, mode: 'wire' | 'restore'): void {
+  const { settingsPath, backupPath } = getSettingsPaths(cliHome);
+  const hudCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'));
+  const existingSettings = readJsonObjectSync(settingsPath, true);
+  const curCmd = isPlainObject(existingSettings?.statusLine) ? existingSettings.statusLine.command : undefined;
+  const owned = isSameCommandPath(curCmd, hudCmd);
+  if (mode === 'wire' ? !owned : owned) {
+    readStatusLineBackupStrict(backupPath);
+  }
 }
 
 function writeBackupPayload(
@@ -116,7 +139,7 @@ function writeBackupPayload(
     savedAt: new Date().toISOString(),
   };
   const content = serializeJsonBuffer(backupPayload);
-  writeBufferAtomicSync(backupPath, content);
+  writeBufferAtomicSync(backupPath, content, PRIVATE_FILE_MODE);
   return content;
 }
 
@@ -176,7 +199,7 @@ function resolveInheritedPriorStatusLine(
 export function wireCliStatusLine(cliHome: string, targetDir: string): WireStatusLineResult {
   const { settingsPath, backupPath } = getSettingsPaths(cliHome);
   const existing = readJsonObjectSync(settingsPath, true) ?? {};
-  const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
+  const hudCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'));
   const cur = existing.statusLine;
   const curCmd = isPlainObject(cur) ? cur.command : undefined;
   const needsBackup = !isSameCommandPath(curCmd, hudCmd);
@@ -216,7 +239,7 @@ export function wireCliStatusLine(cliHome: string, targetDir: string): WireStatu
       writtenBackupContent = writeBackupPayload(backupPath, hudCmd, previousToSave);
     }
     writtenSettingsContent = serializeJsonBuffer({ ...existing, statusLine: nextStatusLine });
-    writeBufferAtomicSync(settingsPath, writtenSettingsContent);
+    writeBufferAtomicSync(settingsPath, writtenSettingsContent, getCapturedFileMode(settingsSnap));
   } catch (err) {
     if (writtenBackupContent !== null) {
       rethrowWithRollback(err, 'restore backup', () => restoreOwnedEntrySnapshotSync(backupSnap, writtenBackupContent));
@@ -237,36 +260,49 @@ export function wireCliStatusLine(cliHome: string, targetDir: string): WireStatu
   };
 }
 
-export function disableCliStatusLine(cliHome: string, targetDir: string): DisableStatusLineResult {
+export function disableCliStatusLine(
+  cliHome: string,
+  targetDir: string,
+  platform: NodeJS.Platform = process.platform,
+): DisableStatusLineResult {
   const { settingsPath } = getSettingsPaths(cliHome);
   const existing = readJsonObjectSync(settingsPath, true);
   if (!existing || existing.statusLine === undefined || existing.statusLine === null) {
     return { changed: false, skippedReason: 'not-configured' };
   }
 
-  const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
+  const hudCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), platform);
   const rawSl = existing.statusLine;
-  if (!isPlainObject(rawSl) || !isSameCommandPath(rawSl.command, hudCmd)) {
+  if (!isPlainObject(rawSl) || !isSameCommandPath(rawSl.command, hudCmd, process.env, platform)) {
     return { changed: false, skippedReason: 'not-owned' };
   }
 
-  writeJsonAtomicSync(settingsPath, { ...existing, statusLine: { ...rawSl, enabled: false } });
+  const settingsSnap = captureEntrySnapshotSync(settingsPath);
+  writeJsonAtomicSync(
+    settingsPath,
+    { ...existing, statusLine: { ...rawSl, enabled: false } },
+    getCapturedFileMode(settingsSnap),
+  );
   return { changed: true, skippedReason: null };
 }
 
-export function restoreCliStatusLine(cliHome: string, targetDir: string): RestoreStatusLineResult {
+export function restoreCliStatusLine(
+  cliHome: string,
+  targetDir: string,
+  platform: NodeJS.Platform = process.platform,
+): RestoreStatusLineResult {
   const { settingsPath, backupPath } = getSettingsPaths(cliHome);
   const existing = readJsonObjectSync(settingsPath, true);
   if (!existing) return { changed: false, skippedReason: 'missing-settings' };
 
-  const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
+  const hudCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), platform);
   const curCmd = isPlainObject(existing.statusLine) ? existing.statusLine.command : undefined;
-  if (!isSameCommandPath(curCmd, hudCmd)) {
+  if (!isSameCommandPath(curCmd, hudCmd, process.env, platform)) {
     return { changed: false, skippedReason: 'not-owned' };
   }
 
   const backup = readStatusLineBackupStrict(backupPath);
-  const backupOwned = backup !== null && isSameCommandPath(backup.wiredCommand, hudCmd);
+  const backupOwned = backup !== null && isSameCommandPath(backup.wiredCommand, hudCmd, process.env, platform);
 
   const settingsSnap = captureEntrySnapshotSync(settingsPath);
   const hadPreviousStatusLine = Object.hasOwn(existing, 'statusLine');
@@ -280,7 +316,7 @@ export function restoreCliStatusLine(cliHome: string, targetDir: string): Restor
   }
 
   const writtenSettingsContent = serializeJsonBuffer(nextSettings);
-  writeBufferAtomicSync(settingsPath, writtenSettingsContent);
+  writeBufferAtomicSync(settingsPath, writtenSettingsContent, getCapturedFileMode(settingsSnap));
 
   if (backupOwned) {
     try {
@@ -314,7 +350,13 @@ export function inspectStatusLineState(cliHome: string, targetDir: string): Stat
   const sl = settings?.statusLine;
   if (!isPlainObject(sl)) return { settingsPath, state: 'not configured', valid: true };
   const cmd = typeof sl.command === 'string' && sl.command.trim().length > 0 ? sl.command.trim() : undefined;
-  const isSelf = isSameCommandPath(cmd, path.join(targetDir, 'dist', 'hud.mjs'));
+  let expectedCmd: string;
+  try {
+    expectedCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'));
+  } catch {
+    expectedCmd = '';
+  }
+  const isSelf = expectedCmd.length > 0 && isSameCommandPath(cmd, expectedCmd);
   if (isSelf && sl.enabled === false) {
     return { settingsPath, state: 'disabled (wired to agy-hud, enabled=false)', valid: true };
   }

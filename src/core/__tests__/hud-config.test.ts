@@ -12,7 +12,7 @@ import {
   VALID_HUD_PRESETS,
 } from '../hud-config.ts';
 
-void describe('HudConfig schema, presets, and legacy hydration', async () => {
+void describe('HudConfig schema and presets', async () => {
   await it('defaults DEFAULT_HUD_CONFIG to the full preset with osc8Links enabled', () => {
     assert.deepEqual(DEFAULT_HUD_CONFIG, {
       preset: 'full',
@@ -120,19 +120,22 @@ void describe('HudConfig schema, presets, and legacy hydration', async () => {
     assert.equal(merged.segments.perf, false);
   });
 
-  await it('ignores unknown keys such as autoWireStatusLine and removed show* keys', () => {
+  await it('ignores unknown keys such as autoWireStatusLine in HudConfig', () => {
     const expected: HudConfig = {
       ...buildPresetConfig('full'),
       segments: { ...buildPresetConfig('full').segments, cost: false },
     };
-    assert.deepEqual(
-      mergeHudConfig({ autoWireStatusLine: true, showModeLine: false, segments: { cost: false } }),
-      expected,
-    );
-    assert.deepEqual(
-      hydrateHudConfig({ autoWireStatusLine: true, showModeLine: false, segments: { cost: false } }),
-      expected,
-    );
+    assert.deepEqual(mergeHudConfig({ autoWireStatusLine: true, segments: { cost: false } }), expected);
+    assert.deepEqual(hydrateHudConfig({ autoWireStatusLine: true, segments: { cost: false } }), expected);
     assert.equal('autoWireStatusLine' in hydrateHudConfig({ autoWireStatusLine: true }), false);
+  });
+
+  await it('ignores removed unpublished show* keys in HudConfig', () => {
+    const expected: HudConfig = {
+      ...buildPresetConfig('full'),
+      segments: { ...buildPresetConfig('full').segments, cost: false },
+    };
+    assert.deepEqual(mergeHudConfig({ showModeLine: false, segments: { cost: false } }), expected);
+    assert.deepEqual(hydrateHudConfig({ showModeLine: false, segments: { cost: false } }), expected);
   });
 });

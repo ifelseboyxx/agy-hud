@@ -135,6 +135,10 @@ void describe('CLI shim path resolution and wrapper formatting', async () => {
     const hint = formatPathHint('/Users/alice/.local/bin', 'darwin');
     assert.equal(hint.includes('\n'), false);
     assert.ok(hint.includes('/Users/alice/.local/bin'));
+
+    const trickyHint = formatPathHint('/tmp/$(id);foo', 'darwin');
+    assert.ok(trickyHint.includes('export PATH=\'/tmp/$(id);foo\':"$PATH"'));
+    assert.throws(() => formatPathHint('/tmp/bad\npath', 'darwin'), /newline/i);
   });
 
   await it('formats POSIX wrapper with v1 header, PATH-first exec node, realpath fallback, and rm diagnostic', () => {
@@ -147,9 +151,24 @@ void describe('CLI shim path resolution and wrapper formatting', async () => {
     assert.equal(lines[1], `# ${SHIM_HEADER_VERSION} target=${cliPath}`);
     assert.ok(script.includes('exec node "$TARGET" "$@"'));
     assert.ok(script.includes('exec "$FALLBACK_NODE" "$TARGET" "$@"'));
-    assert.ok(script.includes(`rm "${shimPath}"`));
+    assert.ok(script.includes(`rm -- '\\''${shimPath}'\\''`));
     assert.equal(script.includes('\r'), false);
     assert.throws(() => formatShimScriptPosix(`${cliPath}\nbad`, nodePath, shimPath), /newline/i);
+  });
+
+  await it('single-quotes shell metacharacters in the POSIX shim missing-plugin cleanup hint', () => {
+    if (process.platform === 'win32') return;
+    const root = makeTempDir('agy-hud-shim-rm-quote-');
+    const missingCli = path.join(root, 'missing-plugin', 'dist', 'cli.mjs');
+    const evilShimDir = path.join(root, 'bin-$(id)`uname`"x"');
+    const evilShimPath = path.join(evilShimDir, 'agy-hud');
+    mkdirSync(evilShimDir, { recursive: true });
+    const script = formatShimScriptPosix(missingCli, process.execPath, evilShimPath);
+    writeFileSync(evilShimPath, script, { mode: 0o755 });
+
+    const res = spawnSync('/bin/sh', [evilShimPath], { encoding: 'utf8' });
+    assert.equal(res.status, 1);
+    assert.ok(res.stderr.includes(`rm -- '${evilShimPath}'`), `expected single-quoted rm hint, got: ${res.stderr}`);
   });
 
   await it('formats Windows .cmd wrapper with v1 header, PATH-first where node, fallback node, and del diagnostic', () => {
@@ -335,7 +354,7 @@ void describe('CLI shim inspection, preflight, atomic write/rollback, removal, a
     });
     assert.equal(missingRes.status, 1);
     assert.equal(missingRes.stdout, '');
-    assert.ok(missingRes.stderr.includes(`rm "${receipt.primaryPath}"`));
+    assert.ok(missingRes.stderr.includes(`rm -- '${receipt.primaryPath}'`));
     assert.ok(missingRes.stderr.includes('agy plugin uninstall'));
     assert.equal(existsSync(receipt.primaryPath), true, 'stale shim must not self-delete');
   });

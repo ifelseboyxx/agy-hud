@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { closeSync, openSync, readSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
-import { isSameCommandPath } from '../../core/statusline-ownership.ts';
+import { isSameCanonicalFilePath } from '../../core/statusline-ownership.ts';
 import {
   captureEntrySnapshotSync,
   type EntrySnapshotSync,
@@ -150,7 +150,7 @@ function inspectSingleShimFile(
   const rest = line2.slice(headerPrefix.length).trim();
   const match = /^target=(.+)$/.exec(rest);
   const parsedTarget = match?.[1]?.trim() ?? '';
-  const matchesSelf = parsedTarget.length > 0 && isSameCommandPath(parsedTarget, expectedTarget);
+  const matchesSelf = parsedTarget.length > 0 && isSameCanonicalFilePath(parsedTarget, expectedTarget);
   if (line1 !== expectedLine1 || parsedTarget.length === 0) {
     return {
       filePath,

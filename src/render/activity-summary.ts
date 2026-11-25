@@ -1,5 +1,6 @@
 import { aggregateCompletedTools } from '../collectors/activity-parse.ts';
-import { isFiniteNum } from '../core/guards.ts';
+import { isFiniteNum, selectNewestFirst } from '../core/guards.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { AgentsSummary, CompletedToolAggregate, HudLineId, TranscriptActivity } from '../types.ts';
 import { makeRunningToolItem, type PackableLineItem } from './activity-lines.ts';
 import { CYAN, GRAY, GREEN, MAGENTA, RESET, truncateToWidth, visibleLen, YELLOW } from './ansi.ts';
@@ -32,7 +33,7 @@ function formatOverflowSuffix(totalCount: number, shownCount: number): string {
 
 function buildCompletedToolsCategory(completed: readonly CompletedToolAggregate[]): SummaryCategory | null {
   if (completed.length === 0) return null;
-  const items = completed.map((agg) => `${agg.disp} ${GRAY}×${agg.count}${RESET}`);
+  const items = completed.map((agg) => `${sanitizeTerminalLabel(agg.disp)} ${GRAY}×${agg.count}${RESET}`);
   const totalCount = completed.length;
   return {
     startsWithCheck: true,
@@ -45,7 +46,7 @@ function buildCompletedToolsCategory(completed: readonly CompletedToolAggregate[
 
 function buildNamedSummaryCategory(title: string, names: readonly string[]): SummaryCategory | null {
   if (names.length === 0) return null;
-  const items = names.map((name) => `${CYAN}${name}${RESET}`);
+  const items = names.map((name) => `${CYAN}${sanitizeTerminalLabel(name)}${RESET}`);
   const totalCount = names.length;
   return {
     startsWithCheck: false,
@@ -68,7 +69,7 @@ function buildAgentsSummaryCategory(summary: AgentsSummary | null, nowSec: numbe
     if (ordered.length === 0) return null;
     const items = ordered.map((entry) => {
       const icon = entry.state === 'working' ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`;
-      return `${icon} ${MAGENTA}${entry.name}${RESET}`;
+      return `${icon} ${MAGENTA}${sanitizeTerminalLabel(entry.name)}${RESET}`;
     });
     const totalCount = Math.max(ordered.length, summary.total);
     return {
@@ -84,7 +85,7 @@ function buildAgentsSummaryCategory(summary: AgentsSummary | null, nowSec: numbe
   for (let idx = 0; idx < summary.entries.length; idx += 1) {
     const entry = summary.entries[idx];
     if (entry && entry.state === 'done' && isFiniteNum(entry.ts) && nowSec - entry.ts <= AGENT_SUMMARY_RETENTION_SEC) {
-      recent.push({ name: entry.name, ts: entry.ts, idx });
+      recent.push({ name: sanitizeTerminalLabel(entry.name), ts: entry.ts, idx });
     }
   }
   if (recent.length === 0) return null;
@@ -203,7 +204,12 @@ function fitSummaryWithRunningTools(
   if (visibleLen(base1) <= budget) return base1;
 
   const firstItem = runningItems[0];
-  return firstItem ? `${prefix}${firstItem.renderEllipsized(Math.max(1, budget - visibleLen(prefix)))}` : '';
+  if (!firstItem) return '';
+  const prefixCols = visibleLen(prefix);
+  if (budget <= prefixCols) {
+    return firstItem.renderEllipsized(budget);
+  }
+  return `${prefix}${firstItem.renderEllipsized(budget - prefixCols)}`;
 }
 
 export function formatActivitySummaryLine(input: ActivitySummaryInput): string {
@@ -221,11 +227,10 @@ export function formatActivitySummaryLine(input: ActivitySummaryInput): string {
   const mcps = activity?.mcps ?? [];
   const filteredTools = (activity?.tools ?? []).filter((t) => !(skills.length > 0 && t.isSkillRead));
   const runningItems = includeTools
-    ? filteredTools
-        .filter((t) => t.running)
-        .slice(-MAX_SUMMARY_RUNNING_TOOLS)
-        .reverse()
-        .map(makeRunningToolItem)
+    ? selectNewestFirst(
+        filteredTools.filter((t) => t.running),
+        MAX_SUMMARY_RUNNING_TOOLS,
+      ).map(makeRunningToolItem)
     : [];
 
   const categories: SummaryCategory[] = [];
@@ -266,7 +271,11 @@ export function formatActivitySummaryLine(input: ActivitySummaryInput): string {
     if (packed !== null) {
       line = packed;
     } else if (firstCat !== undefined) {
-      line = `${prefix}${truncateToWidth(firstCat.render(1), Math.max(1, budget - visibleLen(prefix)))}`;
+      const prefixCols = visibleLen(prefix);
+      line =
+        budget <= prefixCols
+          ? truncateToWidth(firstCat.render(1), budget)
+          : `${prefix}${truncateToWidth(firstCat.render(1), budget - prefixCols)}`;
     }
   }
 

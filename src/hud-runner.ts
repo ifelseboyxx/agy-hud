@@ -9,11 +9,11 @@ import {
   readHudConfig,
   type GitBranchInfo,
 } from './collectors/settings.ts';
-import { readSnapshotEnvelope } from './collectors/snapshot-envelope.ts';
+import { readActivePidMarker, readSnapshotEnvelope, type ActivePidMarker } from './collectors/snapshot-envelope.ts';
 import { loadSessionTelemetry } from './collectors/telemetry.ts';
 import { isFiniteNum, nonEmptyStr } from './core/guards.ts';
 import { buildPresetConfig, cloneHudConfig, PRESET_TEMPLATES } from './core/hud-config.ts';
-import { statIfPresentSync } from './fs-utils.ts';
+import { lstatIfPresentSync, statIfPresentSync } from './fs-utils.ts';
 import { DEFAULT_TERM_WIDTH } from './render/ansi.ts';
 import { formatHudLines, resolveEffectiveExceeds200k } from './render/format-hud.ts';
 import { hasAnyActivityLine } from './render/modules.ts';
@@ -119,6 +119,22 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
   const enabledLines = new Set<HudLineId>(config.lines);
   const collectors = options?.collectors;
 
+  const nowSec = options?.nowSec ?? Date.now() / 1000;
+  const nowMs = Math.round(nowSec * 1000);
+  const convId = resolveConversationId(data);
+  const existingEnvelope: SnapshotEnvelope | null = convId !== null ? readSnapshotEnvelope(cliHome, convId) : null;
+  let agyPid = options?.agyPid ?? null;
+  let resolvedBypass = options?.bypass;
+  let resolvedCliMode = options?.cliMode;
+  if (convId !== null && options?.agyPid === undefined) {
+    const procInfo = detectAgyProcess(cliHome, { knownLiveAgyPid: existingEnvelope?.agyPid ?? null });
+    agyPid = procInfo.agyPid;
+    resolvedBypass ??= procInfo.bypass;
+    resolvedCliMode ??= procInfo.cliMode;
+  }
+  const baselinePidMarker: ActivePidMarker | null =
+    convId !== null && agyPid !== null ? readActivePidMarker(cliHome, agyPid, nowMs) : null;
+
   const needCliSettings = enabledLines.has('mode') || (enabledLines.has('identity') && config.segments.model);
   const cliSettings =
     options?.cliSettings !== undefined ? options.cliSettings : needCliSettings ? readCliSettings(cliHome) : {};
@@ -160,26 +176,14 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
         ? (collectors?.loadTodos ?? loadTodos)(cliHome, effectiveData)
         : null;
 
-  const termWidth = isFiniteNum(effectiveData.terminal_width) ? effectiveData.terminal_width : DEFAULT_TERM_WIDTH;
-  const nowSec = options?.nowSec ?? Date.now() / 1000;
+  const termWidth =
+    isFiniteNum(effectiveData.terminal_width) && effectiveData.terminal_width > 0
+      ? effectiveData.terminal_width
+      : DEFAULT_TERM_WIDTH;
 
-  const convId = resolveConversationId(effectiveData);
   const env = options?.env ?? process.env;
   const osc8Target =
     convId !== null && canEmitOsc8Links(config, convId, env) ? resolveSnapshotMarkdownUri(cliHome, convId) : null;
-  let existingEnvelope: SnapshotEnvelope | null = null;
-  let agyPid = options?.agyPid ?? null;
-  let resolvedBypass = options?.bypass;
-  let resolvedCliMode = options?.cliMode;
-  if (convId !== null) {
-    existingEnvelope = readSnapshotEnvelope(cliHome, convId);
-    if (options?.agyPid === undefined) {
-      const procInfo = detectAgyProcess(cliHome, { knownLiveAgyPid: existingEnvelope?.agyPid ?? null });
-      agyPid = procInfo.agyPid;
-      resolvedBypass ??= procInfo.bypass;
-      resolvedCliMode ??= procInfo.cliMode;
-    }
-  }
   if (enabledLines.has('mode') && (resolvedBypass === undefined || resolvedCliMode === undefined)) {
     const procFlags = detectAgyFlags(cliHome);
     resolvedBypass ??= procFlags.bypass;
@@ -196,58 +200,68 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
         ? getSessionElapsedSeconds(cliHome, rawConvId, effectiveData)
         : null;
 
-  const activityLineOptions: ActivityLineFormatOptions | undefined =
-    options?.activityLineOptions?.formatOverflow !== undefined
-      ? options.activityLineOptions
-      : osc8Target !== null
-        ? {
-            ...options?.activityLineOptions,
-            formatOverflow: (hiddenCount) => formatOsc8Overflow(hiddenCount, osc8Target.uri),
-          }
-        : options?.activityLineOptions;
+  const renderFrame = (allowOsc8: boolean): string[] => {
+    const activeTarget = allowOsc8 ? osc8Target : null;
+    const activityLineOptions: ActivityLineFormatOptions | undefined =
+      options?.activityLineOptions?.formatOverflow !== undefined
+        ? options.activityLineOptions
+        : activeTarget !== null
+          ? {
+              ...options?.activityLineOptions,
+              formatOverflow: (hiddenCount) => formatOsc8Overflow(hiddenCount, activeTarget.uri),
+            }
+          : options?.activityLineOptions;
 
-  const formatActivitySummaryTail: ((remainingCols: number) => string) | undefined =
-    options?.formatActivitySummaryTail !== undefined
-      ? options.formatActivitySummaryTail
-      : osc8Target !== null
-        ? (remainingCols) => formatActivitySummarySnapshotTail(remainingCols, osc8Target.uri)
-        : undefined;
+    const formatActivitySummaryTail: ((remainingCols: number) => string) | undefined =
+      options?.formatActivitySummaryTail !== undefined
+        ? options.formatActivitySummaryTail
+        : activeTarget !== null
+          ? (remainingCols) => formatActivitySummarySnapshotTail(remainingCols, activeTarget.uri)
+          : undefined;
 
-  const rendered = formatHudLines({
-    cliHome,
-    data: effectiveData,
-    config,
-    cliSettings,
-    telemetry,
-    activity,
-    agentsSummary,
-    todos,
-    termWidth,
-    nowSec,
-    modeOptions: { bypass: resolvedBypass, cliMode: resolvedCliMode },
-    identityOptions: {
-      branch: gitInfo?.branch,
-      dirty: gitInfo?.dirty,
-      elapsedSeconds,
+    return formatHudLines({
+      data: effectiveData,
+      config,
+      cliSettings,
+      telemetry,
+      activity,
+      agentsSummary,
+      todos,
+      termWidth,
       nowSec,
-    },
-    activityLineOptions,
-    formatActivitySummaryTail,
-  });
+      modeOptions: { bypass: resolvedBypass, cliMode: resolvedCliMode },
+      identityOptions: {
+        branch: gitInfo?.branch,
+        dirty: gitInfo?.dirty,
+        elapsedSeconds,
+        nowSec,
+      },
+      activityLineOptions,
+      formatActivitySummaryTail,
+    });
+  };
+
+  let rendered = renderFrame(true);
 
   // Always write the lightweight session metadata envelope; materialize .md only under Gate 1 + Gate 2.
   if (convId !== null) {
-    const nowMs = Math.round(nowSec * 1000);
     const emittedOsc8Count = osc8Target !== null ? countEmittedOsc8Links(rendered, osc8Target.uri) : 0;
     let transcriptStat: TranscriptStatFingerprint | null = null;
     if (osc8Target !== null && emittedOsc8Count >= 1) {
       const transcriptPath = resolveTranscriptPath(cliHome, effectiveData);
-      const st = transcriptPath !== null ? statIfPresentSync(transcriptPath) : null;
+      let st: ReturnType<typeof statIfPresentSync> = null;
+      if (transcriptPath !== null) {
+        try {
+          st = statIfPresentSync(transcriptPath);
+        } catch {
+          st = null;
+        }
+      }
       if (st !== null && st.isFile()) {
         transcriptStat = { ino: st.ino, mtimeMs: st.mtimeMs, size: st.size };
       }
     }
-    materializeSnapshotMarkdownIfNeeded({
+    const matResult = materializeSnapshotMarkdownIfNeeded({
       cliHome,
       convId,
       target: osc8Target,
@@ -255,12 +269,25 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
       data: effectiveData,
       agyPid,
       existingEnvelope,
+      baselinePidMarker,
       transcriptStat,
       activity,
       agentsSummary,
       telemetry,
       nowMs,
     });
+    if (osc8Target !== null && emittedOsc8Count >= 1 && !matResult.written) {
+      let hasRegularMd = false;
+      try {
+        const mdStat = lstatIfPresentSync(osc8Target.absPath);
+        hasRegularMd = mdStat !== null && !mdStat.isSymbolicLink() && mdStat.isFile();
+      } catch {
+        hasRegularMd = false;
+      }
+      if (!hasRegularMd) {
+        rendered = renderFrame(false);
+      }
+    }
   }
   return rendered;
 }

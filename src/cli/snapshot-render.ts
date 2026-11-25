@@ -1,7 +1,8 @@
 import path from 'node:path';
 
 import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
-import { nonEmptyStr } from '../core/guards.ts';
+import { nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
+import { sanitizeTerminalText } from '../core/terminal-text.ts';
 import { computeHudVisibleToolsCap } from '../render/activity-lines.ts';
 import {
   BOLD,
@@ -99,12 +100,15 @@ function wrapInspectorChips(chips: readonly string[], sep: string, maxCols: numb
   if (chips.length === 0) return [];
   const sepCols = visibleLen(sep);
   const indentCols = visibleLen(indent);
+  const chipMaxCols = Math.max(1, maxCols - indentCols);
   const lines: string[] = [];
   let cur: string[] = [];
   let curCols = indentCols;
 
-  for (const chip of chips) {
-    const w = visibleLen(chip);
+  for (const rawChip of chips) {
+    const rawW = visibleLen(rawChip);
+    const chip = rawW > chipMaxCols ? truncateToWidth(rawChip, chipMaxCols) : rawChip;
+    const w = rawW > chipMaxCols ? visibleLen(chip) : rawW;
     const nextCols = cur.length === 0 ? indentCols + w : curCols + sepCols + w;
     if (cur.length > 0 && nextCols > maxCols) {
       lines.push(`${indent}${cur.join(sep)}`);
@@ -134,7 +138,7 @@ function formatTelemetryStripLine(
 
   const parts: string[] = [];
   if (snapshot.model.length > 0) {
-    parts.push(`${palette.cyan}${snapshot.model}${palette.reset}`);
+    parts.push(`${palette.cyan}${sanitizeTerminalText(snapshot.model)}${palette.reset}`);
   }
   if (tel.ctxUsed !== null && tel.ctxMax !== null && tel.ctxMax > 0) {
     const pct = Math.min(100, Math.round((tel.ctxUsed / tel.ctxMax) * 100));
@@ -171,12 +175,14 @@ function formatCompletedToolCell(
   const tag = idx >= hudVisibleCap ? `${palette.dim}+${palette.reset}` : ' ';
   const nameW = Math.min(22, Math.max(12, colW - 22));
   const cntW = 5;
-  const namePart = padEndVisible(truncateToWidth(item.disp, nameW), nameW);
+  const cleanDisp = sanitizeTerminalText(item.disp);
+  const cleanTarget = sanitizeTerminalText(item.latestTarget);
+  const namePart = padEndVisible(truncateToWidth(cleanDisp, nameW), nameW);
   const cntPart = padEndVisible(`×${item.count}`, cntW);
   const tgtMax = colW - (3 + nameW + 1 + cntW + 1);
   const tgt =
-    item.latestTarget.length > 0 && tgtMax >= 4
-      ? ` ${palette.dim}${truncateToWidth(item.latestTarget, tgtMax)}${palette.reset}`
+    cleanTarget.length > 0 && tgtMax >= 4
+      ? ` ${palette.dim}${truncateToWidth(cleanTarget, tgtMax)}${palette.reset}`
       : '';
   return padEndVisible(
     `${tag}${palette.green}✓${palette.reset} ${namePart} ${palette.white}${cntPart}${palette.reset}${tgt}`,
@@ -205,18 +211,19 @@ function appendToolsSection(
   }
 
   const hudCaps = computeHudVisibleToolsCap(snapshot.runningTools, snapshot.completedTools, maxCols);
-  const orderedRunning = [...snapshot.runningTools].reverse();
+  const orderedRunning = selectNewestFirst(snapshot.runningTools);
   for (let i = 0; i < orderedRunning.length; i += 1) {
     const rt = orderedRunning[i];
     if (!rt) continue;
     const overflowTag = i >= hudCaps.shownRunning ? `  ${palette.yellow}[+more]${palette.reset}` : '';
     const dispColW = Math.min(30, Math.max(12, maxCols - 30));
-    const rawTarget = rt.target.length > 0 ? rt.target : rt.fullTarget;
+    const cleanDisp = sanitizeTerminalText(rt.disp);
+    const rawTarget = sanitizeTerminalText(rt.target.length > 0 ? rt.target : rt.fullTarget);
     const usedCols = 2 + 2 + dispColW + 1 + 7 + (overflowTag.length > 0 ? 9 : 0);
     const tgtMax = Math.max(8, maxCols - usedCols - 3);
     const tgt = rawTarget.length > 0 ? `   ${truncateToWidth(rawTarget, tgtMax)}` : '';
     lines.push(
-      `  ${palette.yellow}◐${palette.reset} ${padEndVisible(`${palette.cyan}${truncateToWidth(rt.disp, dispColW)}${palette.reset}`, dispColW)} ${palette.dim}running${palette.reset}${tgt}${overflowTag}`,
+      `  ${palette.yellow}◐${palette.reset} ${padEndVisible(`${palette.cyan}${truncateToWidth(cleanDisp, dispColW)}${palette.reset}`, dispColW)} ${palette.dim}running${palette.reset}${tgt}${overflowTag}`,
     );
   }
 
@@ -239,13 +246,15 @@ function appendToolsSection(
     const ct = snapshot.completedTools[i];
     if (!ct) continue;
     const tag = i >= hudVisibleCap ? `${palette.dim}+${palette.reset}` : ' ';
+    const cleanDisp = sanitizeTerminalText(ct.disp);
+    const cleanTarget = sanitizeTerminalText(ct.latestTarget);
     const tgtMax = maxCols - (2 + 3 + nameW + 1 + cntW + 9);
     const tgt =
-      ct.latestTarget.length > 0 && tgtMax >= 4
-        ? ` ${palette.dim}latest: ${truncateToWidth(ct.latestTarget, tgtMax)}${palette.reset}`
+      cleanTarget.length > 0 && tgtMax >= 4
+        ? ` ${palette.dim}latest: ${truncateToWidth(cleanTarget, tgtMax)}${palette.reset}`
         : '';
     lines.push(
-      `  ${tag}${palette.green}✓${palette.reset} ${padEndVisible(truncateToWidth(ct.disp, nameW), nameW)} ${palette.white}${padEndVisible(`×${ct.count}`, cntW)}${palette.reset}${tgt}`,
+      `  ${tag}${palette.green}✓${palette.reset} ${padEndVisible(truncateToWidth(cleanDisp, nameW), nameW)} ${palette.white}${padEndVisible(`×${ct.count}`, cntW)}${palette.reset}${tgt}`,
     );
   }
 }
@@ -266,8 +275,11 @@ function appendMcpSection(
   const totalW = 6;
   const contIndent = ' '.repeat(2 + 2 + serverW + 1 + totalW + 1);
   for (const srv of snapshot.mcps) {
-    const head = `  ${palette.green}✓${palette.reset} ${padEndVisible(`${palette.cyan}${truncateToWidth(srv.server, serverW)}${palette.reset}`, serverW)} ${padEndVisible(`${palette.dim}(${srv.totalCalls})${palette.reset}`, totalW)} `;
-    const subChips = srv.subtools.map((st) => `${st.name} ${palette.dim}×${st.count}${palette.reset}`);
+    const cleanServer = sanitizeTerminalText(srv.server);
+    const head = `  ${palette.green}✓${palette.reset} ${padEndVisible(`${palette.cyan}${truncateToWidth(cleanServer, serverW)}${palette.reset}`, serverW)} ${padEndVisible(`${palette.dim}(${srv.totalCalls})${palette.reset}`, totalW)} `;
+    const subChips = srv.subtools.map(
+      (st) => `${sanitizeTerminalText(st.name)} ${palette.dim}×${st.count}${palette.reset}`,
+    );
     if (subChips.length === 0) {
       lines.push(head.trimEnd());
       continue;
@@ -315,7 +327,7 @@ function appendAgentsSection(
           ? `${palette.cyan}◌${palette.reset}`
           : `${palette.green}✓${palette.reset}`;
     const stColor = agent.state === 'working' ? palette.yellow : agent.state === 'waiting' ? palette.cyan : palette.dim;
-    const row = `  ${icon} ${padEndVisible(`${palette.magenta}${truncateToWidth(agent.name, nameW)}${palette.reset}`, nameW)}  ${padEndVisible(truncateToWidth(agent.type, typeW), typeW)}  ${padEndVisible(`${palette.dim}${truncateToWidth(agent.model, modelW)}${palette.reset}`, modelW)}  ${stColor}${agent.state}${palette.reset} ${palette.dim}(${agent.ageLabel})${palette.reset}`;
+    const row = `  ${icon} ${padEndVisible(`${palette.magenta}${truncateToWidth(sanitizeTerminalText(agent.name), nameW)}${palette.reset}`, nameW)}  ${padEndVisible(truncateToWidth(sanitizeTerminalText(agent.type), typeW), typeW)}  ${padEndVisible(`${palette.dim}${truncateToWidth(sanitizeTerminalText(agent.model), modelW)}${palette.reset}`, modelW)}  ${stColor}${agent.state}${palette.reset} ${palette.dim}(${sanitizeTerminalText(agent.ageLabel)})${palette.reset}`;
     lines.push(visibleLen(row) <= maxCols ? row : truncateToWidth(row, maxCols));
   }
 }
@@ -331,14 +343,20 @@ export function renderStructuredInspectorLines(
   const maxCols = Math.max(MIN_INSPECTOR_COLS, cols - 1);
   const active = new Set<SnapshotSection>(options.sections ?? []);
   const badge = formatSurfaceBadge(snapshot.surface);
-  const wsName =
-    snapshot.workspace.length > 0 ? (nonEmptyStr(path.basename(snapshot.workspace)) ?? snapshot.workspace) : '-';
+  const wsName = sanitizeTerminalText(
+    snapshot.workspace.length > 0 ? (nonEmptyStr(path.basename(snapshot.workspace)) ?? snapshot.workspace) : '-',
+  );
+  const cleanShortId = sanitizeTerminalText(snapshot.shortId);
+  const cleanTitle = sanitizeTerminalText(snapshot.title);
 
-  const headerPrefix = `[${badge}] Activity Snapshot  ${snapshot.shortId}  ""`;
-  const titleBudget = Math.max(12, maxCols - visibleLen(headerPrefix));
+  const headerPrefix = `[${badge}] Activity Snapshot  ${cleanShortId}  ""`;
+  const titleBudget = Math.max(1, maxCols - visibleLen(headerPrefix));
+  const bannerLine0 = `${palette.bold}${palette.white}[${badge}] Activity Snapshot${palette.reset}  ${palette.cyan}${cleanShortId}${palette.reset}  "${truncateToWidth(cleanTitle, titleBudget)}"`;
+  const bannerMeta = `Workspace: ${wsName} · Matched via ${snapshot.resolutionTier} · ${snapshot.totalToolCalls} calls, ${snapshot.skills.length} skills, ${snapshot.mcps.length} MCPs, ${snapshot.agents.length} ${snapshot.agentsKind}`;
+  const bannerLine1 = `${palette.dim}${truncateToWidth(bannerMeta, maxCols)}${palette.reset}`;
   const lines: string[] = [
-    `${palette.bold}${palette.white}[${badge}] Activity Snapshot${palette.reset}  ${palette.cyan}${snapshot.shortId}${palette.reset}  "${truncateToWidth(snapshot.title, titleBudget)}"`,
-    `${palette.dim}Workspace: ${wsName} · Matched via ${snapshot.resolutionTier} · ${snapshot.totalToolCalls} calls, ${snapshot.skills.length} skills, ${snapshot.mcps.length} MCPs, ${snapshot.agents.length} ${snapshot.agentsKind}${palette.reset}`,
+    visibleLen(bannerLine0) <= maxCols ? bannerLine0 : truncateToWidth(bannerLine0, maxCols),
+    bannerLine1,
   ];
 
   const telemetryLine = formatTelemetryStripLine(snapshot, maxCols, palette, useColor);
@@ -347,7 +365,7 @@ export function renderStructuredInspectorLines(
   }
   if (snapshot.siblingHint.length > 0) {
     lines.push(
-      `${palette.yellow}Note:${palette.reset} ${palette.dim}${truncateToWidth(snapshot.siblingHint, Math.max(12, maxCols - 6))}${palette.reset}`,
+      `${palette.yellow}Note:${palette.reset} ${palette.dim}${truncateToWidth(sanitizeTerminalText(snapshot.siblingHint), Math.max(12, maxCols - 6))}${palette.reset}`,
     );
   }
 
@@ -362,7 +380,8 @@ export function renderStructuredInspectorLines(
       lines.push(`  ${palette.dim}(no skills invoked)${palette.reset}`);
     } else {
       const chips = snapshot.skills.map(
-        (s, idx) => `${palette.dim}${idx + 1}.${palette.reset} ${palette.cyan}${s}${palette.reset}`,
+        (s, idx) =>
+          `${palette.dim}${idx + 1}.${palette.reset} ${palette.cyan}${sanitizeTerminalText(s)}${palette.reset}`,
       );
       lines.push(...wrapInspectorChips(chips, '   ', maxCols, '  '));
     }

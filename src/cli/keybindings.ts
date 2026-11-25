@@ -3,10 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { nonEmptyStr } from '../core/guards.ts';
-import { resolveGlobalPluginDir } from '../core/paths.ts';
+import { resolveGlobalPluginDir, SAFE_POSIX_SHELL_PATH_RE, SAFE_WIN_SHELL_PATH_RE } from '../core/paths.ts';
+import { hasTerminalControlChars, sanitizeTerminalText } from '../core/terminal-text.ts';
 import { BOLD, CYAN, GRAY, RESET } from '../render/ansi.ts';
 import { PLUGIN_NAME } from './installer/args.ts';
-import { expectedCliMjsPath } from './installer/shim-format.ts';
+import { expectedCliMjsPath, quotePosixSh } from './installer/shim-format.ts';
 import { inspectCliShim, resolveShimBinDir, resolveShimPaths } from './installer/shim.ts';
 import { shouldUseSnapshotColor } from './snapshot-render.ts';
 
@@ -70,8 +71,32 @@ function resolveKeybindingsPluginRoot(env: NodeJS.ProcessEnv): string {
   return globalDir;
 }
 
-function quoteShellPathIfNeeded(value: string): string {
-  return /[\s"'$`\\]/.test(value) ? `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"` : value;
+function quoteShellPathForPlatform(value: string, platform: NodeJS.Platform): string {
+  if (hasTerminalControlChars(value)) {
+    throw new Error('Invalid keybinding command path: path must not contain control, escape, or bidi characters.');
+  }
+  if (platform === 'win32') {
+    if (SAFE_WIN_SHELL_PATH_RE.test(value)) return value;
+    return `"${value.replaceAll('"', '""').replaceAll('%', '%%')}"`;
+  }
+  return SAFE_POSIX_SHELL_PATH_RE.test(value) ? value : quotePosixSh(value);
+}
+
+function quoteNodeFallbackArg(value: string, platform: NodeJS.Platform): string {
+  if (hasTerminalControlChars(value)) {
+    throw new Error('Invalid keybinding command path: path must not contain control, escape, or bidi characters.');
+  }
+  if (platform === 'win32') {
+    return `"${value.replaceAll('"', '""').replaceAll('%', '%%')}"`;
+  }
+  return SAFE_POSIX_SHELL_PATH_RE.test(value) ? `"${value}"` : quotePosixSh(value);
+}
+
+function quoteTmuxCommandString(shellCommand: string): string {
+  if (!shellCommand.includes("'") && shellCommand.includes('"')) {
+    return `'${shellCommand}'`;
+  }
+  return `"${shellCommand.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$')}"`;
 }
 
 function quoteLuaSingle(value: string): string {
@@ -85,6 +110,9 @@ export function resolveKeybindingCommand(options: ResolveKeybindingCommandOption
   const binDir = resolveShimBinDir(options.binDir, env, platform);
   const paths = resolveShimPaths(binDir, platform);
   const cliMjsPath = expectedCliMjsPath(pluginRoot, platform);
+  if (hasTerminalControlChars(cliMjsPath)) {
+    throw new Error('Invalid keybinding command path: path must not contain control, escape, or bidi characters.');
+  }
   const inspection = inspectCliShim(binDir, pluginRoot, env, platform);
 
   if (inspection.status === 'owned-self' || inspection.status === 'owned-other') {
@@ -94,7 +122,7 @@ export function resolveKeybindingCommand(options: ResolveKeybindingCommandOption
       shimPath,
       cliMjsPath,
       popupArgs: [shimPath, '-p'],
-      shellCommand: `${quoteShellPathIfNeeded(shimPath)} -p`,
+      shellCommand: `${quoteShellPathForPlatform(shimPath, platform)} -p`,
     };
   }
 
@@ -103,18 +131,23 @@ export function resolveKeybindingCommand(options: ResolveKeybindingCommandOption
     shimPath: null,
     cliMjsPath,
     popupArgs: ['node', cliMjsPath, '-p'],
-    shellCommand: `node "${cliMjsPath}" -p`,
+    shellCommand: `node ${quoteNodeFallbackArg(cliMjsPath, platform)} -p`,
   };
 }
 
-function formatHostSnippet(host: HostTerminal, cmd: ResolvedKeybindingCommand, useColor: boolean): string[] {
+function formatHostSnippet(
+  host: HostTerminal,
+  cmd: ResolvedKeybindingCommand,
+  useColor: boolean,
+  platform: NodeJS.Platform,
+): string[] {
   const b = useColor ? BOLD : '';
   const c = useColor ? CYAN : '';
   const d = useColor ? GRAY : '';
   const r = useColor ? RESET : '';
 
   if (host === 'tmux') {
-    const tmuxPopupCmd = cmd.shellCommand.includes('"') ? `'${cmd.shellCommand}'` : `"${cmd.shellCommand}"`;
+    const tmuxPopupCmd = quoteTmuxCommandString(cmd.shellCommand);
     return [
       `${b}tmux${r} ${d}(~/.tmux.conf)${r}`,
       `  ${c}bind-key g display-popup -E -w 85% -h 80% -d "#{pane_current_path}" ${tmuxPopupCmd}${r}`,
@@ -152,7 +185,8 @@ function formatHostSnippet(host: HostTerminal, cmd: ResolvedKeybindingCommand, u
       `  ${d}Caution: Ghostty text: types directly into the focused pane; trigger only inside the agy prompt.${r}`,
     ];
     if (cmd.source === 'node-fallback') {
-      lines.push(`  ${d}Without CLI Shim on PATH: keybind = super+shift+h=text:!node "${cmd.cliMjsPath}"\\n${r}`);
+      const ghosttyArg = quoteNodeFallbackArg(cmd.cliMjsPath, platform).replaceAll('\\', '\\\\');
+      lines.push(`  ${d}Without CLI Shim on PATH: keybind = super+shift+h=text:!node ${ghosttyArg}\\n${r}`);
     }
     return lines;
   }
@@ -183,6 +217,7 @@ export function renderKeybindings(options: RenderKeybindingsOptions = {}): strin
           : HOST_ORDER
         : [requested];
 
+  const platform = options.platform ?? process.platform;
   const resolved = resolveKeybindingCommand(options);
   const lines: string[] = [`${b}agy-hud Popup Keybinding Snippets${r}`];
 
@@ -196,13 +231,13 @@ export function renderKeybindings(options: RenderKeybindingsOptions = {}): strin
 
   const commandSourceNote =
     resolved.source === 'shim'
-      ? `Command: ${resolved.shimPath} (CLI Shim)`
-      : `Command: node "${resolved.cliMjsPath}" (fallback — CLI Shim not installed)`;
+      ? `Command: ${sanitizeTerminalText(resolved.shimPath ?? '')} (CLI Shim)`
+      : `Command: node "${sanitizeTerminalText(resolved.cliMjsPath)}" (fallback — CLI Shim not installed)`;
   lines.push(`${d}${commandSourceNote}${r}`);
 
   for (const host of hosts) {
     lines.push('');
-    lines.push(...formatHostSnippet(host, resolved, useColor));
+    lines.push(...formatHostSnippet(host, resolved, useColor, platform));
   }
 
   lines.push('');

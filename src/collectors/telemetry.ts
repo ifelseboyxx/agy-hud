@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 
 import { isFiniteNum, isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
-import { writeBufferAtomicSync } from '../fs-utils.ts';
+import { readRegularJsonObjectSync } from '../fs-utils.ts';
 import type {
   CliSettings,
   GenMetadataRow,
@@ -10,6 +10,7 @@ import type {
   StatusLineContextWindow,
   StatusLineData,
 } from '../types.ts';
+import { MAX_ACTIVITY_CACHE_BYTES, writeBoundedPrivateJsonCache } from './activity-cache.ts';
 import {
   computeCompactedUsed,
   fetchLatestCheckpoint,
@@ -17,7 +18,7 @@ import {
   isCompactionCheckpoint,
 } from './compaction.ts';
 import type { CompactionCheckpoint } from './compaction.ts';
-import { parseGenMetadataBlob } from './proto.ts';
+import { MAX_PROTO_BLOB_BYTES, parseGenMetadataBlob } from './proto.ts';
 import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
 import { readSqliteVersionTag, withReadonlyDb } from './sqlite-readonly.ts';
 
@@ -91,7 +92,11 @@ function fetchUpdatedRows(dbPath: string, cachedRows: Record<string, GenMetadata
     const startIdx = keys.length > 0 ? Math.max(...keys) : 0;
 
     const updated: Record<string, GenMetadataRow> = { ...seed };
-    const rows = db.prepare('SELECT idx, data FROM gen_metadata WHERE idx >= ? ORDER BY idx').all(startIdx);
+    const rows = db
+      .prepare(
+        "SELECT idx, CASE WHEN typeof(data) = 'blob' AND length(data) <= ? THEN data ELSE NULL END AS data FROM gen_metadata WHERE idx >= ? ORDER BY idx",
+      )
+      .iterate(MAX_PROTO_BLOB_BYTES, startIdx);
     for (const row of rows) {
       if (!isPlainObject(row)) {
         continue;
@@ -101,6 +106,8 @@ function fetchUpdatedRows(dbPath: string, cachedRows: Record<string, GenMetadata
       const parsed = parseGenMetadataBlob(blob);
       if (parsed !== null) {
         updated[String(idx)] = parsed;
+      } else {
+        delete updated[String(idx)];
       }
     }
     return { rows: updated, ckpt };
@@ -139,24 +146,17 @@ function parseCachedRows(value: unknown): Record<string, GenMetadataRow> | null 
 }
 
 function readTelemetryCache(cacheFile: string, expectedVersionTag: string): CachedTelemetryLookup {
-  if (!existsSync(cacheFile)) {
+  const parsed = readRegularJsonObjectSync(cacheFile, MAX_ACTIVITY_CACHE_BYTES, { requirePrivateMode: true });
+  if (parsed === null || parsed.v !== TELEMETRY_CACHE_VERSION) {
     return { hit: false, rows: {}, ckpt: null };
   }
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(cacheFile, 'utf8'));
-    if (!isPlainObject(parsed) || parsed.v !== TELEMETRY_CACHE_VERSION) {
-      return { hit: false, rows: {}, ckpt: null };
-    }
-    const versionTag = typeof parsed.versionTag === 'string' && parsed.versionTag.length > 0 ? parsed.versionTag : null;
-    const rows = parseCachedRows(parsed.rows);
-    if (versionTag === null || rows === null) {
-      return { hit: false, rows: {}, ckpt: null };
-    }
-    const validCkpt = isCompactionCheckpoint(parsed.ckpt) ? parsed.ckpt : null;
-    return { hit: versionTag === expectedVersionTag, rows, ckpt: validCkpt };
-  } catch {
+  const versionTag = typeof parsed.versionTag === 'string' && parsed.versionTag.length > 0 ? parsed.versionTag : null;
+  const rows = parseCachedRows(parsed.rows);
+  if (versionTag === null || rows === null) {
     return { hit: false, rows: {}, ckpt: null };
   }
+  const validCkpt = isCompactionCheckpoint(parsed.ckpt) ? parsed.ckpt : null;
+  return { hit: versionTag === expectedVersionTag, rows, ckpt: validCkpt };
 }
 
 function loadDbRows(dataRoot: string, cacheCliHome: string, convId: string): DbLoadResult {
@@ -195,14 +195,11 @@ function loadDbRows(dataRoot: string, cacheCliHome: string, convId: string): DbL
   }
 
   if (readSqliteVersionTag(dbPath) === versionTag) {
-    try {
-      writeBufferAtomicSync(
-        cacheFile,
-        JSON.stringify({ v: TELEMETRY_CACHE_VERSION, versionTag, rows: loaded.rows, ckpt: loaded.ckpt }),
-      );
-    } catch {
-      // Best-effort telemetry cache write.
-    }
+    writeBoundedPrivateJsonCache(
+      cacheFile,
+      { v: TELEMETRY_CACHE_VERSION, versionTag, rows: loaded.rows, ckpt: loaded.ckpt },
+      MAX_ACTIVITY_CACHE_BYTES,
+    );
   }
   return loaded;
 }

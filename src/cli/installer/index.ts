@@ -4,10 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { getCliHomeLockPath, getTargetLockPath, withFileLocksSync } from '../../core/file-lock.ts';
-import { isPlainObject } from '../../core/guards.ts';
 import { resolveCliHome } from '../../core/paths.ts';
-import { getSettingsPaths, isSameCommandPath } from '../../core/statusline-ownership.ts';
-import { lstatIfPresentSync, makeTempSuffix, readJsonObjectSync } from '../../fs-utils.ts';
+import { getSettingsPaths } from '../../core/statusline-ownership.ts';
+import { lstatIfPresentSync, makeTempSuffix } from '../../fs-utils.ts';
 import { INSTALLER_HELP_TEXT, parseInstallerArgs, PLUGIN_NAME, type InstallerOptions } from './args.ts';
 import { hasAgyCli, runDoctor, toggleAgyPlugin, writeInstallerLine } from './doctor.ts';
 import {
@@ -28,7 +27,7 @@ import {
 import {
   createWireRollbackSteps,
   disableCliStatusLine,
-  readStatusLineBackupStrict,
+  preflightStatusLineBackup,
   restoreCliStatusLine,
   wireCliStatusLine,
   type WireStatusLineResult,
@@ -192,12 +191,8 @@ function runInstall(opts: InstallerOptions): void {
       if (!dstStat.isSymbolicLink()) assertDirectoryTreeRemovable(resolvedDst);
     }
 
-    const { settingsPath, backupPath } = getSettingsPaths(cliHome);
-    const hudCmd = path.join(resolvedDst, 'dist', 'hud.mjs');
     if (opts.wireStatusLine) {
-      const existingSettings = readJsonObjectSync(settingsPath, true);
-      const curCmd = isPlainObject(existingSettings?.statusLine) ? existingSettings.statusLine.command : undefined;
-      if (!isSameCommandPath(curCmd, hudCmd)) readStatusLineBackupStrict(backupPath);
+      preflightStatusLineBackup(cliHome, resolvedDst, 'wire');
     }
     if (opts.manageShim) assertShimWritablePreflight(opts.binDir, resolvedDst);
 
@@ -281,17 +276,13 @@ function runUninstall(opts: InstallerOptions): void {
         return 'retry';
       }
       const dstStat = lockTarget ? lstatIfPresentSync(resolvedDst) : null;
-      const { settingsPath, backupPath } = getSettingsPaths(cliHome);
-      const hudCmd = path.join(resolvedDst, 'dist', 'hud.mjs');
       if (dstStat) {
         assertNotActiveSourceRepo(resolvedSrc, resolvedDst, dstStat);
         assertRemovableTarget(resolvedDst, dstStat, PLUGIN_NAME);
         if (!dstStat.isSymbolicLink()) assertDirectoryTreeRemovable(resolvedDst);
       }
       if (opts.restoreStatusLine && lockCliHome) {
-        const existingSettings = readJsonObjectSync(settingsPath, true);
-        const curCmd = isPlainObject(existingSettings?.statusLine) ? existingSettings.statusLine.command : undefined;
-        if (isSameCommandPath(curCmd, hudCmd)) readStatusLineBackupStrict(backupPath);
+        preflightStatusLineBackup(cliHome, resolvedDst, 'restore');
       }
       const stagedRemovalPath = dstStat ? `${resolvedDst}.removing.${makeTempSuffix()}` : null;
       let movedToStaging = false;
@@ -354,15 +345,15 @@ function runUninstall(opts: InstallerOptions): void {
 function runToggle(opts: InstallerOptions, enable: boolean): void {
   const resolvedDst = path.resolve(opts.targetDir);
   const cliHome = resolveCliHome();
-  const hudCmd = path.join(resolvedDst, 'dist', 'hud.mjs');
+  const hudScriptPath = path.join(resolvedDst, 'dist', 'hud.mjs');
   if (enable && !pathExists(path.dirname(resolvedDst))) {
-    throw new Error(`Missing ${hudCmd}. Run 'pnpm build' and install first.`);
+    throw new Error(`Missing ${hudScriptPath}. Run 'pnpm build' and install first.`);
   }
   const locks = enable ? [getCliHomeLockPath(cliHome), getTargetLockPath(resolvedDst)] : [getCliHomeLockPath(cliHome)];
   withFileLocksSync(locks, () => {
     const { settingsPath } = getSettingsPaths(cliHome);
     if (enable) {
-      if (!pathExists(hudCmd)) throw new Error(`Missing ${hudCmd}. Run 'pnpm build' and install first.`);
+      if (!pathExists(hudScriptPath)) throw new Error(`Missing ${hudScriptPath}. Run 'pnpm build' and install first.`);
       wireCliStatusLine(cliHome, resolvedDst);
       toggleAgyPlugin(opts, 'enable');
       if (!opts.quiet) writeInstallerLine(`Enabled agy-hud statusLine in ${settingsPath}`);

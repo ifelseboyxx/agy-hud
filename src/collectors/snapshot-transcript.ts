@@ -1,9 +1,16 @@
 import { existsSync } from 'node:fs';
 
-import { isFiniteNum, isPlainObject } from '../core/guards.ts';
-import { readJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
+import { isPlainObject } from '../core/guards.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import { readRegularJsonObjectSync } from '../fs-utils.ts';
 import type { SessionRecord } from '../snapshot-types.ts';
 import type { ActivityAgentEntry } from '../types.ts';
+import {
+  MAX_ACTIVITY_CACHE_BYTES,
+  parseActivityAgents,
+  parseSanitizedStringList,
+  writeBoundedPrivateJsonCache,
+} from './activity-cache.ts';
 import { listMcpServers, shortenTarget } from './activity-parse.ts';
 import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
 import {
@@ -13,7 +20,8 @@ import {
   type TranscriptCacheMeta,
 } from './transcript-scanner.ts';
 
-const SNAPSHOT_ACTIVITY_CACHE_VERSION = 2;
+const SNAPSHOT_ACTIVITY_CACHE_VERSION = 4;
+const MAX_SNAPSHOT_CACHE_BYTES = MAX_ACTIVITY_CACHE_BYTES;
 export const SNAPSHOT_TARGET_DISPLAY_LEN = 34;
 
 export interface SnapshotRawToolCall {
@@ -21,6 +29,7 @@ export interface SnapshotRawToolCall {
   disp: string;
   target: string;
   fullTarget: string;
+  targetLinkable: boolean;
   running: boolean;
   isSkillRead: boolean;
   mcpServer: string | null;
@@ -35,7 +44,7 @@ export interface SnapshotTranscriptData {
 }
 
 interface SnapshotTranscriptCacheRecord extends TranscriptCacheMeta {
-  v: 2;
+  v: 4;
   data: SnapshotTranscriptData;
 }
 
@@ -46,43 +55,42 @@ function parseSnapshotToolRecord(value: unknown): SnapshotRawToolCall | null {
     typeof value.disp !== 'string' ||
     typeof value.target !== 'string' ||
     typeof value.fullTarget !== 'string' ||
+    typeof value.targetLinkable !== 'boolean' ||
     typeof value.running !== 'boolean' ||
     typeof value.isSkillRead !== 'boolean'
   ) {
     return null;
   }
-  const mcpServer = typeof value.mcpServer === 'string' ? value.mcpServer : value.mcpServer === null ? null : undefined;
+  const mcpServer =
+    typeof value.mcpServer === 'string'
+      ? sanitizeTerminalLabel(value.mcpServer)
+      : value.mcpServer === null
+        ? null
+        : undefined;
   const mcpSubtool =
-    typeof value.mcpSubtool === 'string' ? value.mcpSubtool : value.mcpSubtool === null ? null : undefined;
+    typeof value.mcpSubtool === 'string'
+      ? sanitizeTerminalLabel(value.mcpSubtool)
+      : value.mcpSubtool === null
+        ? null
+        : undefined;
   if (mcpServer === undefined || mcpSubtool === undefined) return null;
+  const cleanFullTarget = sanitizeTerminalLabel(value.fullTarget);
+  const targetLinkable = value.targetLinkable && cleanFullTarget.length > 0 && value.fullTarget === cleanFullTarget;
   return {
-    name: value.name,
-    disp: value.disp,
-    target: value.target,
-    fullTarget: value.fullTarget,
+    name: sanitizeTerminalLabel(value.name),
+    disp: sanitizeTerminalLabel(value.disp),
+    target: sanitizeTerminalLabel(value.target),
+    fullTarget: cleanFullTarget,
+    targetLinkable,
     running: value.running,
     isSkillRead: value.isSkillRead,
-    mcpServer,
-    mcpSubtool,
+    mcpServer: mcpServer !== null && mcpServer.length > 0 ? mcpServer : null,
+    mcpSubtool: mcpSubtool !== null && mcpSubtool.length > 0 ? mcpSubtool : null,
   };
 }
 
-function parseSnapshotAgentRecord(value: unknown): ActivityAgentEntry | null {
-  if (
-    !isPlainObject(value) ||
-    typeof value.name !== 'string' ||
-    typeof value.type !== 'string' ||
-    typeof value.model !== 'string' ||
-    typeof value.running !== 'boolean' ||
-    !(value.ts === null || isFiniteNum(value.ts))
-  ) {
-    return null;
-  }
-  return { name: value.name, type: value.type, model: value.model, running: value.running, ts: value.ts };
-}
-
 function readSnapshotTranscriptCache(cacheFile: string): SnapshotTranscriptCacheRecord | null {
-  const parsed = readJsonObjectSync(cacheFile, false);
+  const parsed = readRegularJsonObjectSync(cacheFile, MAX_SNAPSHOT_CACHE_BYTES, { requirePrivateMode: true });
   if (parsed === null || parsed.v !== SNAPSHOT_ACTIVITY_CACHE_VERSION) {
     return null;
   }
@@ -103,21 +111,13 @@ function readSnapshotTranscriptCache(cacheFile: string): SnapshotTranscriptCache
     if (rec === null) return null;
     tools.push(rec);
   }
-  const skills: string[] = [];
-  for (const sk of parsed.data.skills) {
-    if (typeof sk !== 'string') return null;
-    skills.push(sk);
-  }
-  const agents: ActivityAgentEntry[] = [];
-  for (const item of parsed.data.agents) {
-    const rec = parseSnapshotAgentRecord(item);
-    if (rec === null) return null;
-    agents.push(rec);
-  }
+  const skills = parseSanitizedStringList(parsed.data.skills);
+  const agents = parseActivityAgents(parsed.data.agents);
+  if (skills === null || agents === null) return null;
   return {
     v: SNAPSHOT_ACTIVITY_CACHE_VERSION,
     ...meta,
-    data: { tools, skills, agents, lastModel: parsed.data.lastModel },
+    data: { tools, skills, agents, lastModel: sanitizeTerminalLabel(parsed.data.lastModel) },
   };
 }
 
@@ -132,6 +132,7 @@ function projectSnapshotToolCall(call: ScannedToolCall): SnapshotRawToolCall {
     disp: call.disp,
     target: call.fullTarget.length > 0 ? shortenTarget(call.fullTarget, SNAPSHOT_TARGET_DISPLAY_LEN) : '',
     fullTarget: call.fullTarget,
+    targetLinkable: call.targetLinkable,
     running: call.running,
     isSkillRead: call.isSkillRead,
     mcpServer: call.mcpServer,
@@ -201,11 +202,7 @@ export function loadSnapshotTranscript(session: SessionRecord, cacheCliHome: str
       ...scanned.meta,
       data,
     };
-    try {
-      writeJsonAtomicSync(cacheFile, nextRecord);
-    } catch {
-      // Best-effort snapshot activity cache write inside cliHome/cache.
-    }
+    writeBoundedPrivateJsonCache(cacheFile, nextRecord, MAX_SNAPSHOT_CACHE_BYTES);
   }
 
   return data;

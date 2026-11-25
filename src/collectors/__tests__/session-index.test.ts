@@ -152,24 +152,26 @@ void describe('session-index envelopes and read-only telemetry', () => {
     const oldActivity = path.join(cacheDir, 'agy_hud_activity_old-1.json');
     const oldActivitySnap = path.join(cacheDir, 'agy_hud_activity_snapshot_old-1.json');
     const oldTelemetry = path.join(cacheDir, 'agy_hud_telemetry_old-1.json');
+    const oldPid = path.join(cacheDir, 'agy_hud_pid_99999.json');
     const freshJson = path.join(cacheDir, 'agy_hud_snapshot_fresh-1.json');
     const otherFile = path.join(cacheDir, 'agy_hud_proc.json');
 
-    for (const f of [oldJson, oldMd, oldActivity, oldActivitySnap, oldTelemetry, freshJson, otherFile]) {
+    for (const f of [oldJson, oldMd, oldActivity, oldActivitySnap, oldTelemetry, oldPid, freshJson, otherFile]) {
       writeFileSync(f, '{}', 'utf8');
     }
-    for (const f of [oldJson, oldMd, oldActivity, oldActivitySnap, oldTelemetry, otherFile]) {
+    for (const f of [oldJson, oldMd, oldActivity, oldActivitySnap, oldTelemetry, oldPid, otherFile]) {
       utimesSync(f, oldSec, oldSec);
     }
     utimesSync(freshJson, freshSec, freshSec);
 
     const removed = sweepStaleSnapshotFiles(cliHome, nowMs);
-    assert.equal(removed, 5);
+    assert.equal(removed, 6);
     assert.equal(existsSync(oldJson), false);
     assert.equal(existsSync(oldMd), false);
     assert.equal(existsSync(oldActivity), false);
     assert.equal(existsSync(oldActivitySnap), false);
     assert.equal(existsSync(oldTelemetry), false);
+    assert.equal(existsSync(oldPid), false);
     assert.equal(existsSync(freshJson), true);
     assert.equal(existsSync(otherFile), true);
   });

@@ -99,7 +99,7 @@ void describe('plugin-first wire/unwire and CLI Shim lifecycle', { concurrency: 
     const staleRun = spawnSync(shimPath, ['--help'], { env, encoding: 'utf8' });
     assert.equal(staleRun.status, 1);
     assert.equal(staleRun.stdout, '');
-    assert.ok(staleRun.stderr.includes(`rm "${shimPath}"`));
+    assert.ok(staleRun.stderr.includes(`rm -- '${shimPath}'`));
     assert.equal(existsSync(shimPath), true, 'stale shim must never self-delete');
 
     const unwireRes = await runInstallAsync(['unwire', '--no-enable', '--quiet'], env);

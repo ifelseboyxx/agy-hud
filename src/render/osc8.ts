@@ -1,11 +1,27 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { resolveCliSubdirFile, sanitizeSessionId } from '../collectors/safe-path.ts';
-import { sweepStaleSnapshotFiles, writeSnapshotEnvelope } from '../collectors/snapshot-envelope.ts';
+import {
+  isSupersededEnvelopeWrite,
+  isVerifiedClockRollbackWrite,
+  readActivePidMarker,
+  readSnapshotEnvelope,
+  resolveSnapshotLockPlan,
+  SNAPSHOT_HOT_PATH_LOCK_TIMEOUT_MS,
+  SNAPSHOT_TTL_MS,
+  sweepStaleSnapshotFiles,
+  writeSnapshotEnvelope,
+  type ActivePidMarker,
+} from '../collectors/snapshot-envelope.ts';
+import { withFileLocksSync } from '../core/file-lock.ts';
 import { nonEmptyStr } from '../core/guards.ts';
-import { writeBufferAtomicSync } from '../fs-utils.ts';
+import {
+  lstatIfPresentSync,
+  PRIVATE_FILE_MODE,
+  touchRegularFileTimesSync,
+  writeBufferAtomicSync,
+} from '../fs-utils.ts';
 import type { SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
 import type { AgentsSummary, HudConfig, SessionTelemetry, StatusLineData, TranscriptActivity } from '../types.ts';
 import { GRAY, RESET } from './ansi.ts';
@@ -15,7 +31,6 @@ export { renderSnapshotMarkdown, type SnapshotMarkdownRenderOptions } from './os
 
 const ESC = String.fromCharCode(0x1b);
 const MAX_OSC8_DATA_BYTES = 4096;
-const SNAPSHOT_MD_MODE = 0o600;
 
 export const ACTIVITY_SUMMARY_SNAPSHOT_TAIL_COLS: number = 11;
 
@@ -46,6 +61,7 @@ export interface MaterializeSnapshotMarkdownOptions {
   data: StatusLineData;
   agyPid: number | null;
   existingEnvelope: SnapshotEnvelope | null;
+  baselinePidMarker?: ActivePidMarker | null;
   transcriptStat: TranscriptStatFingerprint | null;
   activity: TranscriptActivity | null;
   agentsSummary: AgentsSummary | null;
@@ -195,15 +211,29 @@ export function computeMarkdownDigest(
   return `${base}:${computeRenderedFieldsDigest(context)}`;
 }
 
+function lstatQuietSync(filePath: string): ReturnType<typeof lstatIfPresentSync> {
+  try {
+    return lstatIfPresentSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
 export function materializeSnapshotMarkdownIfNeeded(
   options: MaterializeSnapshotMarkdownOptions,
 ): MaterializeSnapshotMarkdownResult {
   const nowMs = options.nowMs ?? Date.now();
   const prevDigest = options.existingEnvelope?.mdDigest ?? null;
 
+  const target = options.target;
   // Gate 1: skip .md materialization unless the current render frame emitted >= 1 OSC 8 link.
-  if (options.target === null || options.emittedOsc8Count < 1) {
-    const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, { nowMs });
+  if (target === null || options.emittedOsc8Count < 1) {
+    const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, {
+      nowMs,
+      baselineEnvelope: options.existingEnvelope,
+      baselinePidMarker: options.baselinePidMarker,
+      rejectSuperseded: true,
+    });
     return { written: false, mdDigest: prevDigest, sweptCount: 0, envelope };
   }
 
@@ -215,9 +245,28 @@ export function materializeSnapshotMarkdownIfNeeded(
     activity: options.activity,
     telemetry: options.telemetry,
   });
-  if (existsSync(options.target.absPath) && prevDigest === mdDigest) {
-    const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, { nowMs });
+  const existingMdStat = lstatQuietSync(target.absPath);
+  if (
+    existingMdStat !== null &&
+    !existingMdStat.isSymbolicLink() &&
+    existingMdStat.isFile() &&
+    prevDigest === mdDigest
+  ) {
+    if (nowMs - existingMdStat.mtimeMs >= SNAPSHOT_TTL_MS / 2) {
+      touchRegularFileTimesSync(target.absPath, nowMs);
+    }
+    const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, {
+      nowMs,
+      baselineEnvelope: options.existingEnvelope,
+      baselinePidMarker: options.baselinePidMarker,
+      rejectSuperseded: true,
+    });
     return { written: false, mdDigest, sweptCount: 0, envelope };
+  }
+
+  const lockPlan = resolveSnapshotLockPlan(options.cliHome, options.convId, options.agyPid);
+  if (lockPlan === null) {
+    return { written: false, mdDigest: prevDigest, sweptCount: 0, envelope: options.existingEnvelope };
   }
 
   const markdown = renderSnapshotMarkdown({
@@ -230,14 +279,59 @@ export function materializeSnapshotMarkdownIfNeeded(
     nowMs,
   });
 
-  const sweptCount = sweepStaleSnapshotFiles(options.cliHome, nowMs);
-  try {
-    writeBufferAtomicSync(options.target.absPath, markdown, SNAPSHOT_MD_MODE);
-  } catch {
-    const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, { nowMs });
-    return { written: false, mdDigest: prevDigest, sweptCount, envelope };
-  }
+  const { lockPaths, holdsPidLock } = lockPlan;
 
-  const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, { nowMs, mdDigest });
-  return { written: true, mdDigest, sweptCount, envelope };
+  const publish = (): MaterializeSnapshotMarkdownResult => {
+    const currentEnvelope = readSnapshotEnvelope(options.cliHome, options.convId);
+    const currentMarker =
+      lockPlan.normalizedPid !== null ? readActivePidMarker(options.cliHome, lockPlan.normalizedPid, nowMs) : null;
+    const lockedMdStat = lstatQuietSync(target.absPath);
+    const hasRegularMd = lockedMdStat !== null && !lockedMdStat.isSymbolicLink() && lockedMdStat.isFile();
+    const superseded =
+      currentEnvelope !== null &&
+      isSupersededEnvelopeWrite(currentEnvelope, nowMs, options.existingEnvelope) &&
+      !isVerifiedClockRollbackWrite(
+        currentEnvelope,
+        currentMarker,
+        options.convId,
+        nowMs,
+        options.existingEnvelope,
+        options.baselinePidMarker,
+      );
+    if (currentEnvelope !== null && ((currentEnvelope.mdDigest === mdDigest && hasRegularMd) || superseded)) {
+      return { written: false, mdDigest: currentEnvelope.mdDigest, sweptCount: 0, envelope: currentEnvelope };
+    }
+
+    const sweptCount = sweepStaleSnapshotFiles(options.cliHome, nowMs, options.convId);
+    try {
+      writeBufferAtomicSync(target.absPath, markdown, PRIVATE_FILE_MODE);
+    } catch {
+      const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, {
+        nowMs,
+        skipPidLock: holdsPidLock,
+        skipSnapshotLock: true,
+        baselineEnvelope: options.existingEnvelope,
+        baselinePidMarker: options.baselinePidMarker,
+        rejectSuperseded: true,
+      });
+      return { written: false, mdDigest: prevDigest, sweptCount, envelope };
+    }
+
+    const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, {
+      nowMs,
+      mdDigest,
+      skipPidLock: holdsPidLock,
+      skipSnapshotLock: true,
+      baselineEnvelope: options.existingEnvelope,
+      baselinePidMarker: options.baselinePidMarker,
+      rejectSuperseded: true,
+    });
+    return { written: envelope !== null, mdDigest: envelope?.mdDigest ?? prevDigest, sweptCount, envelope };
+  };
+
+  try {
+    return withFileLocksSync(lockPaths, publish, SNAPSHOT_HOT_PATH_LOCK_TIMEOUT_MS);
+  } catch {
+    return { written: false, mdDigest: prevDigest, sweptCount: 0, envelope: options.existingEnvelope };
+  }
 }

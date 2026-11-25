@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { nonEmptyStr } from '../../core/guards.ts';
-import { realpathExistingPrefixSync } from '../../core/paths.ts';
+import { realpathExistingPrefixSync, SAFE_POSIX_SHELL_PATH_RE } from '../../core/paths.ts';
+
+export { SAFE_POSIX_SHELL_PATH_RE };
 
 export const SHIM_HEADER_VERSION = 'agy-hud-shim:v1';
 
@@ -140,19 +142,25 @@ export function isDirOnPath(
 }
 
 export function formatPathHint(binDir: string, platform: NodeJS.Platform = process.platform): string {
+  assertNoNewlines('binDir', binDir);
   if (platform === 'win32') {
     return `Note: add "${binDir}" to PATH to invoke 'agy-hud' directly.`;
   }
-  return `Note: add "${binDir}" to PATH to invoke 'agy-hud' directly (e.g., export PATH="${binDir}:$PATH").`;
+  if (SAFE_POSIX_SHELL_PATH_RE.test(binDir)) {
+    return `Note: add "${binDir}" to PATH to invoke 'agy-hud' directly (e.g., export PATH="${binDir}:$PATH").`;
+  }
+  const quoted = quotePosixSh(binDir);
+  return `Note: add ${quoted} to PATH to invoke 'agy-hud' directly (e.g., export PATH=${quoted}:"$PATH").`;
 }
 
 function assertNoNewlines(label: string, value: string): void {
-  if (value.includes('\n') || value.includes('\r')) {
-    throw new Error(`Invalid ${label}: path must not contain newline characters.`);
+  if (value.includes('\n') || value.includes('\r') || value.includes('\0')) {
+    throw new Error(`Invalid ${label}: path must not contain newline or NUL characters.`);
   }
 }
 
-function quotePosixSh(value: string): string {
+export function quotePosixSh(value: string): string {
+  assertNoNewlines('shell path', value);
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
@@ -181,7 +189,7 @@ export function formatShimScriptPosix(cliMjsPath: string, installNodePath: strin
   assertNoNewlines('shimPath', shimPath);
   const pathApi = isWindowsPathStyle(cliMjsPath) ? path.win32 : path.posix;
   const pluginDir = resolvePluginDirFromCliPath(cliMjsPath, pathApi);
-  const missingMsg = `agy-hud plugin not found at ${pluginDir}. If uninstalled via 'agy plugin uninstall', remove this stale CLI shim: rm "${shimPath}"`;
+  const missingMsg = `agy-hud plugin not found at ${pluginDir}. If uninstalled via 'agy plugin uninstall', remove this stale CLI shim: rm -- ${quotePosixSh(shimPath)}`;
   return [
     '#!/bin/sh',
     `# ${SHIM_HEADER_VERSION} target=${cliMjsPath}`,

@@ -21,6 +21,7 @@ export interface SnapshotEnvelope {
   mdDigest: string | null;
   updatedAtMs: number;
   heartbeatAtMs: number;
+  pidSwitchSeq?: number;
 }
 
 export interface SessionRecord {
@@ -54,6 +55,7 @@ export interface SnapshotRunningTool {
   disp: string;
   target: string;
   fullTarget: string;
+  targetLinkable?: boolean;
   isMcp: boolean;
 }
 
@@ -63,6 +65,7 @@ export interface SnapshotCompletedTool {
   latestTarget: string;
   fullTarget: string;
   recentTargets: string[];
+  unlinkedTargets?: string[];
   isMcp: boolean;
 }
 

@@ -369,22 +369,34 @@ function capRpcErrorResponse(response: JsonRpcErrorResponse, maxBytes: number): 
   return { jsonrpc: '2.0', id, error: { code, message } };
 }
 
-function extractToolErrorText(result: Record<string, unknown>): { message: string; code?: string } {
+function extractToolErrorText(result: Record<string, unknown>): {
+  message: string;
+  code?: string;
+  source?: string;
+  sessionId?: string | null;
+} {
   const structured = isPlainObject(result.structuredContent) ? result.structuredContent : null;
   const code = structured !== null && typeof structured.code === 'string' ? structured.code : undefined;
+  const source = structured !== null && typeof structured.source === 'string' ? structured.source : undefined;
+  const sessionId =
+    structured !== null && (typeof structured.sessionId === 'string' || structured.sessionId === null)
+      ? structured.sessionId
+      : undefined;
   if (structured !== null && typeof structured.error === 'string' && structured.error.length > 0) {
-    return { message: structured.error, code };
+    return { message: structured.error, code, source, sessionId };
   }
   if (Array.isArray(result.content) && isPlainObject(result.content[0]) && typeof result.content[0].text === 'string') {
-    return { message: result.content[0].text, code };
+    return { message: result.content[0].text, code, source, sessionId };
   }
-  return { message: 'MCP tool error exceeded response size limit.', code };
+  return { message: 'MCP tool error exceeded response size limit.', code, source, sessionId };
 }
 
 function capToolErrorResult(id: JsonRpcId, result: Record<string, unknown>, maxBytes: number): JsonRpcResponse {
   const safeId = safeResponseId(id, maxBytes);
-  const { message, code } = extractToolErrorText(result);
+  const { message, code, source, sessionId } = extractToolErrorText(result);
   const safeCode = code !== undefined ? clipUtf8Bytes(code, 64) : undefined;
+  const safeSource = source !== undefined ? clipUtf8Bytes(source, 16) : undefined;
+  const safeSessionId = typeof sessionId === 'string' ? clipUtf8Bytes(sessionId, 256) : sessionId;
   const build = (text: string): JsonRpcSuccessResponse => ({
     jsonrpc: '2.0',
     id: safeId,
@@ -394,6 +406,8 @@ function capToolErrorResult(id: JsonRpcId, result: Record<string, unknown>, maxB
       structuredContent: {
         error: text,
         ...(safeCode !== undefined ? { code: safeCode } : {}),
+        ...(safeSource !== undefined ? { source: safeSource } : {}),
+        ...(safeSessionId !== undefined ? { sessionId: safeSessionId } : {}),
         truncated: true,
       },
     },

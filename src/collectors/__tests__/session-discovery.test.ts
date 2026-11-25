@@ -271,4 +271,68 @@ void describe('multi-root session discovery', () => {
     assert.deepEqual(readdirSync(appRoot).sort(), before);
     assert.equal(existsSync(path.join(appRoot, 'cache')), false);
   });
+
+  void it('prefers physical App brain ownership over an envelope-only CLI cache entry without summaries', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    const convId = 'app-cold-brain-1234';
+    writeTranscript(appRoot, convId, [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs - 5_000);
+    mkdirSync(path.join(cliHome, 'cache'), { recursive: true });
+    writeFileSync(
+      path.join(cliHome, 'cache', `agy_hud_snapshot_${convId}.json`),
+      JSON.stringify({
+        v: 1,
+        convId,
+        conversationTitle: 'Stale CLI Envelope',
+        agyPid: 4242,
+        cwd: wsRoot,
+        workspaceCurrentDir: wsRoot,
+        workspaceProjectDir: wsRoot,
+        subagents: [],
+        taskCount: null,
+        mdDigest: null,
+        updatedAtMs: nowMs,
+        heartbeatAtMs: nowMs,
+      }),
+      'utf8',
+    );
+
+    const sessions = discoverSessions({ cliHome, geminiRoot, nowMs, isAlive: (p) => p === 4242 });
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]?.surface, 'app');
+    assert.equal(sessions[0]?.dataRoot, appRoot);
+  });
+
+  void it('prefers physical App conversation DB ownership over an envelope-only CLI cache entry without summaries', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    const convId = 'app-cold-db-5678';
+    const convDir = path.join(appRoot, 'conversations');
+    mkdirSync(convDir, { recursive: true });
+    const db = new DatabaseSync(path.join(convDir, `${convId}.db`));
+    db.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)');
+    db.close();
+    mkdirSync(path.join(cliHome, 'cache'), { recursive: true });
+    writeFileSync(
+      path.join(cliHome, 'cache', `agy_hud_snapshot_${convId}.json`),
+      JSON.stringify({
+        v: 1,
+        convId,
+        conversationTitle: 'Stale CLI Envelope',
+        agyPid: 4242,
+        cwd: wsRoot,
+        workspaceCurrentDir: wsRoot,
+        workspaceProjectDir: wsRoot,
+        subagents: [],
+        taskCount: null,
+        mdDigest: null,
+        updatedAtMs: nowMs,
+        heartbeatAtMs: nowMs,
+      }),
+      'utf8',
+    );
+
+    const sessions = discoverSessions({ cliHome, geminiRoot, nowMs, isAlive: (p) => p === 4242 });
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]?.surface, 'app');
+    assert.equal(sessions[0]?.dataRoot, appRoot);
+  });
 });

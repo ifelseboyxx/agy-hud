@@ -1,4 +1,5 @@
 import { INSPECTOR_RENDER_SCRIPT } from './hud-inspector-render-script.ts';
+import { INSPECTOR_STATE_SCRIPT } from './hud-inspector-state-script.ts';
 
 export const INSPECTOR_SCRIPT: string = `(function () {
   var POLL_INTERVAL_MS = 2000;
@@ -19,6 +20,8 @@ export const INSPECTOR_SCRIPT: string = `(function () {
     selectionSeq: 0,
     latestRequestSeq: 0,
     acceptHostPush: true,
+    unsettledHostPushes: [],
+    hostPushOverflow: false,
     disposed: false,
     pollTimer: null,
     etag: null,
@@ -34,9 +37,12 @@ export const INSPECTOR_SCRIPT: string = `(function () {
 
 ${INSPECTOR_RENDER_SCRIPT}
 
+${INSPECTOR_STATE_SCRIPT}
+
   function postToHost(msg) {
     try {
       if (window.parent && window.parent !== window) {
+        // SEP-1865 sandboxed iframe runs under an opaque origin; inbound replies verify ev.source === window.parent.
         window.parent.postMessage(msg, "*");
       }
     } catch (_err) {
@@ -116,38 +122,6 @@ ${INSPECTOR_RENDER_SCRIPT}
     if (fromUser) state.acceptHostPush = false;
   }
 
-  function matchesCurrentSelection(data) {
-    if (!data || typeof data !== "object") return false;
-    if (data.unchanged === true) return true;
-    if (typeof data.source === "string" && data.source !== state.sourceFilter) return false;
-    if (state.selectedSessionId) {
-      if (!data.snapshot || typeof data.snapshot.convId !== "string") return false;
-      var sel = state.selectedSessionId.toLowerCase();
-      var got = data.snapshot.convId.toLowerCase();
-      if (got !== sel && got.indexOf(sel) !== 0) return false;
-    }
-    return true;
-  }
-
-  function ingestPollPayload(data) {
-    if (!data || typeof data !== "object") return;
-    if (typeof data.error === "string" && data.error.length > 0) {
-      state.errorNote = data.error;
-      renderAll();
-      return;
-    }
-    var hadError = state.errorNote.length > 0;
-    state.errorNote = "";
-    if (typeof data.etag === "string") state.etag = data.etag;
-    if (data.unchanged === true) {
-      if (hadError) renderAll();
-      return;
-    }
-    if (Array.isArray(data.sessions)) state.sessions = data.sessions;
-    state.snapshot = data.snapshot != null ? data.snapshot : null;
-    renderAll();
-  }
-
   function openLocalFile(fileUri) {
     if (typeof fileUri !== "string" || fileUri.indexOf("file:///") !== 0) return;
     sendRequest("com.google.antigravity/toggle-aux-pane", {
@@ -169,10 +143,7 @@ ${INSPECTOR_RENDER_SCRIPT}
     }
     if (!force && document.visibilityState !== "visible") return;
     if (state.inFlight) {
-      if (force) {
-        state.pendingPoll = true;
-        state.pendingForce = true;
-      }
+      if (force) { state.pendingPoll = true; state.pendingForce = true; }
       return;
     }
     state.inFlight = true;
@@ -204,10 +175,12 @@ ${INSPECTOR_RENDER_SCRIPT}
         var data = extractStructured(res);
         if (!data) return;
         if (typeof data.error === "string" && data.error.length > 0) {
+          state.acceptHostPush = false;
           ingestPollPayload(data);
           return;
         }
         if (!matchesCurrentSelection(data)) return;
+        state.acceptHostPush = false;
         ingestPollPayload(data);
       })
       .catch(function (err) {
@@ -310,6 +283,7 @@ ${INSPECTOR_RENDER_SCRIPT}
 
   function onWindowMessage(ev) {
     if (state.disposed) return;
+    if (window.parent && window.parent !== window && ev.source !== window.parent) return;
     var msg = ev.data;
     if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0") return;
     if (typeof msg.method === "string") {
@@ -320,22 +294,42 @@ ${INSPECTOR_RENDER_SCRIPT}
       if (msg.method === "ui/notifications/host-context-changed") { applyHostContext(msg.params, null); return; }
       if (msg.method === "ui/notifications/tool-input" && msg.params && msg.params.arguments) {
         var inArgs = msg.params.arguments;
-        var nextSess = typeof inArgs.sessionId === "string" && inArgs.sessionId.length > 0 ? inArgs.sessionId : null;
-        var nextSrc = typeof inArgs.source === "string" && inArgs.source.length > 0 ? inArgs.source : "auto";
+        var nextSess = normalizeSessionId(inArgs.sessionId);
+        var nextSrc = normalizeSource(inArgs.source);
         var changed = nextSess !== state.selectedSessionId || nextSrc !== state.sourceFilter;
+        var overlapping = recordHostPushRequest(nextSrc, nextSess);
+        state.latestRequestSeq += 1;
         state.selectedSessionId = nextSess;
         state.sourceFilter = nextSrc;
-        state.acceptHostPush = true;
-        if (changed) {
+        if (overlapping) {
+          state.acceptHostPush = false;
           bumpSelection(false);
           pollSnapshot(true);
+        } else {
+          state.acceptHostPush = true;
+          if (changed) {
+            bumpSelection(false);
+            pollSnapshot(true);
+          } else if (state.inFlight) {
+            state.pendingPoll = true;
+            state.pendingForce = true;
+          }
         }
         return;
       }
       if (msg.method === "ui/notifications/tool-result") {
-        if (!state.acceptHostPush) return;
         var pushed = extractStructured(msg.params);
-        if (pushed && matchesCurrentSelection(pushed)) ingestPollPayload(pushed);
+        if (!pushed) return;
+        settleHostPush(pushed);
+        if (!state.acceptHostPush) return;
+        if (!isValidPollPayload(pushed)) return;
+        if (matchesCurrentSelection(pushed)) {
+          state.acceptHostPush = false;
+          state.pendingPoll = false;
+          state.pendingForce = false;
+          state.latestRequestSeq += 1;
+          ingestPollPayload(pushed);
+        }
       }
       return;
     }
@@ -359,6 +353,8 @@ ${INSPECTOR_RENDER_SCRIPT}
       }
     });
     state.pending.clear();
+    state.unsettledHostPushes = [];
+    state.hostPushOverflow = false;
     if (typeof document.removeEventListener === "function") {
       document.removeEventListener("click", onDocClick);
       document.removeEventListener("change", onDocChange);

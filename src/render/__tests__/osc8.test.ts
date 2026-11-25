@@ -450,4 +450,45 @@ void describe('materializeSnapshotMarkdownIfNeeded two-gate discipline', async (
     assert.equal(existsSync(freshMd), true);
     assert.equal(existsSync(otherFile), true);
   });
+
+  await it('skips stale Markdown publish when a newer render already updated the on-disk envelope', () => {
+    const convId = 'conv-stale-race';
+    const target = resolveSnapshotMarkdownUri(cliHome, convId);
+    assert.ok(target !== null);
+    const baseMs = Date.parse('2026-06-01T12:00:00Z');
+    const baseOpts = {
+      cliHome,
+      convId,
+      target,
+      emittedOsc8Count: 1,
+      agyPid: null,
+      activity: null,
+      agentsSummary: null,
+    };
+    const initial = materializeSnapshotMarkdownIfNeeded({
+      ...baseOpts,
+      data: { conversation_id: convId, conversation_title: 'V0', cwd: tmpRoot },
+      existingEnvelope: null,
+      transcriptStat: { ino: 1, mtimeMs: 100, size: 10 },
+      nowMs: baseMs,
+    });
+    assert.equal(initial.written, true);
+    const newer = materializeSnapshotMarkdownIfNeeded({
+      ...baseOpts,
+      data: { conversation_id: convId, conversation_title: 'Newer V2', cwd: tmpRoot },
+      existingEnvelope: initial.envelope,
+      transcriptStat: { ino: 1, mtimeMs: 300, size: 30 },
+      nowMs: baseMs + 2000,
+    });
+    assert.equal(newer.written, true);
+    const stale = materializeSnapshotMarkdownIfNeeded({
+      ...baseOpts,
+      data: { conversation_id: convId, conversation_title: 'Stale V1', cwd: tmpRoot },
+      existingEnvelope: initial.envelope,
+      transcriptStat: { ino: 1, mtimeMs: 200, size: 20 },
+      nowMs: baseMs + 1000,
+    });
+    assert.equal(stale.written, false);
+    assert.ok(readFileSync(target.absPath, 'utf8').includes('Newer V2'));
+  });
 });

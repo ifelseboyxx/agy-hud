@@ -16,6 +16,7 @@ import {
   visibleLen,
 } from '../ansi.ts';
 import { renderHudLines } from '../lines.ts';
+import { formatOsc8Overflow } from '../osc8.ts';
 
 const ESC = String.fromCharCode(0x1b);
 const BEL = String.fromCharCode(0x07);
@@ -418,16 +419,26 @@ void describe('aggregateCompletedTools and formatToolsLine', () => {
     }
   });
 
-  void it('measures combining diacritics as zero-width and keeps clusters intact during truncation', () => {
+  void it('measures combining diacritics as zero-width', () => {
     const accented = 'cafe\u0301';
     assert.equal(visibleLen(accented), 4);
+  });
+
+  void it('keeps combining diacritic clusters intact during truncation', () => {
     assert.equal(truncateToWidth('e\u0301abcdef', 4), 'e\u0301ab…');
     assert.equal(visibleLen(truncateToWidth('e\u0301abcdef', 4)), 4);
   });
 
-  void it('keeps ultra-narrow 20-column Skills line within termWidth - 1 budget', () => {
-    const line = formatNamesLine('Skills', ['code-review', 'tdd', 'grilling', 'research'], undefined, 20);
-    assert.ok(visibleLen(line) <= 19, `expected <= 19 cols, got ${visibleLen(line)}: ${stripAnsi(line)}`);
+  void it('preserves Overflow Indicator on an ultra-narrow 20-column Skills line', () => {
+    const uri = 'file:///tmp/agy_hud_snapshot_narrow.md';
+    const line = formatNamesLine('Skills', ['code-review', 'tdd', 'grilling', 'research'], undefined, 20, {
+      formatOverflow: (hidden) => formatOsc8Overflow(hidden, uri),
+    });
+    const plain = stripAnsi(line);
+    assert.ok(visibleLen(line) <= 19, `expected <= 19 cols, got ${visibleLen(line)}: ${plain}`);
+    assert.ok(plain.includes('+3 more'), `expected intact +3 more suffix, got: ${plain}`);
+    assert.ok(plain.includes('c'), `expected ellipsized first item, got: ${plain}`);
+    assert.ok(line.includes(`${ESC}]8;;${uri}${ESC}\\+3 more${ESC}]8;;${ESC}\\`), 'expected intact OSC 8 link');
   });
 
   void it('preserves item-0 floor in computeHudVisibleToolsCap when no tools are running', () => {
@@ -437,5 +448,36 @@ void describe('aggregateCompletedTools and formatToolsLine', () => {
       25,
     );
     assert.deepEqual(cap, { shownRunning: 0, shownCompleted: 1 });
+  });
+
+  void it('keeps single running tool within termWidth - 1 budget on ultra-narrow widths', () => {
+    const tools: TranscriptToolEntry[] = [
+      {
+        name: 'read_file',
+        disp: 'read_file',
+        target: 'very-long-filename.ts',
+        running: true,
+        isSkillRead: false,
+      },
+    ];
+    const line = formatToolsLine(tools, false, 3);
+    assert.ok(visibleLen(line) <= 2, `expected <= 2 cols, got ${visibleLen(line)}: ${stripAnsi(line)}`);
+  });
+
+  void it('preserves Overflow Indicator on an ultra-narrow 13-column Tools line', () => {
+    const uri = 'file:///tmp/agy_hud_snapshot_tools.md';
+    const tools: TranscriptToolEntry[] = [
+      { name: 'read_file', disp: 'read_file', target: 'alpha.ts', running: true, isSkillRead: false },
+      { name: 'edit_file', disp: 'edit_file', target: 'beta.ts', running: true, isSkillRead: false },
+      { name: 'run_command', disp: 'run_command', target: 'pnpm test', running: false, isSkillRead: false },
+    ];
+    const line = formatToolsLine(tools, false, 13, {
+      formatOverflow: (hidden) => formatOsc8Overflow(hidden, uri),
+    });
+    const plain = stripAnsi(line);
+    assert.ok(visibleLen(line) <= 12, `expected <= 12 cols, got ${visibleLen(line)}: ${plain}`);
+    assert.ok(plain.includes('+2 more'), `expected intact +2 more suffix, got: ${plain}`);
+    assert.ok(plain.includes('◐'), `expected running item-0 indicator, got: ${plain}`);
+    assert.ok(line.includes(`${ESC}]8;;${uri}${ESC}\\+2 more${ESC}]8;;${ESC}\\`), 'expected intact OSC 8 link');
   });
 });

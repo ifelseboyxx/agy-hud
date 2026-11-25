@@ -1,9 +1,6 @@
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { DEFAULT_CLI_LOCK_TIMEOUT_MS, withCliHomeLockSync } from '../core/file-lock.ts';
-import { getErrCode, isPlainObject } from '../core/guards.ts';
 import {
   applyHudLineToggle,
   buildPresetConfig,
@@ -19,7 +16,12 @@ import {
   VALID_HUD_PRESETS,
 } from '../core/hud-config.ts';
 import { resolveCliHome } from '../core/paths.ts';
-import { hasDanglingSymlinkInChainSync, readJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
+import {
+  hasDanglingSymlinkInChainSync,
+  readJsonObjectSync,
+  readJsonObjectWithHashSync,
+  writeJsonAtomicSync,
+} from '../fs-utils.ts';
 import { DEFAULT_HUD_CONFIG, type HudConfig, type HudLineId, type HudPreset } from '../types.ts';
 
 export {
@@ -208,31 +210,10 @@ export interface InteractiveDraftSession {
 }
 
 function readConfigWithVersionSync(configPath: string): { raw: Record<string, unknown> | null; version: string } {
-  let buf: Buffer;
-  try {
-    buf = readFileSync(configPath);
-  } catch (err) {
-    if (getErrCode(err) === 'ENOENT') {
-      if (!hasDanglingSymlinkInChainSync(configPath)) {
-        return { raw: null, version: MISSING_HUD_CONFIG_VERSION };
-      }
-      throw new Error(`Failed to read ${configPath}: dangling symbolic link`);
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to read ${configPath}: ${message}`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(buf.toString('utf8'));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Invalid JSON in ${configPath}: ${message}`);
-  }
-  if (!isPlainObject(parsed)) {
-    throw new Error(`Expected JSON object in ${configPath}`);
-  }
-  const version = createHash('sha256').update(buf).digest('hex');
-  return { raw: parsed, version };
+  const loaded = readJsonObjectWithHashSync(configPath, true);
+  return loaded !== null
+    ? { raw: loaded.raw, version: loaded.sha256 }
+    : { raw: null, version: MISSING_HUD_CONFIG_VERSION };
 }
 
 export function loadInteractiveDraftSession(options: ConfigureHudOptions = {}): InteractiveDraftSession {

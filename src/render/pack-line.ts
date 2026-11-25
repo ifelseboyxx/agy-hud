@@ -29,6 +29,33 @@ export function formatDefaultOverflow(hiddenCount: number): string {
   return `${GRAY}+${hiddenCount} more${RESET}`;
 }
 
+const MIN_COMPACT_PREFIX_COLS = 4;
+
+function compressPrefixForBudget(prefix: string, prefixBudget: number): string {
+  const trimmed = prefix.trimEnd();
+  if (prefixBudget < MIN_COMPACT_PREFIX_COLS || trimmed.length === 0) {
+    return '';
+  }
+  return `${truncateToWidth(trimmed, prefixBudget - 1)} `;
+}
+
+export function fitSinglePackableItem(prefix: string, item: PackableLineItem, suffix: string, budget: number): string {
+  const prefixCols = visibleLen(prefix);
+  const suffixCols = visibleLen(suffix);
+  const avail = budget - prefixCols - suffixCols;
+  if (avail >= 1) {
+    return `${prefix}${item.renderEllipsized(avail)}${suffix}`;
+  }
+  const rem = budget - suffixCols;
+  if (rem >= 1) {
+    const minItemCols = prefix.trim().length === 0 ? rem : Math.min(4, Math.max(1, Math.floor(rem / 2)));
+    const compactPrefix = compressPrefixForBudget(prefix, rem - minItemCols);
+    const itemCols = Math.max(1, rem - visibleLen(compactPrefix));
+    return `${compactPrefix}${item.renderEllipsized(itemCols)}${suffix}`;
+  }
+  return truncateToWidth(`${prefix}${item.render()}${suffix}`, budget);
+}
+
 export function packActivityLine(input: PackActivityLineInput): string {
   const { prefix, separator, items, maxItems, termWidth, sortSelectedIndices } = input;
   const total = items.length;
@@ -65,14 +92,7 @@ export function packActivityLine(input: PackActivityLineInput): string {
     }
     if (total === 1) {
       const first = items[0];
-      if (!first) {
-        return '';
-      }
-      const avail = budget - prefixCols;
-      if (avail < 1) {
-        return truncateToWidth(`${prefix}${first.render()}`, budget);
-      }
-      return `${prefix}${first.renderEllipsized(avail)}`;
+      return first ? fitSinglePackableItem(prefix, first, '', budget) : '';
     }
   }
 
@@ -95,11 +115,7 @@ export function packActivityLine(input: PackActivityLineInput): string {
       return '';
     }
     const overflow = formatOverflow(total - 1);
-    const avail = budget - prefixCols - sepCols - visibleLen(overflow);
-    if (avail < 1) {
-      return truncateToWidth(`${prefix}${first.render()}${separator}${overflow}`, budget);
-    }
-    return `${prefix}${first.renderEllipsized(avail)}${separator}${overflow}`;
+    return fitSinglePackableItem(prefix, first, `${separator}${overflow}`, budget);
   }
 
   const selected = Array.from({ length: bestK }, (_, idx) => idx);

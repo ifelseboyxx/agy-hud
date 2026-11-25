@@ -2,6 +2,8 @@ import type { Hash } from 'node:crypto';
 import { closeSync, fstatSync, openSync } from 'node:fs';
 
 import { isFiniteNum, isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import { readFdRange } from '../fs-utils.ts';
 import type { ActivityAgentEntry } from '../types.ts';
 import {
   extractToolTarget,
@@ -15,8 +17,10 @@ import {
 import {
   computeFdRangeFingerprint,
   computeFileContentHash,
+  computeFullFdRangeHash,
+  computeFullParsedRangeHash,
   computeParsedRangeFingerprint,
-  readFdRange,
+  FULL_HASH_MAX_BYTES,
 } from './transcript-fingerprint.ts';
 
 export { computeFileContentHash };
@@ -42,6 +46,7 @@ export interface ScannedToolCall {
   name: string;
   disp: string;
   fullTarget: string;
+  targetLinkable: boolean;
   running: boolean;
   isSkillRead: boolean;
   mcpServer: string | null;
@@ -148,8 +153,8 @@ function matchReusablePrefix<TTool>(
   ) {
     return null;
   }
-  if (size === meta.size && meta.stableOffset === size) return null;
-  const { digest, fullHash } = computeFdRangeFingerprint(fd, meta.stableOffset);
+  if (size === meta.size) return null;
+  const { digest, fullHash } = computeFullFdRangeHash(fd, meta.stableOffset);
   return digest === meta.stablePrefixHash ? { seed, prefixHash: fullHash } : null;
 }
 
@@ -173,12 +178,13 @@ function recordScannedToolCall<TTool>(
   stepTs: number | null,
 ): void {
   if (!isPlainObject(tc)) return;
-  const name = typeof tc.name === 'string' ? tc.name.trim() : '';
+  const name = typeof tc.name === 'string' ? sanitizeTerminalLabel(tc.name) : '';
   if (name.length === 0) return;
 
   const args = isPlainObject(tc.args) ? tc.args : isPlainObject(tc.arguments) ? tc.arguments : undefined;
   const rawTarget = extractToolTarget(name, args);
   const fullTarget = sanitizeFullTarget(rawTarget);
+  const targetLinkable = fullTarget.length > 0 && rawTarget === fullTarget;
 
   const skillName =
     (name === 'read_file' || name === 'view_file') && fullTarget.length > 0
@@ -194,12 +200,14 @@ function recordScannedToolCall<TTool>(
   }
 
   if (name === 'invoke_subagent' && args) {
-    const role = nonEmptyStr(unwrapArg(args.Role)) ?? nonEmptyStr(unwrapArg(args.TypeName)) ?? 'subagent';
-    const model = unwrapArg(args.Model);
+    const cleanRole = sanitizeTerminalLabel(unwrapArg(args.Role));
+    const cleanType = sanitizeTerminalLabel(unwrapArg(args.TypeName));
+    const cleanModel = sanitizeTerminalLabel(unwrapArg(args.Model));
+    const role = nonEmptyStr(cleanRole) ?? nonEmptyStr(cleanType) ?? 'subagent';
     ctx.agents.push({
       name: role,
-      type: unwrapArg(args.TypeName),
-      model: model === 'inherit' ? '' : model,
+      type: cleanType,
+      model: cleanModel === 'inherit' ? '' : cleanModel,
       running: isRunning,
       ts: stepTs,
     });
@@ -210,6 +218,7 @@ function recordScannedToolCall<TTool>(
       name,
       disp: mcpInfo !== null ? `${mcpInfo[0]}:${mcpInfo[1]}` : name,
       fullTarget,
+      targetLinkable,
       running: isRunning,
       isSkillRead: skillName !== null,
       mcpServer: mcpInfo !== null ? mcpInfo[0] : null,
@@ -354,8 +363,11 @@ export function scanTranscriptWithCache<TTool>(
         markStable(lineStart);
       }
 
-      if (typeof step.model === 'string' && step.model.trim().length > 0) {
-        lastModel = step.model.trim();
+      if (typeof step.model === 'string') {
+        const cleanModel = sanitizeTerminalLabel(step.model);
+        if (cleanModel.length > 0) {
+          lastModel = cleanModel;
+        }
       }
 
       const stepTs = parseIsoTimestampSec(step.created_at);
@@ -370,11 +382,11 @@ export function scanTranscriptWithCache<TTool>(
     const parsedSize = startOffset + chunkBuf.length;
     const contentHash = computeParsedRangeFingerprint(fd, startOffset, chunkBuf, parsedSize, prefixHash);
     const stablePrefixHash =
-      stableOffset === parsedSize
+      stableOffset === parsedSize && parsedSize <= FULL_HASH_MAX_BYTES
         ? contentHash
         : stableOffset === startOffset && resumeSeed !== null
           ? resumeSeed.meta.stablePrefixHash
-          : computeParsedRangeFingerprint(fd, startOffset, chunkBuf, stableOffset, prefixHash);
+          : computeFullParsedRangeHash(fd, startOffset, chunkBuf, stableOffset, prefixHash);
     const stAfter = fstatSync(fd, { bigint: true });
     const cacheable =
       chunkBuf.length === size - startOffset &&

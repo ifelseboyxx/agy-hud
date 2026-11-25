@@ -10,6 +10,9 @@ const CLI_LOCK_NAME = '.agy-hud-settings.lock';
 const MCP_LOCK_NAME = '.agy-hud-mcp.lock';
 const LOCK_POLL_MIN_MS = 25;
 const LOCK_POLL_JITTER_MS = 35;
+const SHORT_LOCK_TIMEOUT_THRESHOLD_MS = 100;
+const SHORT_LOCK_POLL_MIN_MS = 5;
+const SHORT_LOCK_POLL_JITTER_MS = 7;
 const STALE_LOCK_GRACE_MS = 150;
 const CORRUPT_LOCK_GRACE_MS = 5000;
 const LOCK_FILE_MODE = 0o600;
@@ -176,6 +179,10 @@ function tryAcquireOnce(lockPath: string, token: string, payload: string): Acqui
     writeFileSync(fd, payload, 'utf8');
     closeSync(fd);
     fd = undefined;
+    const curStat = lstatIfPresentSync(lockPath);
+    if (curStat === null || curStat.dev !== createdStat.dev || curStat.ino !== createdStat.ino) {
+      return null;
+    }
     return { lockPath, token };
   } catch (err) {
     if (fd !== undefined) {
@@ -201,10 +208,13 @@ function tryAcquireOnce(lockPath: string, token: string, payload: string): Acqui
   }
 }
 
-function acquireSingleLockSync(lockPath: string, deadline: number): AcquiredLock {
+function acquireSingleLockSync(lockPath: string, deadline: number, timeoutMs: number): AcquiredLock {
   mkdirSync(path.dirname(lockPath), { recursive: true });
   const token = makeTempSuffix();
   const payload = `${JSON.stringify({ pid: process.pid, token, lockPath })}\n`;
+  const shortPoll = timeoutMs <= SHORT_LOCK_TIMEOUT_THRESHOLD_MS;
+  const pollMin = shortPoll ? SHORT_LOCK_POLL_MIN_MS : LOCK_POLL_MIN_MS;
+  const pollJitter = shortPoll ? SHORT_LOCK_POLL_JITTER_MS : LOCK_POLL_JITTER_MS;
 
   while (true) {
     const acquired = tryAcquireOnce(lockPath, token, payload);
@@ -213,7 +223,7 @@ function acquireSingleLockSync(lockPath: string, deadline: number): AcquiredLock
     if (tryReclaimStaleLock(lockPath)) continue;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new FileLockTimeoutError(lockPath);
-    const delay = Math.min(remaining, LOCK_POLL_MIN_MS + Math.floor(Math.random() * LOCK_POLL_JITTER_MS));
+    const delay = Math.min(remaining, pollMin + Math.floor(Math.random() * pollJitter));
     Atomics.wait(SLEEP_CELL, 0, 0, delay);
   }
 }
@@ -242,7 +252,7 @@ export function withFileLocksSync<T>(
   const acquired: AcquiredLock[] = [];
   try {
     for (const lockPath of ordered) {
-      acquired.push(acquireSingleLockSync(lockPath, deadline));
+      acquired.push(acquireSingleLockSync(lockPath, deadline, timeoutMs));
     }
     return action();
   } finally {

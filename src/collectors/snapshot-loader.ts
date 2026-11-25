@@ -4,7 +4,7 @@ import type { StatusLineData } from '../types.ts';
 import { aggregateActivityTools, mergeActivityAgents } from './activity-aggregate.ts';
 import { loadTodos } from './activity.ts';
 import { collectAgentsSummary } from './agents.ts';
-import { readCliSettings } from './settings.ts';
+import { readCliFallbackModel } from './settings.ts';
 import { formatSurfaceBadge, isExitedCliSession } from './snapshot-envelope.ts';
 import { loadSnapshotTranscript, SNAPSHOT_TARGET_DISPLAY_LEN } from './snapshot-transcript.ts';
 import { loadSessionTelemetryFromRoot } from './telemetry.ts';
@@ -52,7 +52,7 @@ export function loadActivitySnapshot(session: SessionRecord, options: LoadActivi
 
   let model = scanned.lastModel;
   if (model.length === 0 && session.surface === 'cli') {
-    model = nonEmptyStr(readCliSettings(session.dataRoot).model) ?? '';
+    model = readCliFallbackModel(session.dataRoot);
   }
 
   const isExitedCli = isExitedCliSession(session);

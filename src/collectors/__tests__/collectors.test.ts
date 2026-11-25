@@ -10,7 +10,8 @@ import { formatAgentsBadge, formatRuntimeBadges } from '../../render/agents-rend
 import { formatContextCapacity, stripAnsi } from '../../render/ansi.ts';
 import type { StatusLineData } from '../../types.ts';
 import { DEFAULT_HUD_CONFIG } from '../../types.ts';
-import { BUILTIN_SLASH_CMDS, loadTodos, loadTranscriptActivity } from '../activity.ts';
+import { BUILTIN_SLASH_CMDS } from '../activity-parse.ts';
+import { loadTodos, loadTranscriptActivity } from '../activity.ts';
 import { cleanAgentLabel, collectAgentsSummary, syncSwarmFromStdin, transcriptTurnEnded } from '../agents.ts';
 import { detectGitBranch, getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../settings.ts';
 import {
@@ -87,7 +88,7 @@ void describe('collectors', () => {
     }
   });
 
-  void it('resolves cliHome, settings, hud-config defaults, git branch, and elapsed seconds', () => {
+  void it('resolves cliHome from GEMINI_CLI_HOME with HOME fallback', () => {
     assert.equal(
       resolveCliHome(undefined, { GEMINI_CLI_HOME: tmpRoot } as NodeJS.ProcessEnv),
       path.join(tmpRoot, '.gemini', 'antigravity-cli'),
@@ -96,7 +97,9 @@ void describe('collectors', () => {
       resolveCliHome(undefined, { GEMINI_CLI_HOME: '   ', HOME: tmpRoot } as NodeJS.ProcessEnv),
       path.join(tmpRoot, '.gemini', 'antigravity-cli'),
     );
+  });
 
+  void it('reads CLI settings from settings.json', () => {
     writeFileSync(
       path.join(cliHome, 'settings.json'),
       JSON.stringify({ agentMode: 'accept-edits', orchestrator: { planner: 'Gemini 4 Carbon (High)' } }),
@@ -104,9 +107,13 @@ void describe('collectors', () => {
     );
     const settings = readCliSettings(cliHome);
     assert.equal(settings.agentMode, 'accept-edits');
+  });
 
+  void it('returns DEFAULT_HUD_CONFIG when hud-config.json is missing', () => {
     assert.deepEqual(readHudConfig(cliHome), DEFAULT_HUD_CONFIG);
+  });
 
+  void it('merges partial hud-config.json over defaults', () => {
     writeFileSync(
       path.join(cliHome, 'hud-config.json'),
       JSON.stringify({ preset: 'compact', maxAgentChips: 2, segments: { cost: false, perf: 'invalid' } }),
@@ -117,19 +124,32 @@ void describe('collectors', () => {
     assert.equal(hudCfg.segments.cost, false);
     assert.equal(hudCfg.maxAgentChips, 2);
     assert.deepEqual(hudCfg.lines, ['mode', 'identity', 'usage', 'activity']);
+  });
 
+  void it('detects git branch from nested repository directory', () => {
     const repoDir = path.join(tmpRoot, 'repo');
     const nestedDir = path.join(repoDir, 'src', 'nested');
     mkdirSync(path.join(repoDir, '.git'), { recursive: true });
     mkdirSync(nestedDir, { recursive: true });
     writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/feat/agy-hud\n', 'utf8');
     assert.deepEqual(detectGitBranch(nestedDir), { branch: 'feat/agy-hud', dirty: false });
-    assert.deepEqual(detectGitBranch(nestedDir, { branch: 'main', dirty: true }), {
+  });
+
+  void it('prefers stdin vcs metadata over git directory lookup', () => {
+    const repoDir = path.join(tmpRoot, 'repo-vcs');
+    mkdirSync(path.join(repoDir, '.git'), { recursive: true });
+    writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/feat/agy-hud\n', 'utf8');
+    assert.deepEqual(detectGitBranch(repoDir, { branch: 'main', dirty: true }), {
       branch: 'main',
       dirty: true,
     });
+  });
 
+  void it('returns zero elapsed seconds when duration_ms is zero', () => {
     assert.equal(getSessionElapsedSeconds(cliHome, 'conv-0', { duration_ms: 0 }), 0);
+  });
+
+  void it('persists elapsed seconds cache per session', () => {
     const cachedElapsed = getSessionElapsedSeconds(cliHome, 'conv-persisted');
     assert.ok(cachedElapsed !== null && cachedElapsed >= 0);
     assert.ok(readFileSync(path.join(cliHome, 'cache', 'agy_hud_sessions.json'), 'utf8').includes('conv-persisted'));
@@ -470,11 +490,8 @@ void describe('collectors', () => {
     assert.ok(actFirst !== null && actFirst.tools.length === 1);
     const actCachePath = path.join(cacheDir, `agy_hud_activity_${convId}.json`);
     const savedActCache = JSON.parse(readFileSync(actCachePath, 'utf8')) as Record<string, unknown>;
-    writeFileSync(
-      actCachePath,
-      JSON.stringify({ ...savedActCache, data: { tools: [null], skills: 'not-array', mcps: [], agents: [] } }),
-      'utf8',
-    );
+    const badAct = JSON.stringify({ ...savedActCache, data: { tools: [null], skills: 'bad', mcps: [], agents: [] } });
+    writeFileSync(actCachePath, badAct, 'utf8');
     const actRecovered = loadTranscriptActivity(cliHome, { conversation_id: convId });
     assert.ok(actRecovered !== null && actRecovered.tools.length === 1);
   });

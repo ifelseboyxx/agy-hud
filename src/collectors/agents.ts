@@ -1,6 +1,7 @@
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
 
 import { isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
+import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
 import type {
   ActivityAgentEntry,
   AgentEntry,
@@ -49,7 +50,9 @@ export function cleanAgentLabel(rawName: unknown, rawRole: unknown, rawType: unk
       return '';
     }
     const firstLine = val.trim().split(/\r?\n/, 1)[0] ?? '';
-    return firstLine.replace(/^[` ]+|[` ]+$/g, '');
+    return sanitizeTerminalText(firstLine)
+      .trim()
+      .replace(/^[` ]+|[` ]+$/g, '');
   };
 
   const name = strip(rawName);
@@ -195,16 +198,17 @@ function loadSwarmEntries(cliHome: string, data: StatusLineData): AgentEntry[] |
     if (!isPlainObject(member)) {
       continue;
     }
-    const role = typeof member.role === 'string' ? member.role.trim().toLowerCase() : '';
-    if (name === 'coordinator' || role === 'coordinator') {
+    const cleanName = sanitizeTerminalLabel(name);
+    const role = typeof member.role === 'string' ? sanitizeTerminalLabel(member.role).toLowerCase() : '';
+    if (cleanName.length === 0 || cleanName === 'coordinator' || role === 'coordinator') {
       continue;
     }
     const isKilled = member.killed === true;
     const stoppedTs = isKilled ? parseIsoTimestampSec(member.killed_at ?? member.stopped_at) : null;
     entries.push({
-      name,
+      name: cleanName,
       type: role.length > 0 && role !== 'worker' ? role : '',
-      model: typeof member.model === 'string' ? member.model.trim() : '',
+      model: typeof member.model === 'string' ? sanitizeTerminalLabel(member.model) : '',
       state: isKilled ? 'done' : memberSwarmState(cliHome, member),
       ts: stoppedTs,
     });
@@ -221,16 +225,16 @@ export function parseStdinSubagents(stdinSubagents: readonly SubagentStdinItem[]
     if (!isPlainObject(sa)) {
       continue;
     }
-    const rawName = typeof sa.name === 'string' ? sa.name.trim() : '';
-    const rawRole = typeof sa.role === 'string' ? sa.role.trim() : '';
-    const rawType = typeof sa.type_name === 'string' ? sa.type_name.trim() : '';
+    const rawName = typeof sa.name === 'string' ? sanitizeTerminalLabel(sa.name) : '';
+    const rawRole = typeof sa.role === 'string' ? sanitizeTerminalLabel(sa.role) : '';
+    const rawType = typeof sa.type_name === 'string' ? sanitizeTerminalLabel(sa.type_name) : '';
     const label = cleanAgentLabel(rawName, rawRole, rawType);
     entries.push({
       name: label,
       key: rawName.toLowerCase(),
       altKey: label.toLowerCase(),
       type: rawType,
-      model: typeof sa.model === 'string' ? sa.model.trim() : '',
+      model: typeof sa.model === 'string' ? sanitizeTerminalLabel(sa.model) : '',
       state: classifyStatus(sa.status ?? sa.state),
       ts: null,
     });
@@ -267,8 +271,8 @@ function convertActivityAgents(activityAgents: readonly ActivityAgentEntry[] | u
   }
   return activityAgents.map((agent) => ({
     name: cleanAgentLabel(agent.name, '', agent.type),
-    type: agent.type,
-    model: agent.model,
+    type: sanitizeTerminalLabel(agent.type),
+    model: sanitizeTerminalLabel(agent.model),
     state: agent.running ? 'working' : 'done',
     ts: agent.ts,
   }));

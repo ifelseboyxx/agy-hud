@@ -213,10 +213,13 @@ button { cursor: pointer; border: 0; background: none; }
   background: var(--bg-tertiary);
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 12px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  white-space: nowrap;
+  gap: 10px;
   font-size: 11.5px;
 }
+.va-ribbon > span { flex: none; white-space: nowrap; }
 .va-ctx-track {
   width: 48px;
   height: 5px;

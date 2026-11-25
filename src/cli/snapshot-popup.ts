@@ -85,7 +85,7 @@ function togglePopupSection(state: PopupState, target: SnapshotSection): PopupKe
 }
 
 export function applyPopupKey(state: PopupState, seq: string, maxScrollOffset: number): PopupKeyEffect {
-  if (seq === 'q' || seq === 'Q' || seq === '\r' || seq === '\n' || seq === CTRL_C) {
+  if (seq === 'q' || seq === 'Q' || seq === '\r' || seq === '\n' || seq === CTRL_C || seq === ESC_CHAR) {
     return 'dismiss';
   }
   if (seq === '1') return togglePopupSection(state, 'tools');

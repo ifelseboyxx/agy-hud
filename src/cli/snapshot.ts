@@ -6,6 +6,7 @@ import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
 import { loadActivitySnapshot } from '../collectors/snapshot-loader.ts';
 import { nonEmptyStr } from '../core/guards.ts';
 import { resolveProfileRoots } from '../core/paths.ts';
+import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
 import type { ActivitySnapshot, SessionRecord, SessionSourceFilter, SnapshotSection } from '../snapshot-types.ts';
 import { type KeybindingsTarget, parseKeybindingsTarget, renderKeybindings } from './keybindings.ts';
 import { type PopupInputStream, type PopupOutputStream, runSnapshotPopup } from './snapshot-popup.ts';
@@ -248,13 +249,17 @@ export function formatSessionsTable(sessions: readonly SessionRecord[], source: 
   if (sessions.length === 0) {
     return `No Antigravity sessions found (source: ${source}).\n`;
   }
-  const rows = sessions.map((s) => ({
-    badge: `[${formatSurfaceBadge(s.surface)}]`,
-    id: s.shortId,
-    state: formatSessionStateColumn(s),
-    workspace: s.workspace.length > 0 ? (nonEmptyStr(path.basename(s.workspace)) ?? s.workspace) : '-',
-    title: s.title,
-  }));
+  const rows = sessions.map((s) => {
+    const rawWs = s.workspace.length > 0 ? (nonEmptyStr(path.basename(s.workspace)) ?? s.workspace) : '-';
+    const workspace = nonEmptyStr(sanitizeTerminalText(rawWs)) ?? '-';
+    return {
+      badge: `[${formatSurfaceBadge(s.surface)}]`,
+      id: sanitizeTerminalText(s.shortId),
+      state: formatSessionStateColumn(s),
+      workspace,
+      title: sanitizeTerminalLabel(s.title),
+    };
+  });
   const stateWidth = Math.max(8, ...rows.map((r) => r.state.length));
   const wsWidth = Math.max(9, Math.min(24, ...rows.map((r) => r.workspace.length)));
   const lines = rows.map((r) => {

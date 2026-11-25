@@ -1,9 +1,10 @@
 import { aggregateActivityTools, mergeActivityAgents } from '../collectors/activity-aggregate.ts';
 import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
-import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
+import { isFiniteNum, nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { SessionSurface } from '../snapshot-types.ts';
 import type { AgentsSummary, SessionTelemetry, StatusLineData, TranscriptActivity } from '../types.ts';
-import { fmtTokens, stripAnsi } from './ansi.ts';
+import { fmtTokens } from './ansi.ts';
 
 const HUD_RUNNING_TOOL_CAP = 2;
 const HUD_COMPLETED_TOOL_CAP = 8;
@@ -18,19 +19,35 @@ export interface SnapshotMarkdownRenderOptions {
   nowMs?: number;
 }
 
+const MARKDOWN_INLINE_ESCAPE_RE = /([\\`*_[\]()!<>|~])/g;
+
 function escapeMarkdownCell(text: string): string {
-  return stripAnsi(text)
-    .replace(/[\r\n\t]+/g, ' ')
-    .trim()
-    .replaceAll('|', '\\|');
+  return sanitizeTerminalLabel(text).replace(MARKDOWN_INLINE_ESCAPE_RE, '\\$1');
 }
 
-function formatCodeCell(text: string): string {
-  const clean = escapeMarkdownCell(text);
+function computeCodeFence(text: string): string {
+  let maxRun = 0;
+  let curRun = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '`') {
+      curRun += 1;
+      if (curRun > maxRun) maxRun = curRun;
+    } else {
+      curRun = 0;
+    }
+  }
+  return '`'.repeat(maxRun + 1);
+}
+
+function formatCodeCell(text: string, inTable = true): string {
+  const sanitized = sanitizeTerminalLabel(text);
+  const clean = inTable ? sanitized.replaceAll('|', '\\|') : sanitized;
   if (clean.length === 0) {
     return '-';
   }
-  return clean.includes('`') ? `\`\` ${clean} \`\`` : `\`${clean}\``;
+  const fence = computeCodeFence(clean);
+  const needsPad = clean.startsWith('`') || clean.endsWith('`');
+  return needsPad ? `${fence} ${clean} ${fence}` : `${fence}${clean}${fence}`;
 }
 
 export function formatMarkdownTelemetry(telemetry: SessionTelemetry | null | undefined): string {
@@ -69,21 +86,21 @@ export function renderSnapshotMarkdown(options: SnapshotMarkdownRenderOptions): 
     knownMcpServers: activity?.mcps ?? [],
     hideSkillReads: skills.length > 0,
   });
-  const runningTools = [...aggregatedTools.runningTools].reverse();
+  const runningTools = selectNewestFirst(aggregatedTools.runningTools);
   const completedTools = aggregatedTools.completedTools;
   const mcps = aggregatedTools.mcps;
   const mergedAgents = mergeActivityAgents(agentsSummary, activity?.agents ?? [], nowMs);
 
   const lines: string[] = [`# [${badge}] Activity Snapshot — ${escapeMarkdownCell(shortId)}`, ''];
-  lines.push(`- **Session**: ${formatCodeCell(convId)}`);
+  lines.push(`- **Session**: ${formatCodeCell(convId, false)}`);
   if (title !== undefined) {
     lines.push(`- **Title**: ${escapeMarkdownCell(title)}`);
   }
   if (workspace !== undefined) {
-    lines.push(`- **Workspace**: ${formatCodeCell(workspace)}`);
+    lines.push(`- **Workspace**: ${formatCodeCell(workspace, false)}`);
   }
   if (model !== undefined) {
-    lines.push(`- **Model**: ${formatCodeCell(model)}`);
+    lines.push(`- **Model**: ${formatCodeCell(model, false)}`);
   }
   lines.push(`- **Updated**: ${new Date(nowMs).toISOString()}`);
   const telLine = formatMarkdownTelemetry(telemetry);
@@ -141,7 +158,7 @@ export function renderSnapshotMarkdown(options: SnapshotMarkdownRenderOptions): 
     for (let i = 0; i < skills.length; i += 1) {
       const sk = skills[i];
       if (sk !== undefined) {
-        lines.push(`${i + 1}. ${formatCodeCell(sk)}`);
+        lines.push(`${i + 1}. ${formatCodeCell(sk, false)}`);
       }
     }
   }

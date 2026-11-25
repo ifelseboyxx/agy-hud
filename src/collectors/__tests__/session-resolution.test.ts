@@ -358,4 +358,48 @@ void describe('4-tier session resolution', () => {
     assert.equal(fallbackCli.tier, 'fallback');
     assert.equal(fallbackCli.session.convId, 'cli-live-2222');
   });
+
+  void it('picks newer idle session over older running session in Tier 3 fallback', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeTranscript(
+      appRoot,
+      'app-older-running',
+      [{ type: 'PLANNER_RESPONSE', status: 'RUNNING', tool_calls: [] }],
+      nowMs - 60_000,
+    );
+    writeTranscript(
+      appRoot,
+      'app-newer-idle',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 5_000,
+    );
+    writeSummaryDb(appRoot, [
+      {
+        id: 'app-older-running',
+        title: 'Older Running',
+        lastModifiedIso: '2026-06-01T11:59:00Z',
+        workspaces: [wsRoot],
+        notFullyIdle: 1,
+      },
+      {
+        id: 'app-newer-idle',
+        title: 'Newer Idle',
+        lastModifiedIso: '2026-06-01T11:59:55Z',
+        workspaces: [wsRoot],
+        notFullyIdle: 0,
+      },
+    ]);
+
+    const resolved = resolveSession({
+      cliHome,
+      geminiRoot,
+      cwd: wsOther,
+      source: 'app',
+      callerAgyPid: null,
+      nowMs,
+      isAlive: () => false,
+    });
+    assert.equal(resolved.tier, 'fallback');
+    assert.equal(resolved.session.convId, 'app-newer-idle');
+  });
 });

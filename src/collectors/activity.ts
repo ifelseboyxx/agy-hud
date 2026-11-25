@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 import { nonEmptyStr } from '../core/guards.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { StatusLineData, TodoSummary, TranscriptActivity, TranscriptToolEntry } from '../types.ts';
 import {
   ACTIVITY_CACHE_SCHEMA_VERSION,
@@ -11,18 +12,6 @@ import {
 import { aggregateCompletedTools, listMcpServers, shortenTarget } from './activity-parse.ts';
 import { resolveCliSubdirFile, resolveConversationId, resolveSafeTranscriptFile } from './safe-path.ts';
 import { scanTranscriptWithCache, type ScannedToolCall } from './transcript-scanner.ts';
-
-export {
-  aggregateCompletedTools,
-  BUILTIN_SLASH_CMDS,
-  extractToolTarget,
-  parseMcpTool,
-  resolveSkillName,
-  RUNNING_STEP_STATUSES,
-  sanitizeFullTarget,
-  shortenTarget,
-  unwrapArg,
-} from './activity-parse.ts';
 
 const TASK_LINE_RE = /^\s*[-*]\s*\[([ xX/])\]\s+(.+)$/;
 
@@ -120,7 +109,7 @@ function parseTaskFileCounts(taskFile: string): { total: number; completed: numb
       if (match[1].toLowerCase() === 'x') {
         completed += 1;
       } else if (match[1] === '/' && current.length === 0) {
-        current = match[2].trim();
+        current = sanitizeTerminalLabel(match[2]);
       }
     }
     return total > 0 ? { total, completed, current } : null;

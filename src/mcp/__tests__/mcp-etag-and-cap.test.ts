@@ -215,10 +215,15 @@ void describe('MCP ETag stability, invalidation, and JSON-RPC error byte cap', (
     assert.ok(rpcRes !== null && 'result' in rpcRes);
     const wireBytes = Buffer.byteLength(JSON.stringify(rpcRes), 'utf8');
     assert.ok(wireBytes <= HARD_MAX_MCP_RESPONSE_BYTES, `expected <= 1 MiB, got ${wireBytes}`);
-    const resultObj = rpcRes.result as { isError: boolean; structuredContent: { code: string; truncated: boolean } };
+    const resultObj = rpcRes.result as {
+      isError: boolean;
+      structuredContent: { code: string; truncated: boolean; sessionId?: string | null; source?: string };
+    };
     assert.equal(resultObj.isError, true);
     assert.equal(resultObj.structuredContent.code, 'ambiguous');
     assert.equal(resultObj.structuredContent.truncated, true);
+    assert.equal(resultObj.structuredContent.sessionId, 'ambi');
+    assert.equal(resultObj.structuredContent.source, 'all');
 
     const lineHandler = createMcpLineHandler(ctx);
     const rawLine = lineHandler(JSON.stringify(req));
@@ -432,5 +437,41 @@ void describe('MCP ETag stability, invalidation, and JSON-RPC error byte cap', (
     assert.ok(uniqueKey.endsWith('…'));
     assert.equal(tool?.targetUris[uniqueKey], uriUnique);
     assert.equal(tool?.targetUris[collidingKey], undefined);
+  });
+
+  void it('invalidates ETag when CLI settings fallback model changes', () => {
+    const convId = 'cli-model-etag-1234';
+    const t0 = Date.parse('2026-06-01T12:00:00Z');
+    writeFileSync(path.join(cliHome, 'settings.json'), JSON.stringify({ model: 'Model A' }), 'utf8');
+    writeSnapshotEnvelope(cliHome, { conversation_id: convId, conversation_title: 'CLI Model', cwd: wsDir }, 4242, {
+      nowMs: t0,
+    });
+    const opts = { cliHome, geminiRoot, cwd: wsDir, nowMs: t0 + 1000, isAlive: (p: number) => p === 4242 };
+
+    const first = pollHudSnapshot({ sessionId: convId, source: 'cli' }, opts);
+    assert.equal(first.unchanged, false);
+    assert.equal(first.snapshot?.model, 'Model A');
+
+    writeFileSync(path.join(cliHome, 'settings.json'), JSON.stringify({ model: 'Model B' }), 'utf8');
+    const afterModel = pollHudSnapshot({ sessionId: convId, source: 'cli', etag: first.etag }, opts);
+    assert.equal(afterModel.unchanged, false);
+    assert.equal(afterModel.snapshot?.model, 'Model B');
+  });
+
+  void it('invalidates ETag when session resolution tier changes', () => {
+    const convId = 'cli-tier-etag-5678';
+    const t0 = Date.parse('2026-06-01T12:00:00Z');
+    writeSnapshotEnvelope(cliHome, { conversation_id: convId, conversation_title: 'CLI Tier', cwd: wsDir }, 4242, {
+      nowMs: t0,
+    });
+    const opts = { cliHome, geminiRoot, cwd: wsDir, nowMs: t0 + 1000, isAlive: (p: number) => p === 4242 };
+
+    const explicitRes = pollHudSnapshot({ sessionId: convId, source: 'cli' }, opts);
+    assert.equal(explicitRes.unchanged, false);
+    assert.equal(explicitRes.snapshot?.resolutionTier, 'explicit');
+
+    const workspaceRes = pollHudSnapshot({ source: 'cli', etag: explicitRes.etag }, opts);
+    assert.equal(workspaceRes.unchanged, false);
+    assert.equal(workspaceRes.snapshot?.resolutionTier, 'workspace');
   });
 });

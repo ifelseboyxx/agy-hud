@@ -69,7 +69,7 @@ void describe('render and hud-entry', () => {
 
   void it('renders mode line without pictographic emojis and handles quota priorities', () => {
     const planLine = stripAnsi(
-      buildModeLine(cliHome, { cycle_mode: 'plan', vim: { mode: 'normal' } }, undefined, {
+      buildModeLine({ cycle_mode: 'plan', vim: { mode: 'normal' } }, undefined, {
         bypass: false,
         cliMode: '',
       }),
@@ -78,7 +78,7 @@ void describe('render and hud-entry', () => {
     assert.equal(EMOJI_PATTERN.test(planLine), false);
 
     const bypassLine = stripAnsi(
-      buildModeLine(cliHome, { dangerously_skip_permissions: true, cycle_mode: 'plan' }, undefined, {
+      buildModeLine({ dangerously_skip_permissions: true, cycle_mode: 'plan' }, undefined, {
         bypass: false,
         cliMode: '',
       }),
@@ -338,7 +338,7 @@ void describe('render and hud-entry', () => {
     assert.equal(lines[0]?.includes('Cache 91%'), false);
   });
 
-  void it('honors explicit termWidth over data.terminal_width for usage line and ignores non-positive widths', () => {
+  void it('honors explicit termWidth over data.terminal_width for usage line', () => {
     const data: StatusLineData = {
       model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
       context_window: { used_percentage: 42, context_window_size: 1_000_000 },
@@ -363,7 +363,18 @@ void describe('render and hud-entry', () => {
     }).map(stripAnsi);
     assert.equal(narrowLines[1]?.includes('(420k/1M)'), false);
     assert.equal(narrowLines[1]?.includes('G 5h:'), false);
+  });
 
+  void it('falls back to data.terminal_width when explicit termWidth is non-positive', () => {
+    const data: StatusLineData = {
+      model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
+      context_window: { used_percentage: 42, context_window_size: 1_000_000 },
+      quota: {
+        '3p-5h': { remaining_fraction: 0.75, reset_in_seconds: 3600 },
+        'gemini-5h': { remaining_fraction: 0.9, reset_in_seconds: 1800 },
+      },
+      terminal_width: 160,
+    };
     const zeroWidthLines = formatHudLines({
       data,
       config: buildPresetConfig('minimal'),
@@ -378,5 +389,54 @@ void describe('render and hud-entry', () => {
       identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
     }).map(stripAnsi);
     assert.ok(zeroWidthLines[1]?.includes('(420k/1M)'));
+  });
+
+  void it('falls back to data.terminal_width for Activity Summary when explicit termWidth is zero', () => {
+    const data: StatusLineData = {
+      model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
+      terminal_width: 160,
+    };
+    const activity: TranscriptActivity = {
+      tools: [
+        { name: 'read_file', disp: 'read_file', target: 'a.ts', running: false, isSkillRead: false },
+        { name: 'edit_file', disp: 'edit_file', target: 'b.ts', running: false, isSkillRead: false },
+        { name: 'run_command', disp: 'run_command', target: 'pnpm verify', running: false, isSkillRead: false },
+      ],
+      skills: ['skill-alpha', 'skill-beta', 'skill-gamma', 'skill-delta', 'skill-epsilon'],
+      mcps: ['mcp-server-one', 'mcp-server-two', 'mcp-server-three'],
+      agents: [],
+    };
+    const cfg: HudConfig = {
+      ...buildPresetConfig('compact'),
+      lines: ['activity'],
+    };
+    const linesAtZero = formatHudLines({
+      data,
+      config: cfg,
+      cliSettings: {},
+      telemetry: null,
+      activity,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 0,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+    const linesAt160 = formatHudLines({
+      data,
+      config: cfg,
+      cliSettings: {},
+      telemetry: null,
+      activity,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 160,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+    assert.ok((linesAt160[0]?.length ?? 0) > 120, 'fixture must expand past default 120 cols at width 160');
+    assert.equal(linesAtZero[0], linesAt160[0]);
   });
 });

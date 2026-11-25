@@ -1,3 +1,5 @@
+import { StringDecoder } from 'node:string_decoder';
+
 export const ESC_SEQUENCE_TIMEOUT_MS: number = 25;
 export const ESC_CHAR: string = String.fromCharCode(0x1b);
 export const CTRL_C: string = String.fromCharCode(0x03);
@@ -46,11 +48,84 @@ export function isInteractiveTty(
   return Boolean(stdin.isTTY && stdout.isTTY);
 }
 
+function consumeTtyInputBuffer(buffer: string): { keys: string[]; pending: string } {
+  const keys: string[] = [];
+  let i = 0;
+  while (i < buffer.length) {
+    if (buffer[i] === ESC_CHAR) {
+      if (i + 1 >= buffer.length) {
+        return { keys, pending: buffer.slice(i) };
+      }
+      const next = buffer[i + 1];
+      if (next === '[') {
+        let j = i + 2;
+        while (j < buffer.length) {
+          const code = buffer.charCodeAt(j);
+          if (code >= 0x30 && code <= 0x3f) {
+            j += 1;
+            continue;
+          }
+          break;
+        }
+        while (j < buffer.length) {
+          const code = buffer.charCodeAt(j);
+          if (code >= 0x20 && code <= 0x2f) {
+            j += 1;
+            continue;
+          }
+          break;
+        }
+        if (j >= buffer.length) {
+          return { keys, pending: buffer.slice(i) };
+        }
+        const finalCode = buffer.charCodeAt(j);
+        if (finalCode >= 0x40 && finalCode <= 0x7e) {
+          keys.push(buffer.slice(i, j + 1));
+          i = j + 1;
+          continue;
+        }
+        keys.push(ESC_CHAR);
+        i += 1;
+        continue;
+      }
+      if (next === ESC_CHAR) {
+        keys.push(ESC_CHAR);
+        i += 1;
+        continue;
+      }
+      if (next === 'O') {
+        if (i + 2 >= buffer.length) {
+          return { keys, pending: buffer.slice(i) };
+        }
+        const ss3Final = buffer.charCodeAt(i + 2);
+        if (ss3Final >= 0x40 && ss3Final <= 0x7e) {
+          keys.push(buffer.slice(i, i + 3));
+          i += 3;
+          continue;
+        }
+        keys.push(ESC_CHAR);
+        i += 1;
+        continue;
+      }
+      keys.push(buffer.slice(i, i + 2));
+      i += 2;
+      continue;
+    }
+    const cp = buffer.codePointAt(i);
+    const ch = cp !== undefined ? String.fromCodePoint(cp) : (buffer[i] ?? '');
+    if (ch.length === 0) break;
+    keys.push(ch);
+    i += ch.length;
+  }
+  return { keys, pending: '' };
+}
+
 export async function runAltScreenTtySession<TResult>(options: AltScreenTtySessionOptions<TResult>): Promise<TResult> {
   const { stdin, stdout, render, onKey, onEscTimeout } = options;
   const escTimeoutMs = options.escTimeoutMs ?? ESC_SEQUENCE_TIMEOUT_MS;
 
-  let pendingEsc = false;
+  let pendingBuffer = '';
+  const utf8Decoder = new StringDecoder('utf8');
   let escTimer: ReturnType<typeof setTimeout> | null = null;
   let rawModeEnabled = false;
   let onData: ((chunk: Buffer | string) => void) | null = null;
@@ -123,26 +198,34 @@ export async function runAltScreenTtySession<TResult>(options: AltScreenTtySessi
         if (settled) return;
         try {
           clearPendingEsc();
-          const raw = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-          const seq = pendingEsc ? `${ESC_CHAR}${raw}` : raw;
-          pendingEsc = false;
+          const raw = typeof chunk === 'string' ? chunk : utf8Decoder.write(chunk);
+          const combined = pendingBuffer.length > 0 ? `${pendingBuffer}${raw}` : raw;
+          pendingBuffer = '';
+          const { keys, pending } = consumeTtyInputBuffer(combined);
 
-          if (seq === ESC_CHAR) {
-            pendingEsc = true;
+          for (const key of keys) {
+            if (settled) return;
+            onKey(key, finish);
+          }
+
+          if (!settled && pending.length > 0) {
+            pendingBuffer = pending;
             escTimer = setTimeout(() => {
               escTimer = null;
-              pendingEsc = false;
+              const timedOut = pendingBuffer;
+              pendingBuffer = '';
               if (settled) return;
               try {
-                onEscTimeout(finish);
+                if (timedOut === ESC_CHAR) {
+                  onEscTimeout(finish);
+                } else if (timedOut.length > 0) {
+                  onKey(timedOut, finish);
+                }
               } catch (err) {
                 fail(err);
               }
             }, escTimeoutMs);
-            return;
           }
-
-          onKey(seq, finish);
         } catch (err) {
           fail(err);
         }

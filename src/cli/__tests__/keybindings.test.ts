@@ -46,7 +46,7 @@ void describe('keybindings host detection and snippet generation', () => {
     assert.throws(() => parseKeybindingsTarget('alacritty'), /Invalid --keybindings target/);
   });
 
-  void it('substitutes installed CLI Shim path via shared shim resolver', () => {
+  void it('resolves installed CLI Shim path via shared shim resolver', () => {
     const homeDir = path.join(tmpRoot, 'home');
     const pluginRoot = path.join(homeDir, '.gemini', 'config', 'plugins', 'agy-hud');
     const binDir = path.join(homeDir, '.local', 'bin');
@@ -60,6 +60,17 @@ void describe('keybindings host detection and snippet generation', () => {
     assert.equal(resolved.source, 'shim');
     assert.equal(resolved.shimPath, path.join(binDir, 'agy-hud'));
     assert.deepEqual(resolved.popupArgs, [path.join(binDir, 'agy-hud'), '-p']);
+  });
+
+  void it('renders tmux keybinding using the installed CLI Shim path', () => {
+    const homeDir = path.join(tmpRoot, 'home-tmux');
+    const pluginRoot = path.join(homeDir, '.gemini', 'config', 'plugins', 'agy-hud');
+    const binDir = path.join(homeDir, '.local', 'bin');
+    mkdirSync(path.join(pluginRoot, 'dist'), { recursive: true });
+    writeFileSync(path.join(pluginRoot, 'dist', 'cli.mjs'), '#!/usr/bin/env node\n', 'utf8');
+
+    const env: NodeJS.ProcessEnv = { HOME: homeDir };
+    installCliShim(binDir, pluginRoot, env, 'darwin');
 
     const tmuxOut = stripAnsi(
       renderKeybindings({ target: 'auto', env: { ...env, TMUX: '/tmp/tmux' }, pluginRoot, platform: 'darwin' }),
@@ -81,7 +92,17 @@ void describe('keybindings host detection and snippet generation', () => {
     const expectedCli = path.join(pluginRoot, 'dist', 'cli.mjs');
     assert.equal(resolved.source, 'node-fallback');
     assert.deepEqual(resolved.popupArgs, ['node', expectedCli, '-p']);
+  });
 
+  void it('renders kitty keybinding with node fallback when CLI Shim is foreign', () => {
+    const homeDir = path.join(tmpRoot, 'home-noshim-kitty');
+    const pluginRoot = path.join(homeDir, '.gemini', 'config', 'plugins', 'agy-hud');
+    const binDir = path.join(homeDir, '.local', 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(path.join(binDir, 'agy-hud'), '#!/bin/sh\necho foreign\n', 'utf8');
+
+    const env: NodeJS.ProcessEnv = { HOME: homeDir };
+    const expectedCli = path.join(pluginRoot, 'dist', 'cli.mjs');
     const kittyOut = stripAnsi(
       renderKeybindings({ target: 'kitty', env, pluginRoot, platform: 'darwin', color: false }),
     );
@@ -145,5 +166,94 @@ void describe('keybindings host detection and snippet generation', () => {
     assert.equal(resolved.source, 'shim');
     assert.equal(resolved.shimPath, path.join(binDir, 'agy-hud.cmd'));
     assert.deepEqual(resolved.popupArgs, [path.join(binDir, 'agy-hud.cmd'), '-p']);
+  });
+
+  void it('single-quotes POSIX metacharacters in node-fallback keybinding commands', () => {
+    const evilDir = path.join(tmpRoot, 'x;id;#$(whoami)`date`');
+    const pluginRoot = path.join(evilDir, 'plugin');
+    const binDir = path.join(evilDir, 'bin');
+    mkdirSync(path.join(pluginRoot, 'dist'), { recursive: true });
+    writeFileSync(path.join(pluginRoot, 'dist', 'cli.mjs'), '#!/usr/bin/env node\n', 'utf8');
+
+    const fallback = resolveKeybindingCommand({ env: { HOME: evilDir }, binDir, pluginRoot, platform: 'darwin' });
+    assert.equal(fallback.source, 'node-fallback');
+    assert.equal(fallback.shellCommand, `node '${path.join(pluginRoot, 'dist', 'cli.mjs')}' -p`);
+  });
+
+  void it('single-quotes POSIX metacharacters in Ghostty keybinding snippets', () => {
+    const evilDir = path.join(tmpRoot, 'x;id;#$(whoami)`date`');
+    const pluginRoot = path.join(evilDir, 'plugin');
+    const binDir = path.join(evilDir, 'bin');
+    mkdirSync(path.join(pluginRoot, 'dist'), { recursive: true });
+    writeFileSync(path.join(pluginRoot, 'dist', 'cli.mjs'), '#!/usr/bin/env node\n', 'utf8');
+
+    const ghosttyOut = renderKeybindings({
+      target: 'ghostty',
+      env: { HOME: evilDir },
+      binDir,
+      pluginRoot,
+      platform: 'darwin',
+      color: false,
+    });
+    assert.ok(ghosttyOut.includes(`text:!node '${path.join(pluginRoot, 'dist', 'cli.mjs')}'\\n`));
+  });
+
+  void it('escapes command substitutions inside tmux double-quoted popup snippets', () => {
+    const evilDir = path.join(tmpRoot, 'x;id;#$(whoami)`date`');
+    const pluginRoot = path.join(evilDir, 'plugin');
+    const binDir = path.join(evilDir, 'bin');
+    mkdirSync(path.join(pluginRoot, 'dist'), { recursive: true });
+    writeFileSync(path.join(pluginRoot, 'dist', 'cli.mjs'), '#!/usr/bin/env node\n', 'utf8');
+
+    const tmuxOut = renderKeybindings({
+      target: 'tmux',
+      env: { HOME: evilDir },
+      binDir,
+      pluginRoot,
+      platform: 'darwin',
+      color: false,
+    });
+    assert.ok(tmuxOut.includes('\\$(whoami)'), 'tmux double-quoted snippet must escape $ for tmux config parser');
+  });
+
+  void it('single-quotes POSIX metacharacters in installed CLI shim keybinding commands', () => {
+    const evilDir = path.join(tmpRoot, 'x;id;#$(whoami)`date`');
+    const pluginRoot = path.join(evilDir, 'plugin');
+    const binDir = path.join(evilDir, 'bin');
+    mkdirSync(path.join(pluginRoot, 'dist'), { recursive: true });
+    writeFileSync(path.join(pluginRoot, 'dist', 'cli.mjs'), '#!/usr/bin/env node\n', 'utf8');
+
+    installCliShim(binDir, pluginRoot, { HOME: evilDir }, 'darwin');
+    const withShim = resolveKeybindingCommand({ env: { HOME: evilDir }, binDir, pluginRoot, platform: 'darwin' });
+    assert.equal(withShim.source, 'shim');
+    assert.equal(withShim.shellCommand, `'${path.join(binDir, 'agy-hud')}' -p`);
+  });
+
+  void it('rejects ESC escape sequences in keybinding command paths', () => {
+    const evilPluginRoot = path.join(tmpRoot, 'bad\x1b]52;c;abc\x07dir', 'plugin');
+    assert.throws(
+      () =>
+        resolveKeybindingCommand({
+          env: { HOME: tmpRoot },
+          binDir: path.join(tmpRoot, 'bin'),
+          pluginRoot: evilPluginRoot,
+          platform: 'darwin',
+        }),
+      /control|escape|bidi/i,
+    );
+  });
+
+  void it('rejects Unicode bidi controls in keybinding command paths', () => {
+    const evilPluginRoot = path.join(tmpRoot, 'bad\u202Edir', 'plugin');
+    assert.throws(
+      () =>
+        resolveKeybindingCommand({
+          env: { HOME: tmpRoot },
+          binDir: path.join(tmpRoot, 'bin'),
+          pluginRoot: evilPluginRoot,
+          platform: 'darwin',
+        }),
+      /control|escape|bidi/i,
+    );
   });
 });

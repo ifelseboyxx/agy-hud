@@ -419,4 +419,70 @@ void describe('hud-mcp-snapshot polling and ETag', () => {
     assert.equal(readTool?.targetUris[missingFile], undefined);
     assert.equal(res.snapshot?.runningTools[0]?.fileUri, null);
   });
+
+  void it('orders MCP running tools newest-first matching CLI and Markdown surfaces', () => {
+    const convId = 'app-run-order-1234';
+    seedAppSession(appRoot, wsDir, convId, 'Running Order', [
+      {
+        type: 'PLANNER_RESPONSE',
+        status: 'RUNNING',
+        tool_calls: [
+          { name: 'read_file', args: { Path: path.join(wsDir, 'first.ts') } },
+          { name: 'edit_file', args: { Path: path.join(wsDir, 'second.ts') } },
+          { name: 'run_command', args: { CommandLine: 'pnpm test' } },
+        ],
+      },
+    ]);
+
+    const res = pollHudSnapshot(
+      { sessionId: convId, source: 'all' },
+      { cliHome, geminiRoot, cwd: wsDir, nowMs: Date.parse('2026-06-01T12:00:00Z') },
+    );
+    assert.equal(res.unchanged, false);
+    assert.deepEqual(
+      res.snapshot?.runningTools.map((rt) => rt.disp),
+      ['run_command', 'edit_file', 'read_file'],
+    );
+  });
+
+  void it('does not bind fileUri to ab.ts when transcript targets bidi filename a\\u200eb.ts on cold read or cache hit', () => {
+    const convId = 'app-bidi-uri-1234';
+    const decoyPath = path.join(wsDir, 'ab.ts');
+    const bidiPath = path.join(wsDir, 'a\u200eb.ts');
+    writeFileSync(decoyPath, 'export const decoy = true;\n', 'utf8');
+    writeFileSync(bidiPath, 'export const bidi = true;\n', 'utf8');
+    const decoyUri = pathToFileURL(decoyPath).href;
+
+    seedAppSession(appRoot, wsDir, convId, 'Bidi URI Safety', [
+      {
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        tool_calls: [{ name: 'read_file', args: { Path: bidiPath } }],
+      },
+      {
+        type: 'PLANNER_RESPONSE',
+        status: 'RUNNING',
+        tool_calls: [{ name: 'edit_file', args: { Path: bidiPath } }],
+      },
+    ]);
+
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    for (let pass = 0; pass < 2; pass += 1) {
+      const res = pollHudSnapshot({ sessionId: convId, source: 'all' }, { cliHome, geminiRoot, cwd: wsDir, nowMs });
+      assert.equal(res.unchanged, false);
+      const readTool = res.snapshot?.completedTools.find((t) => t.disp === 'read_file');
+      assert.ok(readTool !== undefined);
+      assert.equal(readTool.fullTarget.includes('\u200e'), false);
+      assert.equal(readTool.latestTarget.includes('\u200e'), false);
+      assert.equal(Object.values(readTool.targetUris).includes(decoyUri), false);
+      assert.deepEqual(readTool.targetUris, {});
+
+      const runningEdit = res.snapshot?.runningTools.find((rt) => rt.disp === 'edit_file');
+      assert.ok(runningEdit !== undefined);
+      assert.equal(runningEdit.fullTarget.includes('\u200e'), false);
+      assert.equal(runningEdit.target.includes('\u200e'), false);
+      assert.notEqual(runningEdit.fileUri, decoyUri);
+      assert.equal(runningEdit.fileUri, null);
+    }
+  });
 });

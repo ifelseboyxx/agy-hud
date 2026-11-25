@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 import { INSPECTOR_MIME_TYPE, INSPECTOR_RESOURCE_URI } from '../hud-inspector-ui.ts';
+import { HARD_MAX_MCP_RESPONSE_BYTES } from '../hud-mcp-cap.ts';
 import { handleMcpMessage, runMcpStdioServer } from '../hud-mcp-entry.ts';
 import type { HudPollSnapshotData } from '../hud-mcp-snapshot.ts';
 
@@ -190,7 +191,12 @@ void describe('hud-mcp-entry JSON-RPC 2.0 MCP server', () => {
     const ctx = { cliHome, geminiRoot, cwd: wsDir, nowMs };
 
     const openRes = handleMcpMessage(
-      { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'hud_inspector', arguments: {} } },
+      {
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'hud_inspector', arguments: { sessionId: convId } },
+      },
       ctx,
     );
     assert.ok(openRes !== null && 'result' in openRes);
@@ -208,6 +214,143 @@ void describe('hud-mcp-entry JSON-RPC 2.0 MCP server', () => {
     assert.ok(pollRes !== null && 'result' in pollRes);
     const pollResult = pollRes.result as { structuredContent: { unchanged: boolean; etag: string } };
     assert.deepEqual(pollResult.structuredContent, { unchanged: true, etag });
+  });
+
+  void it('rejects unknown tool arguments on hud_poll_snapshot', () => {
+    const ctx = { cliHome, geminiRoot, cwd: wsDir };
+    const unknownKey = handleMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 20,
+        method: 'tools/call',
+        params: { name: 'hud_poll_snapshot', arguments: { session_id: 'abc' } },
+      },
+      ctx,
+    );
+    assert.ok(unknownKey !== null && 'result' in unknownKey);
+    assert.equal((unknownKey.result as { isError?: boolean }).isError, true);
+  });
+
+  void it('rejects etag argument on hud_inspector', () => {
+    const ctx = { cliHome, geminiRoot, cwd: wsDir };
+    const etagOnInspector = handleMcpMessage(
+      { jsonrpc: '2.0', id: 21, method: 'tools/call', params: { name: 'hud_inspector', arguments: { etag: 'x' } } },
+      ctx,
+    );
+    assert.ok(etagOnInspector !== null && 'result' in etagOnInspector);
+    assert.equal((etagOnInspector.result as { isError?: boolean }).isError, true);
+  });
+
+  void it('rejects blank sessionId values on hud_poll_snapshot', () => {
+    const ctx = { cliHome, geminiRoot, cwd: wsDir };
+    const blankSession = handleMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 22,
+        method: 'tools/call',
+        params: { name: 'hud_poll_snapshot', arguments: { sessionId: '   ' } },
+      },
+      ctx,
+    );
+    assert.ok(blankSession !== null && 'result' in blankSession);
+    assert.equal((blankSession.result as { isError?: boolean }).isError, true);
+  });
+
+  void it('includes requested sessionId and source in structured tool error payloads', () => {
+    const ctx = { cliHome, geminiRoot, cwd: wsDir };
+    const missing = handleMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 23,
+        method: 'tools/call',
+        params: { name: 'hud_inspector', arguments: { sessionId: 'missing-session-9999', source: 'cli' } },
+      },
+      ctx,
+    );
+    assert.ok(missing !== null && 'result' in missing);
+    const result = missing.result as {
+      isError?: boolean;
+      structuredContent: { error: string; code: string; sessionId?: string | null; source?: string };
+    };
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.code, 'not-found');
+    assert.equal(result.structuredContent.sessionId, 'missing-session-9999');
+    assert.equal(result.structuredContent.source, 'cli');
+  });
+
+  void it('disables fileUri when a tool target has a trailing newline colliding with an existing file', () => {
+    const convId = 'app-newline-uri-9999';
+    const decoyPath = path.join(wsDir, 'ab.ts');
+    writeFileSync(decoyPath, 'export const decoy = true;\n', 'utf8');
+    seedMinimalAppSession(appRoot, wsDir, convId, 'Trailing Newline Target');
+    const logsDir = path.join(appRoot, 'brain', convId, '.system_generated', 'logs');
+    writeFileSync(
+      path.join(logsDir, 'transcript.jsonl'),
+      `${JSON.stringify({
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        tool_calls: [{ name: 'read_file', args: { Path: `${decoyPath}\n` } }],
+      })}\n`,
+      'utf8',
+    );
+    const ctx = { cliHome, geminiRoot, cwd: wsDir, nowMs: Date.parse('2026-06-01T12:00:00Z') };
+    const rpcRes = handleMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 24,
+        method: 'tools/call',
+        params: { name: 'hud_poll_snapshot', arguments: { sessionId: convId, source: 'all' } },
+      },
+      ctx,
+    );
+    assert.ok(rpcRes !== null && 'result' in rpcRes);
+    const payload = (rpcRes.result as { structuredContent: HudPollSnapshotData }).structuredContent;
+    const readTool = payload.snapshot?.completedTools.find((t) => t.disp === 'read_file');
+    assert.ok(readTool !== undefined);
+    assert.deepEqual(readTool.targetUris, {});
+  });
+
+  void it('rejects sessionId arguments exceeding 128 characters', () => {
+    const ctx = { cliHome, geminiRoot, cwd: wsDir };
+    const overlong = 'a'.repeat(129);
+    const res = handleMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 25,
+        method: 'tools/call',
+        params: { name: 'hud_poll_snapshot', arguments: { sessionId: overlong } },
+      },
+      ctx,
+    );
+    assert.ok(res !== null && 'result' in res);
+    const result = res.result as { isError?: boolean; structuredContent: { error: string } };
+    assert.equal(result.isError, true);
+    assert.ok(result.structuredContent.error.includes('128'));
+  });
+
+  void it('redacts internal error messages without leaking local filesystem paths', () => {
+    const secretPath = path.join(tmpRoot, 'secret-internal-dir');
+    const throwingCtx = {
+      cliHome,
+      geminiRoot,
+      get cwd(): string {
+        throw new Error(`EACCES: permission denied, open '${secretPath}/private.db'`);
+      },
+    };
+    const res = handleMcpMessage(
+      { jsonrpc: '2.0', id: 26, method: 'tools/call', params: { name: 'hud_poll_snapshot', arguments: {} } },
+      throwingCtx,
+    );
+    assert.ok(res !== null && 'result' in res);
+    const result = res.result as {
+      isError?: boolean;
+      content: Array<{ text: string }>;
+      structuredContent: { error: string; code: string };
+    };
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.code, 'internal-error');
+    assert.equal(result.structuredContent.error.includes(secretPath), false);
+    assert.equal(result.content[0]?.text.includes(secretPath), false);
   });
 
   void it('rejects unknown tool calls with -32602', () => {
@@ -268,5 +411,61 @@ void describe('hud-mcp-entry JSON-RPC 2.0 MCP server', () => {
     assert.equal(input.listenerCount('data'), 0);
     assert.equal(input.listenerCount('end'), 0);
     assert.equal(input.listenerCount('error'), 0);
+  });
+
+  void it('rejects oversized stdio frames exceeding 1 MiB and recovers cleanly on the next newline', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const chunks: string[] = [];
+    output.on('data', (buf: Buffer) => {
+      chunks.push(buf.toString('utf8'));
+    });
+
+    const done = runMcpStdioServer(input, output, { cliHome, geminiRoot, cwd: wsDir });
+    const oversizedValidJson = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 98,
+      method: 'ping',
+      params: { pad: 'a'.repeat(HARD_MAX_MCP_RESPONSE_BYTES + 256) },
+    });
+    const chunkSize = 300_000;
+    for (let pos = 0; pos < oversizedValidJson.length; pos += chunkSize) {
+      input.write(oversizedValidJson.slice(pos, pos + chunkSize));
+    }
+    input.write('\n');
+    input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'ping' })}\n`);
+    input.end();
+    await done;
+
+    const lines = chunks
+      .join('')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    assert.equal(lines.length, 2);
+    assert.equal((lines[0]?.error as Record<string, unknown> | undefined)?.code, -32600);
+    assert.deepEqual(lines[1], { jsonrpc: '2.0', id: 99, result: {} });
+  });
+
+  void it('emits a bounded -32600 error when an unterminated oversized stdio frame hits EOF', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const chunks: string[] = [];
+    output.on('data', (buf: Buffer) => {
+      chunks.push(buf.toString('utf8'));
+    });
+
+    const done = runMcpStdioServer(input, output, { cliHome, geminiRoot, cwd: wsDir });
+    input.write('x'.repeat(HARD_MAX_MCP_RESPONSE_BYTES + 128));
+    input.end();
+    await done;
+
+    const lines = chunks
+      .join('')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    assert.equal(lines.length, 1);
+    assert.equal((lines[0]?.error as Record<string, unknown> | undefined)?.code, -32600);
   });
 });

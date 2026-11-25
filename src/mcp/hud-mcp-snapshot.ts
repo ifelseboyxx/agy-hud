@@ -4,12 +4,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { resolveCliSubdirFile, sanitizeSessionId } from '../collectors/safe-path.ts';
 import { resolveSession, SessionResolutionError, type ResolveSessionOptions } from '../collectors/session-index.ts';
+import { readCliFallbackModel } from '../collectors/settings.ts';
 import { loadActivitySnapshot } from '../collectors/snapshot-loader.ts';
 import { readSqliteVersionTag } from '../collectors/sqlite-readonly.ts';
 import { computeFileContentHash } from '../collectors/transcript-scanner.ts';
-import { isPlainObject, nonEmptyStr } from '../core/guards.ts';
+import { isPlainObject, nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
 import { resolveProfileRoots } from '../core/paths.ts';
-import { readJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
+import { readRegularJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
 import type {
   ActivitySnapshot,
   SessionRecord,
@@ -207,7 +208,7 @@ function computeSwarmStateDigest(dataRoot: string, safeId: string): string {
   if (rosterHash.length === 0) return '';
 
   const parts: string[] = [rosterHash];
-  const roster = readJsonObjectSync(rosterPath, false);
+  const roster = readRegularJsonObjectSync(rosterPath);
   if (roster !== null && isPlainObject(roster.members)) {
     const memberNames = Object.keys(roster.members).sort();
     for (const name of memberNames) {
@@ -232,10 +233,18 @@ function computeSwarmStateDigest(dataRoot: string, safeId: string): string {
   return hashShortSha256(parts.join('\0'));
 }
 
+function computeSiblingsSemanticKey(siblings: readonly SiblingSessionHint[]): string {
+  return siblings
+    .map((s) => [s.convId, s.surface, s.title, String(s.livePid ?? 0), s.running ? '1' : '0'].join('\0'))
+    .join('\x1e');
+}
+
 function computeSessionStatEtag(
   session: SessionRecord,
   sessions: readonly SessionRecord[],
   source: SessionSourceFilter,
+  resolutionTier: SnapshotResolutionTier,
+  siblings: readonly SiblingSessionHint[],
 ): string {
   const safeId = sanitizeSessionId(session.convId);
   const tPath =
@@ -250,15 +259,19 @@ function computeSessionStatEtag(
   const dbTag = dbPath !== null ? readSqliteVersionTag(dbPath) : '';
   const swarmDigest = safeId !== null ? computeSwarmStateDigest(session.dataRoot, safeId) : '';
   const envSemantic = computeEnvelopeSemanticKey(session.envelope);
+  const fallbackModel = session.surface === 'cli' ? readCliFallbackModel(session.dataRoot) : '';
+  const siblingsKey = computeSiblingsSemanticKey(siblings);
   const listKey = sessions.slice(0, MAX_SESSIONS_LIST).map(computeSessionListKeyEntry).join('\x1e');
 
   const raw = [
-    'v4',
+    'v5',
     source,
+    resolutionTier,
     session.convId,
     session.surface,
     session.title,
     session.workspace,
+    fallbackModel,
     session.running ? '1' : '0',
     String(session.livePid ?? 0),
     String(session.updatedAtMs),
@@ -267,6 +280,7 @@ function computeSessionStatEtag(
     dbTag,
     swarmDigest,
     envSemantic,
+    siblingsKey,
     listKey,
   ].join('\x1f');
   return hashShortSha256(raw);
@@ -279,22 +293,32 @@ function enrichActivitySnapshot(snapshot: ActivitySnapshot): HudInspectorSnapsho
       ? Math.min(100, Math.round((ctxUsed / ctxMax) * 1000) / 10)
       : null;
 
-  const runningTools: HudInspectorRunningTool[] = snapshot.runningTools.map((rt) => ({
-    ...rt,
-    fileUri: resolveLocalTargetFileUri(rt.fullTarget, snapshot.workspace),
-  }));
+  const runningTools: HudInspectorRunningTool[] = selectNewestFirst(snapshot.runningTools).map((rt) => {
+    const { targetLinkable, ...rest } = rt;
+    return {
+      ...rest,
+      fileUri: targetLinkable === false ? null : resolveLocalTargetFileUri(rt.fullTarget, snapshot.workspace),
+    };
+  });
 
   const completedTools: HudInspectorToolItem[] = snapshot.completedTools.map((tool) => {
+    const { unlinkedTargets, ...rest } = tool;
+    const unlinkedSet = unlinkedTargets !== undefined ? new Set<string>(unlinkedTargets) : null;
     const targetUris: Record<string, string> = {};
     for (const target of tool.recentTargets) {
+      if (unlinkedSet?.has(target) === true) continue;
       const uri = resolveLocalTargetFileUri(target, snapshot.workspace);
       if (uri !== null) targetUris[target] = uri;
     }
-    if (tool.fullTarget.length > 0 && targetUris[tool.fullTarget] === undefined) {
+    if (
+      tool.fullTarget.length > 0 &&
+      targetUris[tool.fullTarget] === undefined &&
+      unlinkedSet?.has(tool.fullTarget) !== true
+    ) {
       const uri = resolveLocalTargetFileUri(tool.fullTarget, snapshot.workspace);
       if (uri !== null) targetUris[tool.fullTarget] = uri;
     }
-    return { ...tool, targetUris };
+    return { ...rest, targetUris };
   });
 
   return {
@@ -360,7 +384,7 @@ export function pollHudSnapshot(args: HudPollArgs = {}, options: HudPollOptions 
     throw err;
   }
 
-  const etag = computeSessionStatEtag(resolved.session, resolved.sessions, source);
+  const etag = computeSessionStatEtag(resolved.session, resolved.sessions, source, resolved.tier, resolved.siblings);
   if (args.etag !== undefined && args.etag === etag) {
     return { unchanged: true, etag };
   }

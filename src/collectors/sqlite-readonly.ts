@@ -1,22 +1,12 @@
 import { createHash } from 'node:crypto';
-import {
-  chmodSync,
-  closeSync,
-  copyFileSync,
-  fstatSync,
-  lstatSync,
-  mkdtempSync,
-  openSync,
-  readSync,
-  rmSync,
-} from 'node:fs';
+import { chmodSync, closeSync, copyFileSync, fstatSync, lstatSync, mkdtempSync, openSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
-import { lstatIfPresentSync } from '../fs-utils.ts';
+import { lstatIfPresentSync, readFdRange } from '../fs-utils.ts';
 
 const SQLITE_TIMEOUT_MS = 50;
 const WAL_COPY_MAX_ATTEMPTS = 4;
@@ -76,15 +66,7 @@ function makeTempWritable(filePath: string): void {
 }
 
 function readExactHex(fd: number, offset: number, length: number): string {
-  if (length <= 0) return '';
-  const buf = Buffer.allocUnsafe(length);
-  let pos = 0;
-  while (pos < length) {
-    const n = readSync(fd, buf, pos, length - pos, offset + pos);
-    if (n <= 0) break;
-    pos += n;
-  }
-  return (pos < length ? buf.subarray(0, pos) : buf).toString('hex');
+  return readFdRange(fd, offset, length).toString('hex');
 }
 
 function captureFileVersion(filePath: string, headBytes: number, tailBytes: number): FileVersionSnapshot | null {
@@ -178,8 +160,12 @@ function openImmutableDb(dbPath: string): DatabaseSync | null {
 }
 
 function hasActiveWalFile(dbPath: string): boolean {
-  const walStat = lstatIfPresentSync(`${dbPath}-wal`);
-  return walStat !== null && !walStat.isSymbolicLink() && walStat.isFile() && walStat.size > 0;
+  try {
+    const walStat = lstatIfPresentSync(`${dbPath}-wal`);
+    return walStat !== null && !walStat.isSymbolicLink() && walStat.isFile() && walStat.size > 0;
+  } catch {
+    return false;
+  }
 }
 
 function readViaTempWalSnapshot<T>(

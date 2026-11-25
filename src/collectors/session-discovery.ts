@@ -5,12 +5,19 @@ import { fileURLToPath } from 'node:url';
 import { isPidAlive } from '../core/file-lock.ts';
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
 import { realpathExistingPrefixSync, resolveProfileRoots, toComparePath } from '../core/paths.ts';
-import { lstatIfPresentSync, readJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import { lstatIfPresentSync, readRegularJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
 import type { SessionRecord, SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
 import { RUNNING_STEP_STATUSES } from './activity-parse.ts';
 import { readTailLines } from './agents.ts';
 import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
-import { formatRelativeAge, formatSurfaceBadge, isExitedCliProcess, parseEnvelopeRecord } from './snapshot-envelope.ts';
+import {
+  formatRelativeAge,
+  formatSurfaceBadge,
+  isExitedCliProcess,
+  parseEnvelopeRecord,
+  resolveLivePidOwners,
+} from './snapshot-envelope.ts';
 import { withReadonlyDb } from './sqlite-readonly.ts';
 
 const SUMMARY_QUERY_LIMIT = 100;
@@ -235,7 +242,7 @@ function scanSummaryDatabases(
         const owner = resolvePhysicalOwner(safeId, source, root, roots);
         if (owner === null) continue;
 
-        const title = typeof row.title === 'string' ? row.title.trim() : '';
+        const title = typeof row.title === 'string' ? sanitizeTerminalLabel(row.title) : '';
         const summaryMs = parseSummaryTimestampMs(row.last_modified_time);
         const isRunning = row.not_fully_idle === 1 || row.status === 'CASCADE_RUN_STATUS_RUNNING';
 
@@ -282,9 +289,7 @@ function scanSnapshotEnvelopes(
   for (const name of entries) {
     if (!ENVELOPE_FILE_RE.test(name)) continue;
     const fullPath = path.join(cacheDir, name);
-    const st = lstatIfPresentSync(fullPath);
-    if (st === null || st.isSymbolicLink() || !st.isFile()) continue;
-    const raw = readJsonObjectSync(fullPath, false);
+    const raw = readRegularJsonObjectSync(fullPath);
     if (raw === null) continue;
     const env = parseEnvelopeRecord(raw);
     if (env === null || excludedIds.has(env.convId)) continue;
@@ -416,34 +421,17 @@ export function discoverSessions(options: DiscoverSessionsOptions = {}): Session
   const candidates = new Map<string, CandidateAccumulator>();
   const excludedIds = new Set<string>();
   scanSummaryDatabases(roots, candidates, excludedIds);
-  scanSnapshotEnvelopes(cliHome, candidates, excludedIds);
   scanColdBrainDirectories(roots, candidates, excludedIds);
   scanColdConversationDbs(roots, candidates, excludedIds);
+  scanSnapshotEnvelopes(cliHome, candidates, excludedIds);
 
-  const newestByLivePid = new Map<number, { convId: string; heartbeatAtMs: number; updatedAtMs: number }>();
-  for (const acc of candidates.values()) {
-    if (acc.surface !== 'cli' || acc.envelope === null || acc.envelope.agyPid === null) continue;
-    const pid = acc.envelope.agyPid;
-    if (!checkAlive(pid)) continue;
-    const cur = newestByLivePid.get(pid);
-    if (
-      !cur ||
-      acc.envelope.heartbeatAtMs > cur.heartbeatAtMs ||
-      (acc.envelope.heartbeatAtMs === cur.heartbeatAtMs && acc.envelope.updatedAtMs > cur.updatedAtMs)
-    ) {
-      newestByLivePid.set(pid, {
-        convId: acc.convId,
-        heartbeatAtMs: acc.envelope.heartbeatAtMs,
-        updatedAtMs: acc.envelope.updatedAtMs,
-      });
-    }
-  }
+  const livePidOwners = resolveLivePidOwners(cliHome, candidates.values(), nowMs, checkAlive);
 
   const sessions: SessionRecord[] = [];
   for (const acc of candidates.values()) {
     const probe = probeTranscriptState(acc.dataRoot, acc.convId);
     const envPid = acc.envelope?.agyPid ?? null;
-    const livePid = envPid !== null && newestByLivePid.get(envPid)?.convId === acc.convId ? envPid : null;
+    const livePid = envPid !== null && livePidOwners.get(envPid) === acc.convId ? envPid : null;
     const isExitedCli = isExitedCliProcess(acc.surface, envPid, livePid);
     const updatedAtMs = Math.max(acc.envelope?.updatedAtMs ?? 0, probe.mtimeMs, acc.summaryModifiedMs);
     const running = isExitedCli

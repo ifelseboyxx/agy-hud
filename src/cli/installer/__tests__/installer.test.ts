@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -7,7 +17,14 @@ import { fileURLToPath } from 'node:url';
 
 import { isInstallerCommand, parseInstallerArgs } from '../args.ts';
 import { moveVerifiedTarget, removeVerifiedStagedPath } from '../fs-ops.ts';
-import { disableCliStatusLine, isSupportedNodeVersion, NODE_RANGE_LABEL, restoreCliStatusLine } from '../settings.ts';
+import {
+  createWireRollbackSteps,
+  disableCliStatusLine,
+  isSupportedNodeVersion,
+  NODE_RANGE_LABEL,
+  restoreCliStatusLine,
+  wireCliStatusLine,
+} from '../settings.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const tempDirs: string[] = [];
@@ -150,5 +167,92 @@ void describe('installer statusLine ownership preservation for compound commands
     const after = JSON.parse(readFileSync(settingsPath, 'utf8')) as { statusLine: unknown };
     assert.deepEqual(after.statusLine, compoundSl);
     assert.equal(existsSync(backupPath), true);
+  });
+});
+
+void describe('installer settings and backup POSIX file permissions', async () => {
+  await it('writes statusLine backup file with 0o600 permissions on POSIX', () => {
+    if (process.platform === 'win32') return;
+    const root = makeTempDir('agy-hud-backup-mode-');
+    const cliHome = path.join(root, 'cli-home');
+    const targetDir = path.join(root, 'plugin');
+    mkdirSync(cliHome, { recursive: true });
+    writeFileSync(path.join(cliHome, 'settings.json'), JSON.stringify({ model: 'default' }), { mode: 0o644 });
+
+    wireCliStatusLine(cliHome, targetDir);
+    const backupPath = path.join(cliHome, 'cache', 'agy-hud-statusline-backup.json');
+    assert.equal(statSync(backupPath).mode & 0o777, 0o600);
+  });
+
+  await it('preserves 0o600 permissions on settings.json during wireCliStatusLine', () => {
+    if (process.platform === 'win32') return;
+    const root = makeTempDir('agy-hud-wire-mode-');
+    const cliHome = path.join(root, 'cli-home');
+    const targetDir = path.join(root, 'plugin');
+    mkdirSync(cliHome, { recursive: true });
+    const settingsPath = path.join(cliHome, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ model: 'default' }), { mode: 0o600 });
+    chmodSync(settingsPath, 0o600);
+
+    wireCliStatusLine(cliHome, targetDir);
+    assert.equal(statSync(settingsPath).mode & 0o777, 0o600);
+  });
+
+  await it('preserves 0o600 permissions on settings.json during disableCliStatusLine', () => {
+    if (process.platform === 'win32') return;
+    const root = makeTempDir('agy-hud-disable-mode-');
+    const cliHome = path.join(root, 'cli-home');
+    const targetDir = path.join(root, 'plugin');
+    mkdirSync(cliHome, { recursive: true });
+    const settingsPath = path.join(cliHome, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ model: 'default' }), { mode: 0o600 });
+    chmodSync(settingsPath, 0o600);
+    wireCliStatusLine(cliHome, targetDir);
+    chmodSync(settingsPath, 0o600);
+
+    const res = disableCliStatusLine(cliHome, targetDir);
+    assert.equal(res.changed, true);
+    assert.equal(statSync(settingsPath).mode & 0o777, 0o600);
+  });
+
+  await it('preserves 0o600 permissions on settings.json during restoreCliStatusLine', () => {
+    if (process.platform === 'win32') return;
+    const root = makeTempDir('agy-hud-restore-mode-');
+    const cliHome = path.join(root, 'cli-home');
+    const targetDir = path.join(root, 'plugin');
+    mkdirSync(cliHome, { recursive: true });
+    const settingsPath = path.join(cliHome, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ model: 'default' }), { mode: 0o600 });
+    chmodSync(settingsPath, 0o600);
+    wireCliStatusLine(cliHome, targetDir);
+    chmodSync(settingsPath, 0o600);
+
+    const res = restoreCliStatusLine(cliHome, targetDir);
+    assert.equal(res.changed, true);
+    assert.equal(statSync(settingsPath).mode & 0o777, 0o600);
+  });
+
+  await it('preserves 0o600 permissions on settings.json during partial rollback after concurrent edit', () => {
+    if (process.platform === 'win32') return;
+    const root = makeTempDir('agy-hud-rb-mode-');
+    const cliHome = path.join(root, 'cli-home');
+    const targetDir = path.join(root, 'plugin');
+    mkdirSync(cliHome, { recursive: true });
+    const settingsPath = path.join(cliHome, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ model: 'default' }), { mode: 0o600 });
+    chmodSync(settingsPath, 0o600);
+
+    const receipt = wireCliStatusLine(cliHome, targetDir);
+    const current = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+    writeFileSync(settingsPath, `${JSON.stringify({ ...current, theme: 'dark' }, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(settingsPath, 0o600);
+
+    for (const [, step] of createWireRollbackSteps(receipt)) {
+      step();
+    }
+    assert.equal(statSync(settingsPath).mode & 0o777, 0o600);
+    const after = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(after.theme, 'dark');
+    assert.equal(Object.hasOwn(after, 'statusLine'), false);
   });
 });

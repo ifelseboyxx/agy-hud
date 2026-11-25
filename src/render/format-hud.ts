@@ -33,7 +33,6 @@ export interface FormatHudLinesInput {
   readonly identityOptions: IdentityLineOptions;
   readonly activityLineOptions?: ActivityLineFormatOptions;
   readonly formatActivitySummaryTail?: (remainingCols: number) => string;
-  readonly cliHome?: string;
 }
 
 export function resolveEffectiveExceeds200k(
@@ -56,10 +55,13 @@ export function formatHudLines(input: FormatHudLinesInput): string[] {
 
   const hasTodosLine = enabledLines.has('todos') && formatTodosLine(input.todos).length > 0;
   const termWidth =
-    input.termWidth ?? (isFiniteNum(effectiveData.terminal_width) ? effectiveData.terminal_width : DEFAULT_TERM_WIDTH);
+    isFiniteNum(input.termWidth) && input.termWidth > 0
+      ? input.termWidth
+      : isFiniteNum(effectiveData.terminal_width) && effectiveData.terminal_width > 0
+        ? effectiveData.terminal_width
+        : DEFAULT_TERM_WIDTH;
 
   const ctx: HudModuleRenderContext = {
-    cliHome: input.cliHome ?? '',
     data: effectiveData,
     config,
     enabledLines,
