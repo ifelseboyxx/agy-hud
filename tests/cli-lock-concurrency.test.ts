@@ -36,7 +36,7 @@ void describe('CLI configure and import-profile cliHomeLock isolation', async ()
     const priorSl = { type: 'command', command: '/prior/user-statusline.py', enabled: true };
     writeJson(settingsPath, { model: 'Old Model', statusLine: priorSl });
     writeJson(path.join(inDir, 'settings.template.json'), { model: 'Imported Model' });
-    writeJson(path.join(inDir, 'hud-config.json'), { preset: 'compact', showCost: false });
+    writeJson(path.join(inDir, 'hud-config.json'), { preset: 'compact', segments: { cost: false } });
 
     const enteredFlag = path.join(root, 'inst-doc.flag');
     const releaseFlag = path.join(root, 'inst-release.flag');
@@ -109,7 +109,7 @@ void describe('CLI configure and import-profile cliHomeLock isolation', async ()
 
     let cfgSettled = false;
     const procCfg = spawnNodeAsync(
-      [DIST_CLI, 'configure', '--preset', 'compact', '--set', 'showCost=false'],
+      [DIST_CLI, 'configure', '--preset', 'compact', '--set', 'segments.cost=false'],
       envCli,
     ).then((res) => {
       cfgSettled = true;

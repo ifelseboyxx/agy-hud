@@ -110,10 +110,10 @@ void describe('profile migration safety', async () => {
     writeJson(path.join(cliHome, 'settings.json'), { model: 'Gemini 4 Carbon' });
     writeJson(path.join(cliHome, 'hud-config.json'), {
       preset: 'compact',
-      showCost: { nestedSecret: 'SYNTH_HUD_OBJECT_LEAK' },
+      segments: { cost: { nestedSecret: 'SYNTH_HUD_OBJECT_LEAK' } },
     });
 
-    assert.throws(() => exportProfile({ outDir, cliHome, geminiRoot }), /Invalid boolean 'showCost'/);
+    assert.throws(() => exportProfile({ outDir, cliHome, geminiRoot }), /Invalid boolean 'segments\.cost'/);
     assert.equal(existsSync(outDir), false, 'failed export must not write partial templates');
   });
 

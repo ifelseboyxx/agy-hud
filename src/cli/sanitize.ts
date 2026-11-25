@@ -1,5 +1,5 @@
 import { isPlainObject, UNSAFE_OBJECT_KEYS as UNSAFE_KEYS } from '../core/guards.ts';
-import { HUD_BOOLEAN_KEYS, hydrateHudConfig, isHudLineId, isHudSegmentId } from '../core/hud-config.ts';
+import { hydrateHudConfig, isHudLineId, isHudSegmentId } from '../core/hud-config.ts';
 import { DEFAULT_HUD_CONFIG } from '../types.ts';
 
 export const REDACTED_PLACEHOLDER = '<SET_IN_ENV>';
@@ -43,7 +43,7 @@ const ALLOWED_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   'effort',
 ]);
 
-const ALLOWED_HUD_KEYS: ReadonlySet<string> = new Set([...Object.keys(DEFAULT_HUD_CONFIG), ...HUD_BOOLEAN_KEYS]);
+const ALLOWED_HUD_KEYS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_HUD_CONFIG));
 
 const ALLOWED_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
   'command',

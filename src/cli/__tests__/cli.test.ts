@@ -54,7 +54,7 @@ void describe('configureHud', async () => {
     const updated = configureHud({
       cliHome,
       preset: 'compact',
-      sets: ['showCost=false', 'showQuota=false', 'maxAgentChips=8'],
+      sets: ['segments.cost=false', 'segments.quota=false', 'maxAgentChips=8'],
     });
     assert.equal(updated.changed, true);
     assert.equal(updated.config.preset, 'compact');
@@ -76,7 +76,7 @@ void describe('configureHud', async () => {
     const cliHome = path.join(root, '.gemini', 'antigravity-cli');
 
     assert.throws(() => configureHud({ cliHome, sets: ['unknownKey=true'] }), /Unknown configuration key/);
-    assert.throws(() => configureHud({ cliHome, sets: ['showCost=yes'] }), /Invalid boolean value/);
+    assert.throws(() => configureHud({ cliHome, sets: ['segments.cost=yes'] }), /Invalid boolean value/);
     assert.throws(() => configureHud({ cliHome, sets: ['maxAgentChips=-1'] }), /Invalid integer value/);
     assert.throws(() => configureHud({ cliHome, sets: ['maxAgentChips=99'] }), /Out-of-range value/);
     assert.throws(() => configureHud({ cliHome, sets: ['preset=ultra'] }), /Invalid preset/);
@@ -200,7 +200,7 @@ void describe('exportProfile and importProfile', async () => {
       orchestrator: { executor: 'Gemini 4 Hydrogen' },
       trustedWorkspaces: ['/foreign/path'],
     });
-    writeJson(path.join(inDir, 'hud-config.json'), { preset: 'minimal', showCost: false });
+    writeJson(path.join(inDir, 'hud-config.json'), { preset: 'minimal', segments: { cost: false } });
     writeJson(path.join(inDir, 'config.template.json'), { userSettings: { themeMode: 'THEME_MODE_DARK' } });
     writeJson(path.join(inDir, 'mcp_config.template.json'), {
       mcpServers: {

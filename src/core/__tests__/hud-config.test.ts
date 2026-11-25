@@ -87,74 +87,12 @@ void describe('HudConfig schema, presets, and legacy hydration', async () => {
     }
   });
 
-  await it('hydrates legacy show* keys from raw.preset losslessly', () => {
-    const hydrated = hydrateHudConfig({
-      preset: 'full',
-      showModeLine: false,
-      showSkillsMcpLine: false,
-      showTodosLine: false,
-      showCost: false,
-      showQuota: false,
-      maxAgentChips: 5,
-    });
-
-    assert.equal(hydrated.preset, 'full');
-    assert.equal(hydrated.maxAgentChips, 5);
-    assert.equal(hydrated.osc8Links, true);
-    assert.deepEqual(hydrated.lines, ['identity', 'usage', 'tools', 'agents']);
-    assert.equal(hydrated.segments.cost, false);
-    assert.equal(hydrated.segments.quota, false);
-    assert.equal(hydrated.segments.perf, true);
-  });
-
-  await it('maps legacy showSkillsMcpLine=true to both skills and mcps lines', () => {
-    const hydrated = hydrateHudConfig({
-      preset: 'compact',
-      showSkillsMcpLine: true,
-      showToolsLine: true,
-      showSwarmChips: true,
-      showTodosLine: true,
-    });
-
-    assert.deepEqual(hydrated.lines, [
-      'mode',
-      'identity',
-      'usage',
-      'activity',
-      'tools',
-      'skills',
-      'mcps',
-      'agents',
-      'todos',
-    ]);
-  });
-
-  await it('defaults legacy config without preset or lines to full before applying show* keys', () => {
-    const hydrated = hydrateHudConfig({ showPerfCapsule: false, showCost: false });
-    assert.equal(hydrated.preset, 'full');
-    assert.deepEqual(hydrated.lines, ['mode', 'identity', 'usage', 'tools', 'skills', 'mcps', 'agents', 'todos']);
-    assert.equal(hydrated.segments.perf, false);
-    assert.equal(hydrated.segments.cost, false);
-  });
-
   await it('deduplicates explicit lines preserving first-seen order', () => {
     const hydrated = hydrateHudConfig({
       preset: 'zen',
       lines: ['usage', 'identity', 'usage', 'tools', 'identity'],
     });
     assert.deepEqual(hydrated.lines, ['usage', 'identity', 'tools']);
-  });
-
-  await it('preserves explicit lines and segments over legacy show* keys', () => {
-    const hydrated = hydrateHudConfig({
-      preset: 'full',
-      lines: ['identity'],
-      segments: { cost: false },
-      showToolsLine: true,
-      showCost: true,
-    });
-    assert.deepEqual(hydrated.lines, ['identity']);
-    assert.equal(hydrated.segments.cost, false);
   });
 
   await it('rejects invalid lines, segments, and osc8Links in strict hydrateHudConfig', () => {
@@ -182,13 +120,19 @@ void describe('HudConfig schema, presets, and legacy hydration', async () => {
     assert.equal(merged.segments.perf, false);
   });
 
-  await it('ignores autoWireStatusLine as an unknown key in both merge and hydrate', () => {
+  await it('ignores unknown keys such as autoWireStatusLine and removed show* keys', () => {
     const expected: HudConfig = {
       ...buildPresetConfig('full'),
       segments: { ...buildPresetConfig('full').segments, cost: false },
     };
-    assert.deepEqual(mergeHudConfig({ autoWireStatusLine: true, showCost: false }), expected);
-    assert.deepEqual(hydrateHudConfig({ autoWireStatusLine: true, showCost: false }), expected);
+    assert.deepEqual(
+      mergeHudConfig({ autoWireStatusLine: true, showModeLine: false, segments: { cost: false } }),
+      expected,
+    );
+    assert.deepEqual(
+      hydrateHudConfig({ autoWireStatusLine: true, showModeLine: false, segments: { cost: false } }),
+      expected,
+    );
     assert.equal('autoWireStatusLine' in hydrateHudConfig({ autoWireStatusLine: true }), false);
   });
 });

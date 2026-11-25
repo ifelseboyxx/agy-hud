@@ -104,7 +104,7 @@ void describe('agy-hud built artifacts e2e', async () => {
 
     const cfgSet = runNodeScript(
       DIST_CLI,
-      ['configure', '--preset', 'compact', '--set', 'showCost=false', '--set', 'maxAgentChips=3'],
+      ['configure', '--preset', 'compact', '--set', 'segments.cost=false', '--set', 'maxAgentChips=3'],
       srcEnv,
     );
     assert.equal(cfgSet.status, 0, cfgSet.stderr);
@@ -131,7 +131,7 @@ void describe('agy-hud built artifacts e2e', async () => {
 
     const restoreCompact = runNodeScript(
       DIST_CLI,
-      ['configure', 'compact', '--set', 'showCost=false', '--set', 'maxAgentChips=3', '--set', 'osc8Links=true'],
+      ['configure', 'compact', '--set', 'segments.cost=false', '--set', 'maxAgentChips=3', '--set', 'osc8Links=true'],
       srcEnv,
     );
     assert.equal(restoreCompact.status, 0, restoreCompact.stderr);

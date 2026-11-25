@@ -1,9 +1,4 @@
-export {
-  configureHud,
-  type ConfigureHudOptions,
-  type ConfigureHudResult,
-  type HudBooleanKey,
-} from './cli/configure.ts';
+export { configureHud, type ConfigureHudOptions, type ConfigureHudResult } from './cli/configure.ts';
 export {
   exportProfile,
   importProfile,

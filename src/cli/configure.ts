@@ -3,28 +3,23 @@ import path from 'node:path';
 import { DEFAULT_CLI_LOCK_TIMEOUT_MS, withCliHomeLockSync } from '../core/file-lock.ts';
 import {
   applyHudLineToggle,
-  applyLegacyHudBoolean,
   buildPresetConfig,
   cloneHudConfig,
-  HUD_BOOLEAN_KEYS,
   HUD_LINE_IDS,
   HUD_SEGMENT_IDS,
   hydrateHudConfig,
-  isHudBooleanKey,
   isHudLineId,
   isHudPreset,
   isHudSegmentId,
   MAX_AGENT_CHIPS_LIMIT,
   PRESET_TEMPLATES,
   VALID_HUD_PRESETS,
-  type HudBooleanKey,
 } from '../core/hud-config.ts';
 import { resolveCliHome } from '../core/paths.ts';
 import { hasDanglingSymlinkInChainSync, readJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
 import { DEFAULT_HUD_CONFIG, type HudConfig, type HudLineId, type HudPreset } from '../types.ts';
 
 export {
-  HUD_BOOLEAN_KEYS,
   HUD_LINE_IDS,
   HUD_SEGMENT_IDS,
   hydrateHudConfig,
@@ -32,7 +27,6 @@ export {
   MAX_AGENT_CHIPS_LIMIT,
   PRESET_TEMPLATES,
   VALID_HUD_PRESETS,
-  type HudBooleanKey,
 };
 
 export interface ConfigureHudOptions {
@@ -163,18 +157,9 @@ function applySetAssignment(config: HudConfig, expr: string): void {
     return;
   }
 
-  if (isHudBooleanKey(key)) {
-    applyLegacyHudBoolean(config, key, parseBooleanValue(key, rawVal));
-    return;
-  }
-
-  const validKeys = [
-    'preset',
-    'maxAgentChips',
-    'osc8Links',
-    ...HUD_SEGMENT_IDS.map((id) => `segments.${id}`),
-    ...HUD_BOOLEAN_KEYS,
-  ].join(', ');
+  const validKeys = ['preset', 'maxAgentChips', 'osc8Links', ...HUD_SEGMENT_IDS.map((id) => `segments.${id}`)].join(
+    ', ',
+  );
   throw new Error(`Unknown configuration key '${key}'. Valid keys: ${validKeys}`);
 }
 

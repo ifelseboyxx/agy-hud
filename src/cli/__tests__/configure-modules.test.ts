@@ -54,19 +54,6 @@ void describe('sanitizeHudConfigTemplate', async () => {
     assert.equal('secretSegment' in segments, false);
   });
 
-  await it('hydrates legacy show* keys into canonical schema during sanitization', () => {
-    const sanitized = sanitizeHudConfigTemplate({
-      preset: 'full',
-      showSkillsMcpLine: false,
-      showCost: false,
-    });
-    assert.equal(sanitized.preset, 'full');
-    assert.equal('showCost' in sanitized, false);
-    assert.equal('showSkillsMcpLine' in sanitized, false);
-    assert.deepEqual(sanitized.lines, ['mode', 'identity', 'usage', 'tools', 'agents', 'todos']);
-    assert.equal((sanitized.segments as Record<string, boolean>).cost, false);
-  });
-
   await it('rejects invalid field types during sanitization', () => {
     assert.throws(() => sanitizeHudConfigTemplate({ preset: 'ultra' }), /Invalid 'preset'/);
     assert.throws(() => sanitizeHudConfigTemplate({ maxAgentChips: 25 }), /Invalid 'maxAgentChips'/);
@@ -76,8 +63,8 @@ void describe('sanitizeHudConfigTemplate', async () => {
     assert.throws(() => sanitizeHudConfigTemplate({ segments: ['cost'] }), /Invalid 'segments'/);
     assert.throws(() => sanitizeHudConfigTemplate({ segments: { cost: 'no' } }), /Invalid boolean 'segments\.cost'/);
     assert.throws(
-      () => sanitizeHudConfigTemplate({ showCost: { nestedSecret: 'leak' } }),
-      /Invalid boolean 'showCost'/,
+      () => sanitizeHudConfigTemplate({ segments: { cost: { nestedSecret: 'leak' } } }),
+      /Invalid boolean 'segments\.cost'/,
     );
   });
 });
@@ -154,19 +141,9 @@ void describe('pluggable configure CLI parsing and mutations', async () => {
     assert.equal(res.config.segments.perf, true);
   });
 
-  await it('maps legacy show* aliases through --set', () => {
-    const cliHome = makeTempCliHome('agy-hud-cfg-legacy-');
-    const enabled = configureHud({
-      cliHome,
-      preset: 'compact',
-      sets: ['showSkillsMcpLine=true', 'showToolsLine=true', 'showPerfCapsule=false', 'showQuota=false'],
-    });
-    assert.deepEqual(enabled.config.lines, ['mode', 'identity', 'usage', 'activity', 'tools', 'skills', 'mcps']);
-    assert.equal(enabled.config.segments.perf, false);
-    assert.equal(enabled.config.segments.quota, false);
-
-    const disabled = configureHud({ cliHome, sets: ['showSkillsMcpLine=false', 'showModeLine=false'] });
-    assert.deepEqual(disabled.config.lines, ['identity', 'usage', 'activity', 'tools']);
+  await it('rejects removed unpublished show* keys in --set', () => {
+    const cliHome = makeTempCliHome('agy-hud-cfg-removed-');
+    assert.throws(() => configureHud({ cliHome, sets: ['showCost=false'] }), /Unknown configuration key/);
   });
 
   await it('updates individual segments via --set segments.<id>', () => {

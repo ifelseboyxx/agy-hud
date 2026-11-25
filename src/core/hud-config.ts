@@ -35,30 +35,6 @@ export const HUD_SEGMENT_IDS: readonly HudSegmentId[] = [
 
 export const MAX_AGENT_CHIPS_LIMIT: number = 20;
 
-export type HudBooleanKey =
-  | 'showModeLine'
-  | 'showPerfCapsule'
-  | 'showQuota'
-  | 'showCost'
-  | 'showSwarmChips'
-  | 'showToolsLine'
-  | 'showSkillsMcpLine'
-  | 'showTodosLine';
-
-export const HUD_BOOLEAN_KEYS: readonly HudBooleanKey[] = [
-  'showModeLine',
-  'showPerfCapsule',
-  'showQuota',
-  'showCost',
-  'showSwarmChips',
-  'showToolsLine',
-  'showSkillsMcpLine',
-  'showTodosLine',
-];
-
-// Spec-mandated legacy compatibility aliases (spec.md §2.4.1; introduced in 0.1.0, remove at 1.0.0).
-export const LEGACY_HUD_BOOLEAN_KEYS: readonly HudBooleanKey[] = HUD_BOOLEAN_KEYS;
-
 export interface HudPresetTemplate {
   readonly lines: readonly HudLineId[];
   readonly segments: Readonly<HudSegments>;
@@ -112,7 +88,6 @@ export const PRESET_TEMPLATES: Readonly<Record<HudPreset, HudPresetTemplate>> = 
 const HUD_PRESET_SET: ReadonlySet<string> = new Set(VALID_HUD_PRESETS);
 const HUD_LINE_ID_SET: ReadonlySet<string> = new Set(HUD_LINE_IDS);
 const HUD_SEGMENT_ID_SET: ReadonlySet<string> = new Set(HUD_SEGMENT_IDS);
-const HUD_BOOLEAN_KEY_SET: ReadonlySet<string> = new Set(HUD_BOOLEAN_KEYS);
 const LINE_RANK: ReadonlyMap<HudLineId, number> = new Map(HUD_LINE_IDS.map((id, idx) => [id, idx]));
 
 export function isHudPreset(value: unknown): value is HudPreset {
@@ -125,10 +100,6 @@ export function isHudLineId(value: unknown): value is HudLineId {
 
 export function isHudSegmentId(value: unknown): value is HudSegmentId {
   return typeof value === 'string' && HUD_SEGMENT_ID_SET.has(value);
-}
-
-export function isHudBooleanKey(key: string): key is HudBooleanKey {
-  return HUD_BOOLEAN_KEY_SET.has(key);
 }
 
 function isValidMaxAgentChips(value: unknown): value is number {
@@ -175,40 +146,6 @@ export function applyHudLineToggle(lines: readonly HudLineId[], lineId: HudLineI
     next.splice(insertAt, 0, lineId);
   }
   return next;
-}
-
-export function applyLegacyHudBoolean(config: HudConfig, key: HudBooleanKey, value: boolean): void {
-  switch (key) {
-    case 'showModeLine':
-      config.lines = applyHudLineToggle(config.lines, 'mode', value);
-      return;
-    case 'showToolsLine':
-      config.lines = applyHudLineToggle(config.lines, 'tools', value);
-      return;
-    case 'showSkillsMcpLine':
-      config.lines = applyHudLineToggle(config.lines, 'skills', value);
-      config.lines = applyHudLineToggle(config.lines, 'mcps', value);
-      return;
-    case 'showSwarmChips':
-      config.lines = applyHudLineToggle(config.lines, 'agents', value);
-      return;
-    case 'showTodosLine':
-      config.lines = applyHudLineToggle(config.lines, 'todos', value);
-      return;
-    case 'showPerfCapsule':
-      config.segments.perf = value;
-      return;
-    case 'showQuota':
-      config.segments.quota = value;
-      return;
-    case 'showCost':
-      config.segments.cost = value;
-      return;
-  }
-}
-
-function isLegacySegmentKey(key: HudBooleanKey): boolean {
-  return key === 'showPerfCapsule' || key === 'showQuota' || key === 'showCost';
 }
 
 function parseLinesField(rawLines: unknown, fallback: HudLineId[], strict: boolean): HudLineId[] {
@@ -290,32 +227,12 @@ export function parseHudConfig(raw: Record<string, unknown> | null | undefined, 
     }
   }
 
-  const hasExplicitLines = raw.lines !== undefined;
-  if (hasExplicitLines) {
+  if (raw.lines !== undefined) {
     next.lines = parseLinesField(raw.lines, next.lines, strict);
   }
 
-  const hasExplicitSegments = raw.segments !== undefined;
-  if (hasExplicitSegments) {
+  if (raw.segments !== undefined) {
     applySegmentsField(raw.segments, next.segments, strict);
-  }
-
-  for (const key of HUD_BOOLEAN_KEYS) {
-    const val = raw[key];
-    if (val === undefined) continue;
-    if (typeof val !== 'boolean') {
-      if (strict) {
-        throw new Error(`Invalid boolean '${key}' in hud-config.json`);
-      }
-      continue;
-    }
-    if (isLegacySegmentKey(key)) {
-      if (!hasExplicitSegments) {
-        applyLegacyHudBoolean(next, key, val);
-      }
-    } else if (!hasExplicitLines) {
-      applyLegacyHudBoolean(next, key, val);
-    }
   }
 
   return next;
