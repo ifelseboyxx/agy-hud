@@ -1,7 +1,8 @@
 import path from 'node:path';
 
-import { formatSurfaceBadge } from '../collectors/session-index.ts';
-import { computeHudVisibleCompletedCap } from '../render/activity-lines.ts';
+import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
+import { nonEmptyStr } from '../core/guards.ts';
+import { computeHudVisibleToolsCap } from '../render/activity-lines.ts';
 import {
   BOLD,
   BRIGHT_WHITE,
@@ -24,7 +25,6 @@ export const DEFAULT_INSPECTOR_WIDTH: number = 100;
 const MIN_INSPECTOR_COLS = 20;
 const TWO_COL_MIN_WIDTH = 98;
 const TWO_COL_MIN_TYPES = 5;
-const HUD_RUNNING_VISIBLE_CAP = 2;
 
 interface InspectorPalette {
   readonly reset: string;
@@ -204,11 +204,12 @@ function appendToolsSection(
     return;
   }
 
+  const hudCaps = computeHudVisibleToolsCap(snapshot.runningTools, snapshot.completedTools, maxCols);
   const orderedRunning = [...snapshot.runningTools].reverse();
   for (let i = 0; i < orderedRunning.length; i += 1) {
     const rt = orderedRunning[i];
     if (!rt) continue;
-    const overflowTag = i >= HUD_RUNNING_VISIBLE_CAP ? `  ${palette.yellow}[+more]${palette.reset}` : '';
+    const overflowTag = i >= hudCaps.shownRunning ? `  ${palette.yellow}[+more]${palette.reset}` : '';
     const dispColW = Math.min(30, Math.max(12, maxCols - 30));
     const rawTarget = rt.target.length > 0 ? rt.target : rt.fullTarget;
     const usedCols = 2 + 2 + dispColW + 1 + 7 + (overflowTag.length > 0 ? 9 : 0);
@@ -219,7 +220,7 @@ function appendToolsSection(
     );
   }
 
-  const hudVisibleCap = computeHudVisibleCompletedCap(snapshot.runningTools, snapshot.completedTools, maxCols);
+  const hudVisibleCap = hudCaps.shownCompleted;
   const useTwoCol = cols >= TWO_COL_MIN_WIDTH && snapshot.completedTools.length >= TWO_COL_MIN_TYPES;
   if (useTwoCol) {
     const colW = Math.floor((maxCols - 4) / 2);
@@ -330,7 +331,8 @@ export function renderStructuredInspectorLines(
   const maxCols = Math.max(MIN_INSPECTOR_COLS, cols - 1);
   const active = new Set<SnapshotSection>(options.sections ?? []);
   const badge = formatSurfaceBadge(snapshot.surface);
-  const wsName = snapshot.workspace.length > 0 ? path.basename(snapshot.workspace) || snapshot.workspace : '-';
+  const wsName =
+    snapshot.workspace.length > 0 ? (nonEmptyStr(path.basename(snapshot.workspace)) ?? snapshot.workspace) : '-';
 
   const headerPrefix = `[${badge}] Activity Snapshot  ${snapshot.shortId}  ""`;
   const titleBudget = Math.max(12, maxCols - visibleLen(headerPrefix));

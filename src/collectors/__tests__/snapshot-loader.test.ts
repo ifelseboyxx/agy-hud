@@ -6,7 +6,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { loadActivitySnapshot, resolveSession, writeSnapshotEnvelope } from '../session-index.ts';
+import { resolveSession } from '../session-index.ts';
+import { writeSnapshotEnvelope } from '../snapshot-envelope.ts';
+import { loadActivitySnapshot } from '../snapshot-loader.ts';
 
 function encodeVarint(value: number): number[] {
   const bytes: number[] = [];

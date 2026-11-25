@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
-import { runCliEntry } from '../../cli-entry.ts';
+import { runCliEntry, runCliEntryAsync } from '../../cli-entry.ts';
 import { DEFAULT_HUD_CONFIG } from '../../types.ts';
 import { configureHud, parseConfigureArgs } from '../configure.ts';
 import { exportProfile, importProfile } from '../migrate.ts';
@@ -411,5 +411,41 @@ void describe('runCliEntry', async () => {
     assert.equal(runCliEntry(['unknown-cmd']), 1);
     assert.equal(runCliEntry(['export-profile']), 1);
     assert.equal(runCliEntry(['import-profile']), 1);
+  });
+
+  await it('forwards cliHome and stdout options through runCliEntryAsync for non-interactive commands', async () => {
+    const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-cli-entry-'));
+    try {
+      const isolatedCliHome = path.join(tmpRoot, 'cli-home');
+      mkdirSync(isolatedCliHome, { recursive: true });
+      let out = '';
+      let err = '';
+      const stdout = Object.assign(new (await import('node:events')).EventEmitter(), {
+        isTTY: false,
+        write(chunk: string): boolean {
+          out += chunk;
+          return true;
+        },
+      });
+      const stderr = {
+        write(chunk: string): boolean {
+          err += chunk;
+          return true;
+        },
+      };
+
+      const setCode = await runCliEntryAsync(['configure', 'minimal', '--json'], {
+        cliHome: isolatedCliHome,
+        stdout,
+        stderr,
+      });
+      assert.equal(setCode, 0);
+      assert.equal(err, '');
+      const parsed = JSON.parse(out) as { preset: string };
+      assert.equal(parsed.preset, 'minimal');
+      assert.equal(existsSync(path.join(isolatedCliHome, 'hud-config.json')), true);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

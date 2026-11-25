@@ -11,44 +11,7 @@ import type {
 } from '../snapshot-types.ts';
 import { findAncestorAgyPid } from './proc.ts';
 import { canonicalizeWorkspacePath, discoverSessions, type DiscoverSessionsOptions } from './session-discovery.ts';
-import {
-  formatRelativeAge,
-  formatSurfaceBadge,
-  readSnapshotEnvelope,
-  sweepStaleSnapshotFiles,
-  writeSnapshotEnvelope,
-  type WriteSnapshotEnvelopeOptions,
-} from './snapshot-envelope.ts';
-import { loadActivitySnapshot, type LoadActivitySnapshotOptions } from './snapshot-loader.ts';
-
-export {
-  discoverSessions,
-  formatRelativeAge,
-  formatSurfaceBadge,
-  loadActivitySnapshot,
-  readSnapshotEnvelope,
-  sweepStaleSnapshotFiles,
-  writeSnapshotEnvelope,
-  type DiscoverSessionsOptions,
-  type LoadActivitySnapshotOptions,
-  type WriteSnapshotEnvelopeOptions,
-};
-
-export type {
-  ActivitySnapshot,
-  SessionRecord,
-  SessionSourceFilter,
-  SessionSurface,
-  SiblingSessionHint,
-  SnapshotAgent,
-  SnapshotCompletedTool,
-  SnapshotEnvelope,
-  SnapshotMcpServer,
-  SnapshotMcpSubtool,
-  SnapshotResolutionTier,
-  SnapshotRunningTool,
-  SnapshotSection,
-} from '../snapshot-types.ts';
+import { formatSurfaceBadge, isExitedCliSession } from './snapshot-envelope.ts';
 
 const MIN_PREFIX_LEN = 4;
 const SIBLING_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -93,15 +56,6 @@ function isPathWithin(rootCompare: string, targetCompare: string): boolean {
   if (targetCompare === rootCompare) return true;
   const prefix = rootCompare.endsWith(path.sep) ? rootCompare : `${rootCompare}${path.sep}`;
   return targetCompare.startsWith(prefix);
-}
-
-function isDeadPidCliSession(session: SessionRecord): boolean {
-  return (
-    session.surface === 'cli' &&
-    session.envelope !== null &&
-    session.envelope.agyPid !== null &&
-    session.livePid === null
-  );
 }
 
 function toSiblingHint(session: SessionRecord): SiblingSessionHint {
@@ -164,7 +118,7 @@ function resolveTier2Workspace(
   const matched: Array<{ session: SessionRecord; depth: number }> = [];
 
   for (const session of filtered) {
-    if (isDeadPidCliSession(session)) continue;
+    if (isExitedCliSession(session)) continue;
     let best = 0;
     for (const ws of session.workspaces) {
       const wsCompare = toComparePath(canonicalizeWorkspacePath(ws));
@@ -235,7 +189,7 @@ export function resolveSession(options: ResolveSessionOptions = {}): ResolvedSes
     return { session: tier2.session, tier: 'workspace', siblings: tier2.siblings, sessions: filtered };
   }
 
-  const fallback = filtered[0];
+  const fallback = filtered.find((s) => !isExitedCliSession(s)) ?? filtered[0];
   if (!fallback) {
     throw new SessionResolutionError('no-sessions', `No Antigravity sessions found (source: ${source}).`);
   }

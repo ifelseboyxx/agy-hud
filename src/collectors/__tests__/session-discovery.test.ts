@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { discoverSessions } from '../session-index.ts';
+import { discoverSessions } from '../session-discovery.ts';
 
 interface SummaryRowSeed {
   id: string;

@@ -6,11 +6,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { runCliEntry, runCliEntryAsync } from '../../cli-entry.ts';
-import { writeSnapshotEnvelope } from '../../collectors/session-index.ts';
+import { writeSnapshotEnvelope } from '../../collectors/snapshot-envelope.ts';
 import { stripAnsi } from '../../render/ansi.ts';
 import { installCliShim } from '../installer/shim.ts';
 import type { PopupInputStream, PopupOutputStream } from '../snapshot-popup.ts';
-import { isSnapshotFlag, parseSnapshotArgs, runSnapshotCommand } from '../snapshot.ts';
+import { executeParsedSnapshotCommand, isSnapshotFlag, parseSnapshotArgs, runSnapshotCommand } from '../snapshot.ts';
 
 class FakeTtyIn extends EventEmitter implements PopupInputStream {
   isTTY: boolean;
@@ -234,5 +234,54 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
     assert.equal(code, 1);
     assert.equal(ttyOut.text().includes('\x1b[?1049h'), false);
     assert.ok(errText.includes('Error:'));
+  });
+
+  void it('executes pre-parsed snapshot arguments without reparsing', () => {
+    const parsed = parseSnapshotArgs(['--help']);
+    const result = executeParsedSnapshotCommand(parsed);
+    assert.ok(result.output.includes('agy-hud snapshot'));
+  });
+
+  void it('routes bare snapshot filter arguments through runCliEntry', () => {
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'bare-filter-3333', conversation_title: 'Bare Filter Session', cwd: wsDir },
+      process.pid,
+    );
+
+    const syncRes = captureSyncRun(() =>
+      runCliEntry(['tools', '--no-color'], {
+        cliHome,
+        geminiRoot,
+        cwd: wsDir,
+        env: {},
+      }),
+    );
+    assert.equal(syncRes.code, 0);
+    assert.ok(syncRes.stdout.includes('── Tools ('));
+    assert.equal(syncRes.stdout.includes('── Skills ('), false);
+    assert.throws(() => parseSnapshotArgs(['constructor']), /Unknown snapshot filter/);
+  });
+
+  void it('routes bare snapshot filter with popup flag through runCliEntryAsync', async () => {
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'bare-filter-4444', conversation_title: 'Bare Popup Filter', cwd: wsDir },
+      process.pid,
+    );
+
+    const ttyIn = new FakeTtyIn(true);
+    const ttyOut = new FakeTtyOut(true, 96, 14);
+    const asyncPromise = runCliEntryAsync(['tools', '-p', '--no-color'], {
+      stdin: ttyIn,
+      stdout: ttyOut,
+      cliHome,
+      geminiRoot,
+      cwd: wsDir,
+      env: {},
+    });
+    assert.ok(ttyOut.text().includes('── Tools ('));
+    ttyIn.emit('data', Buffer.from('q'));
+    assert.equal(await asyncPromise, 0);
   });
 });

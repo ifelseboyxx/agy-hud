@@ -6,7 +6,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { resolveSession, SessionResolutionError, writeSnapshotEnvelope } from '../session-index.ts';
+import { resolveSession, SessionResolutionError } from '../session-index.ts';
+import { writeSnapshotEnvelope } from '../snapshot-envelope.ts';
 
 interface SummaryRowSeed {
   id: string;

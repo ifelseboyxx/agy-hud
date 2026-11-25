@@ -1,13 +1,10 @@
 import path from 'node:path';
 
-import {
-  discoverSessions,
-  formatSurfaceBadge,
-  loadActivitySnapshot,
-  matchesSourceFilter,
-  resolveSession,
-  type ResolveSessionOptions,
-} from '../collectors/session-index.ts';
+import { discoverSessions } from '../collectors/session-discovery.ts';
+import { matchesSourceFilter, resolveSession, type ResolveSessionOptions } from '../collectors/session-index.ts';
+import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
+import { loadActivitySnapshot } from '../collectors/snapshot-loader.ts';
+import { nonEmptyStr } from '../core/guards.ts';
 import { resolveProfileRoots } from '../core/paths.ts';
 import type { ActivitySnapshot, SessionRecord, SessionSourceFilter, SnapshotSection } from '../snapshot-types.ts';
 import { type KeybindingsTarget, parseKeybindingsTarget, renderKeybindings } from './keybindings.ts';
@@ -89,6 +86,10 @@ export interface SnapshotRunResult {
   output: string;
   snapshot?: ActivitySnapshot;
   sessions?: SessionRecord[];
+}
+
+export function isSnapshotFilter(arg: string): boolean {
+  return Object.hasOwn(FILTER_ALIASES, arg.toLowerCase());
 }
 
 export function isSnapshotFlag(arg: string): boolean {
@@ -211,7 +212,8 @@ export function parseSnapshotArgs(argv: readonly string[]): SnapshotCliArgs {
       throw new Error(`Unknown snapshot option: ${arg}`);
     }
 
-    const mapped = FILTER_ALIASES[arg.toLowerCase()];
+    const key = arg.toLowerCase();
+    const mapped = Object.hasOwn(FILTER_ALIASES, key) ? FILTER_ALIASES[key] : undefined;
     if (mapped === undefined) {
       throw new Error(`Unknown snapshot filter "${arg}" (expected: all | tools | skills | mcps | agents | swarm)`);
     }
@@ -250,7 +252,7 @@ export function formatSessionsTable(sessions: readonly SessionRecord[], source: 
     badge: `[${formatSurfaceBadge(s.surface)}]`,
     id: s.shortId,
     state: formatSessionStateColumn(s),
-    workspace: s.workspace.length > 0 ? path.basename(s.workspace) || s.workspace : '-',
+    workspace: s.workspace.length > 0 ? (nonEmptyStr(path.basename(s.workspace)) ?? s.workspace) : '-',
     title: s.title,
   }));
   const stateWidth = Math.max(8, ...rows.map((r) => r.state.length));
@@ -293,8 +295,10 @@ function loadSnapshotForParsedArgs(
   return { snapshot, sessions: resolved.sessions };
 }
 
-export function runSnapshotCommand(argv: readonly string[], options: SnapshotRunOptions = {}): SnapshotRunResult {
-  const parsed = parseSnapshotArgs(argv);
+export function executeParsedSnapshotCommand(
+  parsed: SnapshotCliArgs,
+  options: SnapshotRunOptions = {},
+): SnapshotRunResult {
   if (parsed.help) {
     return { output: SNAPSHOT_HELP_TEXT };
   }
@@ -341,11 +345,14 @@ export function runSnapshotCommand(argv: readonly string[], options: SnapshotRun
   };
 }
 
-export async function runSnapshotPopupCommand(
-  argv: readonly string[],
+export function runSnapshotCommand(argv: readonly string[], options: SnapshotRunOptions = {}): SnapshotRunResult {
+  return executeParsedSnapshotCommand(parseSnapshotArgs(argv), options);
+}
+
+export async function executeParsedSnapshotPopupCommand(
+  parsed: SnapshotCliArgs,
   options: SnapshotPopupCommandOptions = {},
 ): Promise<number> {
-  const parsed = parseSnapshotArgs(argv);
   const env = options.env ?? process.env;
   return await runSnapshotPopup({
     loadSnapshot: () => loadSnapshotForParsedArgs(parsed, options).snapshot,
@@ -357,4 +364,11 @@ export async function runSnapshotPopupCommand(
     stdout: options.stdout,
     escTimeoutMs: options.escTimeoutMs,
   });
+}
+
+export async function runSnapshotPopupCommand(
+  argv: readonly string[],
+  options: SnapshotPopupCommandOptions = {},
+): Promise<number> {
+  return await executeParsedSnapshotPopupCommand(parseSnapshotArgs(argv), options);
 }

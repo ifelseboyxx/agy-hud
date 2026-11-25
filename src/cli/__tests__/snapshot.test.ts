@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 import { runCliEntry } from '../../cli-entry.ts';
-import { writeSnapshotEnvelope } from '../../collectors/session-index.ts';
+import { writeSnapshotEnvelope } from '../../collectors/snapshot-envelope.ts';
 import type { ActivitySnapshot } from '../../snapshot-types.ts';
 import { formatSessionsTable, formatSnapshotText, parseSnapshotArgs, runSnapshotCommand } from '../snapshot.ts';
 

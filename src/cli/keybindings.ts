@@ -149,6 +149,7 @@ function formatHostSnippet(host: HostTerminal, cmd: ResolvedKeybindingCommand, u
       `${b}Ghostty${r} ${d}(~/.config/ghostty/config)${r}`,
       `  Native Cmd+Click on status line '+N more' / 'snapshot' links works zero-config.`,
       `  ${c}keybind = super+shift+h=text:!agy-hud\\n${r}`,
+      `  ${d}Caution: Ghostty text: types directly into the focused pane; trigger only inside the agy prompt.${r}`,
     ];
     if (cmd.source === 'node-fallback') {
       lines.push(`  ${d}Without CLI Shim on PATH: keybind = super+shift+h=text:!node "${cmd.cliMjsPath}"\\n${r}`);

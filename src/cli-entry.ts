@@ -1,36 +1,58 @@
 #!/usr/bin/env node
 import { CONFIGURE_NON_TTY_HINT, runConfigureInteractive } from './cli/configure-tui.ts';
-import { configureHud, parseConfigureArgs } from './cli/configure.ts';
+import { type ConfigureCliArgs, configureHud, parseConfigureArgs } from './cli/configure.ts';
 import { isInstallerCommand } from './cli/installer/args.ts';
 import { runInstallerCli } from './cli/installer/index.ts';
 import { exportProfile, importProfile } from './cli/migrate.ts';
 import type { PopupInputStream, PopupOutputStream } from './cli/snapshot-popup.ts';
-import { isSnapshotFlag, parseSnapshotArgs, runSnapshotCommand, runSnapshotPopupCommand } from './cli/snapshot.ts';
+import {
+  executeParsedSnapshotCommand,
+  executeParsedSnapshotPopupCommand,
+  isSnapshotFilter,
+  isSnapshotFlag,
+  parseSnapshotArgs,
+  runSnapshotCommand,
+  type SnapshotRunOptions,
+} from './cli/snapshot.ts';
 import { isMainEntry } from './core/paths.ts';
 
 export { runInstallerCli };
 
-export interface CliAsyncEntryOptions {
-  readonly stdin?: PopupInputStream;
-  readonly stdout?: PopupOutputStream;
+export interface CliEntryOptions {
+  readonly stdout?: { write(chunk: string): boolean };
   readonly stderr?: { write(chunk: string): boolean };
   readonly env?: NodeJS.ProcessEnv;
   readonly cliHome?: string;
   readonly geminiRoot?: string;
   readonly cwd?: string;
+}
+
+export interface CliAsyncEntryOptions extends CliEntryOptions {
+  readonly stdin?: PopupInputStream;
+  readonly stdout?: PopupOutputStream;
   readonly escTimeoutMs?: number;
 }
 
-function writeOut(text: string): void {
-  process.stdout.write(text);
+function writeOut(text: string, options?: CliEntryOptions): void {
+  (options?.stdout ?? process.stdout).write(text);
 }
 
-function writeErr(text: string): void {
-  process.stderr.write(text);
+function writeErr(text: string, options?: CliEntryOptions): void {
+  (options?.stderr ?? process.stderr).write(text);
 }
 
-function printMainHelp(): void {
-  writeOut(`agy-hud CLI
+function toSnapshotOptions(options?: CliEntryOptions): SnapshotRunOptions {
+  return {
+    cliHome: options?.cliHome,
+    geminiRoot: options?.geminiRoot,
+    cwd: options?.cwd,
+    env: options?.env,
+  };
+}
+
+function printMainHelp(options?: CliEntryOptions): void {
+  writeOut(
+    `agy-hud CLI
 
 Usage:
   agy-hud [command] [options]
@@ -54,11 +76,14 @@ Options:
 Quick inspection:
   !agy-hud        Inspect active session from the Antigravity CLI prompt box
   Cmd+Click       Open per-session Markdown snapshot from '+N more' / 'snapshot' links
-`);
+`,
+    options,
+  );
 }
 
-function printConfigureHelp(): void {
-  writeOut(`agy-hud configure
+function printConfigureHelp(options?: CliEntryOptions): void {
+  writeOut(
+    `agy-hud configure
 
 Usage:
   agy-hud configure [<preset>] [options]
@@ -72,16 +97,19 @@ Options:
   --enable <id,...>            Enable Line Module(s) or Inline Segment(s) (repeatable)
   --disable <id,...>           Disable Line Module(s) or Inline Segment(s) (repeatable)
   --order <lineId,...>         Set explicit ordered Line Modules list
-  --set <key>=<value>          Set osc8Links, maxAgentChips, segments.<id>, or legacy show* alias
+  --set <key>=<value>          Set preset, osc8Links, maxAgentChips, or segments.<id>
   --reset                      Reset hud-config.json to full defaults
   --json                       Emit JSON output
   -i, --interactive            Launch interactive configuration editor
   -h, --help                   Show this help
-`);
+`,
+    options,
+  );
 }
 
-function printExportHelp(): void {
-  writeOut(`agy-hud export-profile
+function printExportHelp(options?: CliEntryOptions): void {
+  writeOut(
+    `agy-hud export-profile
 
 Usage:
   agy-hud export-profile --out <dir>
@@ -89,11 +117,14 @@ Usage:
 Options:
   --out <dir>     Output directory for sanitized templates & plugins-manifest.json
   -h, --help      Show this help
-`);
+`,
+    options,
+  );
 }
 
-function printImportHelp(): void {
-  writeOut(`agy-hud import-profile
+function printImportHelp(options?: CliEntryOptions): void {
+  writeOut(
+    `agy-hud import-profile
 
 Usage:
   agy-hud import-profile --in <dir> [--merge-mcp]
@@ -102,7 +133,9 @@ Options:
   --in <dir>      Profile directory containing exported templates
   --merge-mcp     Add missing MCP servers without overwriting existing ones
   -h, --help      Show this help
-`);
+`,
+    options,
+  );
 }
 
 function parseValueFlag(argv: readonly string[], flag: string): { help: boolean; value: string; mergeMcp: boolean } {
@@ -137,83 +170,101 @@ function parseValueFlag(argv: readonly string[], flag: string): { help: boolean;
   return { help, value, mergeMcp };
 }
 
-function runConfigureCommand(args: readonly string[]): number {
-  const parsed = parseConfigureArgs(args);
+function executeParsedConfigure(parsed: ConfigureCliArgs, options?: CliEntryOptions): number {
   if (parsed.help) {
-    printConfigureHelp();
+    printConfigureHelp(options);
     return 0;
   }
   if (parsed.interactive) {
-    writeErr(CONFIGURE_NON_TTY_HINT);
+    writeErr(CONFIGURE_NON_TTY_HINT, options);
     return 1;
   }
-  const result = configureHud(parsed.options);
+  const result = configureHud({
+    ...parsed.options,
+    cliHome: options?.cliHome ?? parsed.options.cliHome,
+    env: options?.env ?? parsed.options.env,
+  });
   if (parsed.json || result.action === 'show') {
-    writeOut(`${JSON.stringify(result.config, null, 2)}\n`);
+    writeOut(`${JSON.stringify(result.config, null, 2)}\n`, options);
     return 0;
   }
-  writeOut(`Updated ${result.configPath}\n${JSON.stringify(result.config, null, 2)}\n`);
+  writeOut(`Updated ${result.configPath}\n${JSON.stringify(result.config, null, 2)}\n`, options);
   return 0;
 }
 
-function runExportCommand(args: readonly string[]): void {
+function runConfigureCommand(args: readonly string[], options?: CliEntryOptions): number {
+  return executeParsedConfigure(parseConfigureArgs(args), options);
+}
+
+function runExportCommand(args: readonly string[], options?: CliEntryOptions): void {
   const parsed = parseValueFlag(args, '--out');
   if (parsed.help) {
-    printExportHelp();
+    printExportHelp(options);
     return;
   }
   if (parsed.value.length === 0) {
     throw new Error('Missing required option: --out <dir>');
   }
-  const result = exportProfile({ outDir: parsed.value });
-  writeOut(`Exported profile to ${result.outDir}\n`);
+  const result = exportProfile({
+    outDir: parsed.value,
+    cliHome: options?.cliHome,
+    geminiRoot: options?.geminiRoot,
+    env: options?.env,
+  });
+  writeOut(`Exported profile to ${result.outDir}\n`, options);
   for (const file of result.filesWritten) {
-    writeOut(`  - ${file}\n`);
+    writeOut(`  - ${file}\n`, options);
   }
-  writeOut(`Plugins recorded: ${result.pluginCount}\n`);
+  writeOut(`Plugins recorded: ${result.pluginCount}\n`, options);
 }
 
-function runImportCommand(args: readonly string[]): void {
+function runImportCommand(args: readonly string[], options?: CliEntryOptions): void {
   const parsed = parseValueFlag(args, '--in');
   if (parsed.help) {
-    printImportHelp();
+    printImportHelp(options);
     return;
   }
   if (parsed.value.length === 0) {
     throw new Error('Missing required option: --in <dir>');
   }
-  const result = importProfile({ inDir: parsed.value, mergeMcp: parsed.mergeMcp });
-  writeOut(`Imported profile from ${result.inDir}\n`);
+  const result = importProfile({
+    inDir: parsed.value,
+    mergeMcp: parsed.mergeMcp,
+    cliHome: options?.cliHome,
+    geminiRoot: options?.geminiRoot,
+    env: options?.env,
+  });
+  writeOut(`Imported profile from ${result.inDir}\n`, options);
   for (const file of result.filesUpdated) {
-    writeOut(`  - Updated ${file}\n`);
+    writeOut(`  - Updated ${file}\n`, options);
   }
   if (result.mcpAction === 'skipped-exists') {
-    writeOut('  - Skipped mcp_config.json (already exists; pass --merge-mcp to add missing servers)\n');
+    writeOut('  - Skipped mcp_config.json (already exists; pass --merge-mcp to add missing servers)\n', options);
   } else if (result.mcpAction !== 'none') {
-    writeOut(`  - MCP config: ${result.mcpAction}\n`);
+    writeOut(`  - MCP config: ${result.mcpAction}\n`, options);
   }
   if (result.pluginInstructions.length > 0) {
-    writeOut('Manual plugin actions:\n');
+    writeOut('Manual plugin actions:\n', options);
     for (const line of result.pluginInstructions) {
-      writeOut(`  - ${line}\n`);
+      writeOut(`  - ${line}\n`, options);
     }
   }
 }
 
-export function runCliEntry(argv: readonly string[] = process.argv.slice(2)): number {
+export function runCliEntry(argv: readonly string[] = process.argv.slice(2), options: CliEntryOptions = {}): number {
   const command = argv[0];
   if (command === '-h' || command === '--help' || command === 'help') {
-    printMainHelp();
+    printMainHelp(options);
     return 0;
   }
 
   try {
     if (!command) {
-      writeOut(runSnapshotCommand([]).output);
+      writeOut(runSnapshotCommand([], toSnapshotOptions(options)).output, options);
       return 0;
     }
-    if (isSnapshotFlag(command)) {
-      writeOut(runSnapshotCommand(argv).output);
+    if (isSnapshotFlag(command) || isSnapshotFilter(command)) {
+      writeOut(runSnapshotCommand(argv, toSnapshotOptions(options)).output, options);
       return 0;
     }
     const rest = argv.slice(1);
@@ -223,22 +274,22 @@ export function runCliEntry(argv: readonly string[] = process.argv.slice(2)): nu
     switch (command) {
       case 'snapshot':
       case 'snap':
-        writeOut(runSnapshotCommand(rest).output);
+        writeOut(runSnapshotCommand(rest, toSnapshotOptions(options)).output, options);
         return 0;
       case 'configure':
-        return runConfigureCommand(rest);
+        return runConfigureCommand(rest, options);
       case 'export-profile':
-        runExportCommand(rest);
+        runExportCommand(rest, options);
         return 0;
       case 'import-profile':
-        runImportCommand(rest);
+        runImportCommand(rest, options);
         return 0;
       default:
         throw new Error(`Unknown command: ${command}. Run with --help for usage.`);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    writeErr(`Error: ${message}\n`);
+    writeErr(`Error: ${message}\n`, options);
     return 1;
   }
 }
@@ -249,7 +300,7 @@ function resolveInteractiveSnapshotArgs(argv: readonly string[]): readonly strin
   if (command === 'snapshot' || command === 'snap') {
     return argv.slice(1);
   }
-  if (isSnapshotFlag(command)) {
+  if (isSnapshotFlag(command) || isSnapshotFilter(command)) {
     return argv;
   }
   return null;
@@ -275,6 +326,7 @@ export async function runCliEntryAsync(
           escTimeoutMs: options.escTimeoutMs,
         });
       }
+      return executeParsedConfigure(parsed, options);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       errStream.write(`Error: ${message}\n`);
@@ -286,15 +338,17 @@ export async function runCliEntryAsync(
     try {
       const parsed = parseSnapshotArgs(snapArgs);
       if (!parsed.help && !parsed.listSessions && !parsed.json && parsed.keybindings === undefined && parsed.popup) {
-        return await runSnapshotPopupCommand(snapArgs, options);
+        return await executeParsedSnapshotPopupCommand(parsed, options);
       }
+      writeOut(executeParsedSnapshotCommand(parsed, toSnapshotOptions(options)).output, options);
+      return 0;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       errStream.write(`Error: ${message}\n`);
       return 1;
     }
   }
-  return runCliEntry(argv);
+  return runCliEntry(argv, options);
 }
 
 if (isMainEntry(import.meta.url)) {
