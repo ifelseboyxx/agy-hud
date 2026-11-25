@@ -45,6 +45,9 @@ function inspectFile(rel: string, content: string, issues: MaintainabilityIssue[
   }
 
   let inBlockComment = false;
+  let inExemptHostContract = false;
+  let seenCode = false;
+  let usedHostContractExempt = false;
   let commentLines = 0;
   let nonEmptyLines = 0;
   let currentRun = 0;
@@ -59,20 +62,37 @@ function inspectFile(rel: string, content: string, issues: MaintainabilityIssue[
     nonEmptyLines += 1;
 
     let isCommentLine = false;
+    let isExemptLine = false;
     if (inBlockComment) {
       isCommentLine = true;
-      if (trimmed.includes('*/')) inBlockComment = false;
+      isExemptLine = inExemptHostContract;
+      if (trimmed.includes('*/')) {
+        inBlockComment = false;
+        inExemptHostContract = false;
+      }
     } else if (trimmed.startsWith('//')) {
       isCommentLine = true;
     } else if (trimmed.startsWith('/*')) {
       isCommentLine = true;
-      if (!trimmed.includes('*/')) inBlockComment = true;
+      const startsContract = !seenCode && !usedHostContractExempt && trimmed.includes('@host-contract');
+      if (startsContract) {
+        usedHostContractExempt = true;
+        isExemptLine = true;
+      }
+      if (!trimmed.includes('*/')) {
+        inBlockComment = true;
+        inExemptHostContract = startsContract;
+      }
+    } else {
+      seenCode = true;
     }
 
     if (isCommentLine) {
-      commentLines += 1;
-      currentRun += 1;
-      if (currentRun > longestRun) longestRun = currentRun;
+      if (!isExemptLine) {
+        commentLines += 1;
+        currentRun += 1;
+        if (currentRun > longestRun) longestRun = currentRun;
+      }
     } else {
       currentRun = 0;
     }

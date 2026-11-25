@@ -1,16 +1,24 @@
-const [rawMajor = 0, rawMinor = 0] = process.versions.node.split('.').map(Number);
-const major = Number.isFinite(rawMajor) ? rawMajor : 0;
-const minor = Number.isFinite(rawMinor) ? rawMinor : 0;
-const ok = (major === 22 && minor >= 20) || major >= 24;
-if (!ok) {
-  console.error(`[FAIL] Node ${process.versions.node} 不满足 ^22.20.0 || >=24.0.0`);
-  process.exit(1);
+import { isSupportedNodeVersion, NODE_RANGE_LABEL } from '../src/core/guards.ts';
+import { isMainEntry } from '../src/core/paths.ts';
+
+export function checkRuntimeEnvironment(): string[] {
+  const errors: string[] = [];
+  if (!isSupportedNodeVersion(process.versions.node)) {
+    errors.push(`Node ${process.versions.node} 不满足 ${NODE_RANGE_LABEL}`);
+  }
+
+  const ua = process.env.npm_config_user_agent ?? '';
+  if (ua !== '' && !ua.startsWith('pnpm/')) {
+    errors.push(`本仓库仅使用 pnpm（检测到 ${ua.split(' ')[0] ?? ua}），请改用 pnpm install`);
+  }
+  return errors;
 }
 
-const ua = process.env.npm_config_user_agent ?? '';
-if (ua !== '' && !ua.startsWith('pnpm/')) {
-  console.error(`[FAIL] 本仓库仅使用 pnpm（检测到 ${ua.split(' ')[0] ?? ua}），请改用 pnpm install`);
-  process.exit(1);
+if (isMainEntry(import.meta.url)) {
+  const errors = checkRuntimeEnvironment();
+  if (errors.length > 0) {
+    for (const err of errors) console.error(`[FAIL] ${err}`);
+    process.exit(1);
+  }
+  console.log(`[OK] 环境基线检查通过 (Node ${process.versions.node})`);
 }
-
-console.log(`[OK] 环境基线检查通过 (Node ${process.versions.node})`);

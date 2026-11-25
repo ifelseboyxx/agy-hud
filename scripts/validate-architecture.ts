@@ -6,12 +6,13 @@ import { parseSync, Visitor } from 'oxc-parser';
 import { ResolverFactory } from 'oxc-resolver';
 
 import { isMainEntry, toPosixPath } from '../src/core/paths.ts';
+import { createStatusLineFenceTracker, STATUSLINE_SINGLE_WRITER } from './lib/statusline-writer-fence.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
 const SKILL_DESC_MIN = 24;
 const SKILL_DESC_MAX = 240;
 const IGNORED_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage']);
-const AST_EXTS = new Set(['.ts', '.mts', '.mjs']);
+const AST_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
 
 // 跨模块重复顶层函数的棘轮基线：已清零，禁止新增跨模块重复定义。
 export const KNOWN_DUPLICATE_FUNCTIONS: ReadonlySet<string> = new Set();
@@ -34,7 +35,12 @@ const NETWORK_MODULES = new Set([
 
 function isFenceTarget(relPosix: string): boolean {
   return (
-    relPosix.startsWith('src/collectors/') || relPosix.startsWith('src/render/') || relPosix === 'src/hud-entry.ts'
+    relPosix.startsWith('src/core/') ||
+    relPosix.startsWith('src/collectors/') ||
+    relPosix.startsWith('src/render/') ||
+    relPosix.startsWith('src/mcp/') ||
+    relPosix === 'src/hud-entry.ts' ||
+    relPosix === 'src/hud-runner.ts'
   );
 }
 
@@ -115,6 +121,15 @@ function collectTopLevelFunctionNames(program: ReturnType<typeof parseSync>['pro
     const decl = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
     if (decl?.type === 'FunctionDeclaration' && decl.id) {
       seen.add(normalizeFunctionKey(decl.id.name));
+    } else if (decl?.type === 'VariableDeclaration') {
+      for (const item of decl.declarations) {
+        if (
+          item.id.type === 'Identifier' &&
+          (item.init?.type === 'ArrowFunctionExpression' || item.init?.type === 'FunctionExpression')
+        ) {
+          seen.add(normalizeFunctionKey(item.id.name));
+        }
+      }
     }
   }
   return [...seen];
@@ -165,6 +180,7 @@ function inspectTypeScriptAst(
   const checkConsoleLog = relPosix.startsWith('src/');
   const checkNetworkFence = isFenceTarget(relPosix);
   const checkRelativeImports = isResolverTarget(relPosix);
+  const checkStatusLineOwnership = isDuplicateScanTarget(relPosix) && relPosix !== STATUSLINE_SINGLE_WRITER;
   const specifiers = new Set<string>();
 
   for (const imp of parsed.module.staticImports) {
@@ -177,13 +193,26 @@ function inspectTypeScriptAst(
   }
 
   let consoleLogCount = 0;
+  const forbiddenGlobalNetworks = new Set<string>();
+  const statusLineFence = createStatusLineFenceTracker(checkStatusLineOwnership);
+
   const visitor = new Visitor({
+    ...statusLineFence.handlers,
     ImportExpression(node): void {
       if (node.source.type === 'Literal' && typeof node.source.value === 'string') {
         specifiers.add(node.source.value);
       }
     },
+    NewExpression(node): void {
+      if (checkNetworkFence && node.callee.type === 'Identifier' && node.callee.name === 'WebSocket') {
+        forbiddenGlobalNetworks.add('WebSocket');
+      }
+    },
     CallExpression(node): void {
+      if (checkNetworkFence && node.callee.type === 'Identifier' && node.callee.name === 'fetch') {
+        forbiddenGlobalNetworks.add('fetch');
+      }
+      statusLineFence.onCallExpression(node);
       if (
         node.callee.type === 'Identifier' &&
         node.callee.name === 'require' &&
@@ -205,7 +234,12 @@ function inspectTypeScriptAst(
   visitor.visit(parsed.program);
 
   if (consoleLogCount > 0) errors.push(`${relPosix}: console.log call found in src/ (${consoleLogCount})`);
+  for (const api of forbiddenGlobalNetworks) {
+    errors.push(`${relPosix}: global network API '${api}' is forbidden by AST fence`);
+  }
+  errors.push(...statusLineFence.collectErrors(relPosix));
 
+  const isCollectorModule = relPosix.startsWith('src/collectors/') && !relPosix.includes('/__tests__/');
   for (const spec of specifiers) {
     if (checkNetworkFence && NETWORK_MODULES.has(spec)) {
       errors.push(`${relPosix}: network import '${spec}' is forbidden by AST import fence`);
@@ -214,21 +248,27 @@ function inspectTypeScriptAst(
       const resolved = resolver.resolveFileSync(fullPath, spec);
       if (resolved.error || !resolved.path || !resolved.path.startsWith(rootDir)) {
         errors.push(`${relPosix}: unresolved relative import '${spec}' (${resolved.error ?? 'missing target'})`);
+      } else if (isCollectorModule) {
+        const targetRel = toPosixPath(path.relative(rootDir, resolved.path));
+        if (targetRel.startsWith('src/render/')) {
+          errors.push(`${relPosix}: collectors may not import from src/render/ ('${spec}')`);
+        }
       }
     }
   }
 }
 
-export function runValidation(
+export function collectArchitectureErrors(
   rootDir: string = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
-): number {
+  options: { checkSkills?: boolean } = {},
+): { errors: string[]; fileCount: number; skillCount: number } {
   const errors: string[] = [];
   const files = walkFiles(rootDir, rootDir, {
     skipDirs: IGNORED_DIRS,
     includeFile: (relPosix, name) => AST_EXTS.has(path.extname(name)) && isResolverTarget(relPosix),
   }).sort();
   const resolver = new ResolverFactory({
-    extensions: ['.ts', '.mts', '.js', '.mjs', '.json'],
+    extensions: ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs', '.json'],
     conditionNames: ['node', 'import', 'default'],
   });
 
@@ -240,13 +280,20 @@ export function runValidation(
   }
   errors.push(...findDuplicateFunctionErrors(functionDefs));
 
-  const skillCount = validateSkills(rootDir, errors);
+  const skillCount = options.checkSkills === false ? 0 : validateSkills(rootDir, errors);
+  return { errors, fileCount: files.length, skillCount };
+}
+
+export function runValidation(
+  rootDir: string = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+): number {
+  const { errors, fileCount, skillCount } = collectArchitectureErrors(rootDir);
   if (errors.length > 0) {
     console.error(`Architecture validation failed (${errors.length} issue(s)):`);
     for (const err of errors) console.error(`  - ${err}`);
     return 1;
   }
-  console.log(`Architecture validation passed: ${files.length} TS AST checks, ${skillCount} skills.`);
+  console.log(`Architecture validation passed: ${fileCount} TS AST checks, ${skillCount} skills.`);
   return 0;
 }
 

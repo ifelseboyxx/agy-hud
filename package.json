@@ -55,7 +55,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import ./scripts/lib/isolate-git-env.mts --test \"src/**/__tests__/*.test.{ts,mts}\" \"tests/**/*.test.{ts,mts}\"",
     "validate": "node scripts/validate-all.mts",
-    "verify": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm build && pnpm test && pnpm validate",
+    "verify": "node scripts/verify.mts",
     "cz": "czg",
     "hud:install": "node scripts/install.mjs install --link --no-enable",
     "hud:wire": "node scripts/install.mjs install --link --no-enable --wire-statusline",
