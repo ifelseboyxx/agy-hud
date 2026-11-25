@@ -10,7 +10,7 @@ This document maps the runtime entrypoints, module layering, shared data pipelin
 | :--- | :--- | :--- |
 | `src/hud-entry.ts` | `dist/hud.mjs` | Reads Antigravity CLI `statusLine` JSON from `stdin`, invokes `runHudRender`, prints ANSI lines to `stdout` on every ~300 ms host tick. |
 | `src/cli-entry.ts` | `dist/cli.mjs` | Unified CLI for `snapshot` (`snap`, `-p`/`--popup`, `--keybindings`), `configure` (flags and `-i` TUI), `export-profile` / `import-profile`, and installer commands (`install`, `uninstall`, `wire`, `unwire`, `on`, `off`, `doctor`). |
-| `src/mcp/hud-mcp-entry.ts` | `dist/mcp-hud.mjs` | Read-only stdio JSON-RPC 2.0 MCP server exposing `hud_inspector`, `hud_poll_snapshot`, and the `ui://agy-hud/inspector.html` App UI resource. |
+| `src/mcp/hud-mcp-entry.ts` | `dist/mcp-hud.mjs` | Read-only stdio JSON-RPC 2.0 MCP server (with tool/resource schemas and argument validation in `src/mcp/hud-mcp-schema.ts`) exposing `hud_inspector`, `hud_poll_snapshot`, and the `ui://agy-hud/inspector.html` App UI resource. |
 
 ## Layering and Dependencies
 
@@ -45,15 +45,21 @@ Cross-surface parity is guarded by `tests/surface-parity.test.ts`.
 
 ## Session Discovery, Resolution, and Caching
 
-Session handling is split into four single-purpose modules:
+Session handling is split into single-purpose modules:
 
-- `src/collectors/session-discovery.ts`: Read-only discovery across CLI envelopes, CLI/App `conversation_summaries.db`, brain directories, and cold conversation DBs (filtering exited CLI PIDs and `nesting_depth > 0`).
-- `src/collectors/session-index.ts`: Tiered session resolution (`explicit` ID/prefix -> live ancestor `pid` -> deepest `workspace` -> live `fallback`).
+- `src/collectors/session-discovery.ts`: Read-only discovery across CLI/App `conversation_summaries.db`, cold `brain/` directories and conversation DBs (resolved by physical on-disk ownership before attaching CLI envelopes), filtering exited CLI PIDs and `nesting_depth > 0`, and delegating live-PID ownership to `src/collectors/snapshot-pid-marker.ts` (re-exported via `src/collectors/snapshot-envelope.ts`).
+- `src/collectors/session-index.ts`: Tiered session resolution (`explicit` ID/prefix -> live ancestor `pid` -> deepest `workspace` active-first -> `fallback` newest non-exited, tie-break running).
 - `src/collectors/snapshot-loader.ts`: Loads full `ActivitySnapshot` (telemetry, transcript tools/skills/MCPs, agents, todos) without mutating App/IDE storage.
-- `src/collectors/snapshot-envelope.ts`: Persists lightweight CLI session envelopes (`agy_hud_snapshot_<id>.json`) with 30-second heartbeat throttling (skipping disk writes when semantic fields are unchanged) and sweeps stale per-session cache files (`agy_hud_(snapshot|activity|activity_snapshot|telemetry)_*.{json,md}`) after 7 days.
+- `src/collectors/snapshot-envelope.ts`: Persists bounded `0o600` CLI session envelopes (`agy_hud_snapshot_<id>.json`, <= 512 KiB) with 30-second heartbeat throttling, bounded-skew timestamp validation, monotonic `switchSeq`, frame-start PID marker and heartbeat-aware supersede guards (with verified clock-rollback exemptions), and short non-stalling hot-path PID locking.
+- `src/collectors/snapshot-pid-marker.ts`: Reads and validates bounded `0o600` active PID markers (`agy_hud_pid_<pid>.json`), scans fallback peer envelopes on missing markers, and resolves authoritative live-PID session ownership.
+- `src/collectors/snapshot-cache-sweep.ts`: Reclaims 7-day expired cache files (`agy_hud_(snapshot|activity|activity_snapshot|telemetry|pid)_*.{json,md}`) and 1-hour crashed atomic-write `.tmp.<pid>.<ts>.<16hex>` orphans under `<cliHome>/cache/` (excluding symlinks; `.lock` files are exclusively reclaimed by `src/core/file-lock.ts`).
 
-## Ownership and Concurrency Invariants
+## Ownership and Concurrency Enforcement Map
 
-- **`statusLine` single writer**: Only `src/cli/installer/settings.ts` may write `statusLine` into `<cliHome>/settings.json` or write `agy-hud-statusline-backup.json` (enforced via AST fence in `scripts/validate-architecture.ts`).
-- **Interactive config conflict protection**: `configure -i` captures a SHA-256 revision hash when opening the draft and verifies it inside `withCliHomeLockSync` before saving, rejecting stale writes instead of silently overwriting concurrent changes.
-- **No silent corruption recovery**: Missing config files initialize cleanly; malformed JSON throws and leaves user files untouched.
+Normative requirements live in `AGENTS.md`; the concrete enforcement sites are:
+
+- **`statusLine` single writer & quoting**: `src/cli/installer/settings.ts` (AST-enforced by `scripts/validate-architecture.ts`) and `src/core/statusline-ownership.ts` (`formatStatusLineCommand` + `isSameCommandPath`).
+- **Interactive draft conflict protection**: `src/cli/configure.ts` captures a SHA-256 revision hash via `readJsonObjectWithHashSync` and re-verifies it inside `withCliHomeLockSync` (`src/core/file-lock.ts`).
+- **Strict write-path JSON vs read-only HUD fallback**: `src/fs-utils.ts` (`readJsonObjectSync(..., true)` with fatal UTF-8 decoding) protects all write/CLI/doctor paths; `src/collectors/settings.ts` uses read-only graceful fallback without writing back.
+- **Terminal boundary sanitization**: `src/core/terminal-text.ts` (`sanitizeTerminalText`, `sanitizeTerminalLabel`) strips 7-bit/8-bit CSI/OSC/DCS/SOS/PM/APC (including unterminated payloads), C0/C1 controls, and Unicode bidi format controls at collector/session boundaries and output renderers across HUD, OSC 8 Markdown, CLI, and MCP.
+- **Snapshot Markdown publication guard**: `src/render/osc8.ts` flattens per-session `.md` + per-PID envelope locking into one sorted, short-timeout `withFileLocksSync` call so contended hot-path renders skip cache persistence silently instead of stalling HUD stdout, and skips stale publishes superseded by newer envelopes.

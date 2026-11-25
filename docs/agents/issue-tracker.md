@@ -1,31 +1,31 @@
-# Issue tracker: Local Markdown
+# Issue Tracker: Local Markdown
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
+Issues and specs for this repo live under `.scratch/<feature-slug>/`.
 
-## Conventions
+## Layout & Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
-- For parallel implementation tickets, record the first ready-for-review revision and time, integration revision and time, and verification results in the resolution. Include the verification duration if measured. Record changes to shared contracts and approved spec deviations in the feature spec before marking the ticket resolved. Keep lasting contract and default changes in the relevant tracked documentation.
+- Feature directory: `.scratch/<feature-slug>/`
+- Feature spec: `.scratch/<feature-slug>/spec.md`
+- Implementation tickets: one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md` (`NN` zero-padded from `01`).
+- Comments append to the bottom of the ticket under `## Comments`.
+- **`Status:` value domains** (keep the two state machines distinct):
+  - Implementation issues use the canonical triage labels in `docs/agents/triage-labels.md` while open/triaged, and transition to `resolved` once implemented, verified, and integrated.
+  - `/wayfinder` child tickets use `claimed` or `resolved` (absent or empty `Status:` means open/unclaimed).
 
-## When a skill says "publish to the issue tracker"
+## Publishing and Fetching Tickets
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+- **Publish a spec**: write `.scratch/<feature-slug>/spec.md` (creating directories if needed).
+- **Publish an issue / child ticket**: create `.scratch/<feature-slug>/issues/<NN>-<slug>.md` using the next sequential `NN` and include initial `Type:` and `Status:` header lines.
+- **Fetch a ticket**: read the referenced path under `.scratch/<feature-slug>/` directly.
 
-## When a skill says "fetch the relevant ticket"
+## Wayfinding Operations (`/wayfinder`)
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
-
-## Wayfinding operations
-
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
-
-- **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Map**: `.scratch/<effort>/map.md` (Notes / Decisions-so-far / Fog).
+- **Child ticket**: `.scratch/<effort>/issues/<NN>-<slug>.md` with `Type:` (`research` | `prototype` | `grilling` | `task`) and `Status:` (`claimed` | `resolved`).
+- **Blocking**: `Blocked by: NN, NN` near the top; a ticket is unblocked once every listed ticket has `Status: resolved`.
+- **Frontier**: scan `.scratch/<effort>/issues/` for tickets that are unresolved, unclaimed (missing `Status:` or neither `claimed` nor `resolved`), and have all `Blocked by` tickets `resolved`; lowest `NN` wins.
+- **Claim**: set `Status: claimed` and save before starting work.
+- **Resolve**:
+  1. Append the answer under `## Answer` and set `Status: resolved`.
+  2. For parallel implementation tickets, record the first ready-for-review revision and timestamp, integration revision and timestamp, and verification result (plus duration when measured).
+  3. Record any shared contract update or approved spec deviation in `.scratch/<feature-slug>/spec.md`, sync lasting contract/default changes to tracked docs, and append a gist + link pointer to `map.md`'s Decisions-so-far.

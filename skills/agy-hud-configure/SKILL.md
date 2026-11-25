@@ -1,6 +1,6 @@
 ---
 name: agy-hud-configure
-description: 配置 agy-hud 状态栏模块、预设方案（zen/minimal/compact/swarm/full）与展示选项，或在多台机器间导出导入脱敏的 Antigravity CLI 配置包。当需要切换 HUD 预设、插拔模块或跨机迁移配置时使用。
+description: 配置 agy-hud 的 zen/minimal/compact/swarm/full 预设、Line Module、Inline Segment 与展示选项，或导出导入脱敏 CLI 配置包。
 ---
 
 # agy-hud 展示配置与跨机迁移
@@ -49,7 +49,7 @@ description: 配置 agy-hud 状态栏模块、预设方案（zen/minimal/compact
   ```bash
   agy-hud export-profile --out ./agy-profile-bundle
   ```
-- 在目标机器导入配置包（深度合并并保留目标机 `trustedWorkspaces`，不直接修改 `config.json`）：
+- 在目标机器导入配置包（`settings.json` 深度合并并保留目标机 `trustedWorkspaces`；已存在 `mcp_config.json` 默认保持原样，如需补入缺失 server 追加 `--merge-mcp`；`config.json` 保持原样）：
   ```bash
   agy-hud import-profile --in ./agy-profile-bundle
   ```

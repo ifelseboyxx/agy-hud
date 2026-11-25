@@ -1,11 +1,9 @@
-# agy-hud
-
-Terminal status line display, cross-surface session inspection, and configuration portability context for Antigravity CLI and client sessions.
+# Glossary
 
 ## Language
 
 **Activity Line**:
-A status line row dedicated to live session activity for tools, skills, MCP servers, or agents and swarms.
+A status line row dedicated to live or recently completed session activity for tools, skills, MCP servers, or agents and swarms.
 _Avoid_: Detail row, footer line, sub-bar
 
 **Overflow Indicator**:
@@ -13,7 +11,7 @@ The trailing `+N more` marker on an Activity Line showing how many items exceed 
 _Avoid_: Truncation tag, ellipsis badge, more button
 
 **Activity Snapshot**:
-The complete, untruncated record of an active session's tool counts, skills, MCP servers, and agents available for out-of-band inspection.
+The complete, untruncated canonical record of a session's tool counts/targets, skills, MCP servers/subtools, agents, and telemetry available for out-of-band inspection (transport layers may explicitly cap presentation payloads).
 _Avoid_: Session dump, overflow log, full history
 
 **Line Module**:
@@ -57,5 +55,5 @@ The JSON record at `<cliHome>/cache/agy-hud-statusline-backup.json` storing `wir
 _Avoid_: Settings snapshot, legacy backup
 
 **Wire / Unwire**:
-Host-level integration (`--wire-statusline` / `--restore-statusline`) that connects or cleanly detaches `<cliHome>/settings.json` `statusLine` without overwriting foreign configurations.
+Host-level integration (`wire` / `unwire`, or `install --wire-statusline` / `uninstall --restore-statusline`) that connects or cleanly detaches `<cliHome>/settings.json` `statusLine` while preserving foreign configurations.
 _Avoid_: Patch settings, hook inject

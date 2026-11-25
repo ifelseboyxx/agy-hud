@@ -81,8 +81,8 @@ pnpm install && pnpm build
 node scripts/install.mjs install --wire-statusline
 
 # Link-install from a local source checkout for development
-pnpm hud:wire     # symlink plugin + wire statusLine + install command
-pnpm hud:install  # symlink plugin only without modifying statusLine
+pnpm hud:wire     # symlink plugin + wire statusLine + install command + run doctor
+pnpm hud:install  # symlink plugin + install command + run doctor (keeps statusLine; pass -- --no-shim to skip command)
 
 # Project-local or custom target installs (skip global command unless --bin-dir / AGY_HUD_BIN_DIR is passed)
 node scripts/install.mjs install --project [dir]

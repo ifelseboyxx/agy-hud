@@ -81,8 +81,8 @@ pnpm install && pnpm build
 node scripts/install.mjs install --wire-statusline
 
 # 开发模式：从源码目录符号链接安装
-pnpm hud:wire     # 符号链接插件 + 接入状态栏 + 安装命令
-pnpm hud:install  # 仅符号链接插件，不修改现有 statusLine
+pnpm hud:wire     # 符号链接插件 + 接入状态栏 + 安装命令 + 运行 doctor
+pnpm hud:install  # 符号链接插件 + 安装命令 + 运行 doctor（保留现有 statusLine；加 -- --no-shim 可跳过命令）
 
 # 项目级或自定义目录安装（默认跳过全局命令，除非显式传入 --bin-dir 或 AGY_HUD_BIN_DIR）
 node scripts/install.mjs install --project [dir]
