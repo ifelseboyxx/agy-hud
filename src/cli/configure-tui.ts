@@ -12,7 +12,12 @@ import {
   type ConfigureTuiState,
   type ConfigureTuiTier,
 } from './configure-tui-render.ts';
-import { type ConfigureHudOptions, loadInteractiveDraftConfig, writeHudConfigAtomic } from './configure.ts';
+import {
+  type ConfigureHudOptions,
+  HudConfigConflictError,
+  loadInteractiveDraftSession,
+  writeHudConfigAtomic,
+} from './configure.ts';
 import { shouldUseSnapshotColor } from './snapshot-render.ts';
 import {
   CTRL_C,
@@ -199,12 +204,12 @@ export async function runConfigureInteractive(options: RunConfigureInteractiveOp
     return 1;
   }
 
-  const initialConfig = loadInteractiveDraftConfig({
+  const draftSession = loadInteractiveDraftSession({
     ...options.configureOptions,
     cliHome: options.cliHome,
     env,
   });
-  const state = createConfigureTuiState(initialConfig);
+  const state = createConfigureTuiState(draftSession.config);
   const useColor = options.color !== undefined ? options.color : shouldUseSnapshotColor(false, env);
   const escTimeoutMs = options.escTimeoutMs ?? ESC_SEQUENCE_TIMEOUT_MS;
 
@@ -241,7 +246,20 @@ export async function runConfigureInteractive(options: RunConfigureInteractiveOp
     return 0;
   }
 
-  const saved = writeHudConfigAtomic(state.draft, { cliHome: options.cliHome, env });
+  let saved;
+  try {
+    saved = writeHudConfigAtomic(state.draft, {
+      cliHome: options.cliHome,
+      env,
+      expectedVersion: draftSession.version,
+    });
+  } catch (err) {
+    if (err instanceof HudConfigConflictError) {
+      stderr.write(`${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
   if (options.json) {
     stdout.write(`${JSON.stringify(saved.config, null, 2)}\n`);
   } else {

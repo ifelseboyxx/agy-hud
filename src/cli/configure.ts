@@ -1,6 +1,9 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { DEFAULT_CLI_LOCK_TIMEOUT_MS, withCliHomeLockSync } from '../core/file-lock.ts';
+import { getErrCode, isPlainObject } from '../core/guards.ts';
 import {
   applyHudLineToggle,
   buildPresetConfig,
@@ -184,20 +187,68 @@ function applyConfigureMutations(config: HudConfig, options: ConfigureHudOptions
   }
 }
 
-export function loadInteractiveDraftConfig(options: ConfigureHudOptions = {}): HudConfig {
+export const MISSING_HUD_CONFIG_VERSION = 'missing';
+
+export class HudConfigConflictError extends Error {
+  readonly configPath: string;
+
+  constructor(configPath: string) {
+    super(
+      `Configuration file ${configPath} was modified concurrently; existing changes were preserved. Reopen interactive configure to apply updates.`,
+    );
+    this.name = 'HudConfigConflictError';
+    this.configPath = configPath;
+  }
+}
+
+export interface InteractiveDraftSession {
+  readonly configPath: string;
+  readonly config: HudConfig;
+  readonly version: string;
+}
+
+function readConfigWithVersionSync(configPath: string): { raw: Record<string, unknown> | null; version: string } {
+  let buf: Buffer;
+  try {
+    buf = readFileSync(configPath);
+  } catch (err) {
+    if (getErrCode(err) === 'ENOENT') {
+      if (!hasDanglingSymlinkInChainSync(configPath)) {
+        return { raw: null, version: MISSING_HUD_CONFIG_VERSION };
+      }
+      throw new Error(`Failed to read ${configPath}: dangling symbolic link`);
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to read ${configPath}: ${message}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(buf.toString('utf8'));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Invalid JSON in ${configPath}: ${message}`);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error(`Expected JSON object in ${configPath}`);
+  }
+  const version = createHash('sha256').update(buf).digest('hex');
+  return { raw: parsed, version };
+}
+
+export function loadInteractiveDraftSession(options: ConfigureHudOptions = {}): InteractiveDraftSession {
   const env = options.env ?? process.env;
   const cliHome = resolveCliHome(options.cliHome, env);
   const configPath = path.join(cliHome, 'hud-config.json');
-  const existingRaw = readJsonObjectSync(configPath, true);
+  const { raw: existingRaw, version } = readConfigWithVersionSync(configPath);
   const base = options.reset ? buildPresetConfig(DEFAULT_HUD_CONFIG.preset) : hydrateHudConfig(existingRaw);
   const next = cloneHudConfig(base);
   applyConfigureMutations(next, options);
-  return next;
+  return { configPath, config: next, version };
 }
 
 export function writeHudConfigAtomic(
   config: HudConfig,
-  options: { readonly cliHome?: string; readonly env?: NodeJS.ProcessEnv } = {},
+  options: { readonly cliHome?: string; readonly env?: NodeJS.ProcessEnv; readonly expectedVersion?: string } = {},
 ): ConfigureHudResult {
   const env = options.env ?? process.env;
   const cliHome = resolveCliHome(options.cliHome, env);
@@ -210,8 +261,11 @@ export function writeHudConfigAtomic(
   return withCliHomeLockSync(
     cliHome,
     () => {
-      // Re-validate existing file under the lock so corrupted JSON is never overwritten.
-      readJsonObjectSync(configPath, true);
+      // Re-validate existing file and draft version under the lock so corrupted JSON or concurrent writes are preserved.
+      const current = readConfigWithVersionSync(configPath);
+      if (options.expectedVersion !== undefined && current.version !== options.expectedVersion) {
+        throw new HudConfigConflictError(configPath);
+      }
       const next = cloneHudConfig(config);
       writeJsonAtomicSync(configPath, next);
       return {

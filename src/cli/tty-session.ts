@@ -13,7 +13,11 @@ export interface TtyInputStream {
   resume(): unknown;
   pause(): unknown;
   on(event: 'data', listener: (chunk: Buffer | string) => void): unknown;
+  on(event: 'end' | 'close', listener: () => void): unknown;
+  on(event: 'error', listener: (err: Error) => void): unknown;
   off(event: 'data', listener: (chunk: Buffer | string) => void): unknown;
+  off(event: 'end' | 'close', listener: () => void): unknown;
+  off(event: 'error', listener: (err: Error) => void): unknown;
 }
 
 export interface TtyOutputStream {
@@ -32,6 +36,7 @@ export interface AltScreenTtySessionOptions<TResult> {
   readonly render: () => void;
   readonly onKey: (seq: string, finish: (result: TResult) => void) => void;
   readonly onEscTimeout: (finish: (result: TResult) => void) => void;
+  readonly onClose?: (finish: (result: TResult) => void) => void;
 }
 
 export function isInteractiveTty(
@@ -49,11 +54,35 @@ export async function runAltScreenTtySession<TResult>(options: AltScreenTtySessi
   let escTimer: ReturnType<typeof setTimeout> | null = null;
   let rawModeEnabled = false;
   let onData: ((chunk: Buffer | string) => void) | null = null;
+  let onStreamClose: (() => void) | null = null;
+  let onStreamError: ((err: Error) => void) | null = null;
+  let onResize: (() => void) | null = null;
 
   const clearPendingEsc = (): void => {
     if (escTimer !== null) {
       clearTimeout(escTimer);
       escTimer = null;
+    }
+  };
+
+  const detachListeners = (): void => {
+    clearPendingEsc();
+    if (onResize !== null) {
+      stdout.off('resize', onResize);
+      onResize = null;
+    }
+    if (onData !== null) {
+      stdin.off('data', onData);
+      onData = null;
+    }
+    if (onStreamClose !== null) {
+      stdin.off('end', onStreamClose);
+      stdin.off('close', onStreamClose);
+      onStreamClose = null;
+    }
+    if (onStreamError !== null) {
+      stdin.off('error', onStreamError);
+      onStreamError = null;
     }
   };
 
@@ -65,48 +94,81 @@ export async function runAltScreenTtySession<TResult>(options: AltScreenTtySessi
     }
     stdin.resume();
     render();
-    stdout.on('resize', render);
 
-    return await new Promise<TResult>((resolve) => {
+    return await new Promise<TResult>((resolve, reject) => {
       let settled = false;
       const finish = (result: TResult): void => {
         if (settled) return;
         settled = true;
-        clearPendingEsc();
-        if (onData !== null) {
-          stdin.off('data', onData);
-          onData = null;
-        }
+        detachListeners();
         resolve(result);
+      };
+      const fail = (err: unknown): void => {
+        if (settled) return;
+        settled = true;
+        detachListeners();
+        reject(err);
+      };
+
+      onResize = (): void => {
+        if (settled) return;
+        try {
+          render();
+        } catch (err) {
+          fail(err);
+        }
       };
 
       onData = (chunk: Buffer | string): void => {
-        clearPendingEsc();
-        const raw = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-        const seq = pendingEsc ? `${ESC_CHAR}${raw}` : raw;
-        pendingEsc = false;
+        if (settled) return;
+        try {
+          clearPendingEsc();
+          const raw = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+          const seq = pendingEsc ? `${ESC_CHAR}${raw}` : raw;
+          pendingEsc = false;
 
-        if (seq === ESC_CHAR) {
-          pendingEsc = true;
-          escTimer = setTimeout(() => {
-            escTimer = null;
-            pendingEsc = false;
-            onEscTimeout(finish);
-          }, escTimeoutMs);
-          return;
+          if (seq === ESC_CHAR) {
+            pendingEsc = true;
+            escTimer = setTimeout(() => {
+              escTimer = null;
+              pendingEsc = false;
+              if (settled) return;
+              try {
+                onEscTimeout(finish);
+              } catch (err) {
+                fail(err);
+              }
+            }, escTimeoutMs);
+            return;
+          }
+
+          onKey(seq, finish);
+        } catch (err) {
+          fail(err);
         }
-
-        onKey(seq, finish);
       };
 
+      onStreamClose = (): void => {
+        if (settled) return;
+        try {
+          (options.onClose ?? onEscTimeout)(finish);
+        } catch (err) {
+          fail(err);
+        }
+      };
+
+      onStreamError = (err: Error): void => {
+        fail(err);
+      };
+
+      stdout.on('resize', onResize);
       stdin.on('data', onData);
+      stdin.on('end', onStreamClose);
+      stdin.on('close', onStreamClose);
+      stdin.on('error', onStreamError);
     });
   } finally {
-    clearPendingEsc();
-    stdout.off('resize', render);
-    if (onData !== null) {
-      stdin.off('data', onData);
-    }
+    detachListeners();
     if (rawModeEnabled && typeof stdin.setRawMode === 'function') {
       try {
         stdin.setRawMode(false);
@@ -114,7 +176,15 @@ export async function runAltScreenTtySession<TResult>(options: AltScreenTtySessi
         // Ignore raw mode restore failure if stream already closed.
       }
     }
-    stdin.pause();
-    stdout.write(`${CURSOR_SHOW}${ALT_SCREEN_EXIT}`);
+    try {
+      stdin.pause();
+    } catch {
+      // Ignore pause failure if stream already closed.
+    }
+    try {
+      stdout.write(`${CURSOR_SHOW}${ALT_SCREEN_EXIT}`);
+    } catch {
+      // Ignore write failure during terminal restore.
+    }
   }
 }
