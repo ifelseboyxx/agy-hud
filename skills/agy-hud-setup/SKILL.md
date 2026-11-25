@@ -34,7 +34,7 @@ description: 安装、接入、诊断或卸载 agy-hud 状态栏插件并检查�
    node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs unwire
    agy plugin uninstall agy-hud
    ```
-   - 若用户直接运行了 `agy plugin uninstall agy-hud` 而未先 `unwire`，残留 `CLI Shim` 会在执行时向 `stderr` 输出精确的 `rm` / `del` 清理提示并以退出码 `1` 退出（绝不自删）；也可再执行一次 `unwire` 自动清理。
+   - 若用户直接运行了 `agy plugin uninstall agy-hud` 而未先 `unwire`，插件目录与 `install.mjs` 已被删除；调用残留 `CLI Shim` 会在 `stderr` 输出精确的 `rm` / `del` 清理提示并以退出码 `1` 退出（绝不自删）。按提示手动删除该 shim 文件，并在 Antigravity CLI 中执行 `/statusline delete` 恢复默认状态栏即可。
 
 ## 启停与回退
 

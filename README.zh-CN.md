@@ -111,7 +111,7 @@ agy plugin uninstall agy-hud
 ```
 
 - **会话内快速回退**：在 Antigravity CLI 中直接输入 `/statusline delete`，即可立即清除自定义状态栏并回退为内置默认状态栏。
-- **未先 `unwire` 就卸载了插件？** 调用残留的 `agy-hud` 命令会在 `stderr` 打印精确的 `rm` / `del` 删除命令并以退出码 `1` 退出（绝不自删文件），可直接手动删除或补跑 `unwire`。
+- **未先 `unwire` 就卸载了插件？** 调用残留的 `agy-hud` 命令会在 `stderr` 打印精确的 `rm` / `del` 删除命令并以退出码 `1` 退出（绝不自删文件）；按提示手动删除该 shim 文件，并在 Antigravity CLI 中执行 `/statusline delete`（或手动清理 `~/.gemini/antigravity-cli/settings.json` 中的 `statusLine`）即可恢复状态栏。
 - **源码 / 链接安装卸载**：在本地源码仓库根目录执行 `node scripts/install.mjs uninstall --restore-statusline`。
 - **文件清理范围**：`unwire` + `agy plugin uninstall` 会移除 `~/.gemini/config/plugins/agy-hud`、归属本安装的 `agy-hud` 命令，并在恢复原 `statusLine` 后删除 `~/.gemini/antigravity-cli/cache/agy-hud-statusline-backup.json`。如需彻底清空个人偏好与本地缓存，可按需手动删除 `~/.gemini/antigravity-cli/hud-config.json` 与 `~/.gemini/antigravity-cli/cache/agy_hud_*`。
 
@@ -156,7 +156,7 @@ agy-hud configure compact
 # 一次命令内完成预设切换、行/片段插拔与自定义行序
 agy-hud configure compact --enable tools,agents --disable activity,cost --order identity,usage,tools,agents
 
-# 调整顶层选项、行内片段或兼容旧 show* 别名
+# 调整顶层选项或行内片段
 agy-hud configure --set osc8Links=false --set maxAgentChips=6 --set segments.perf=true
 
 # 重置为默认 full 配置
@@ -175,8 +175,6 @@ agy-hud configure --reset
 | `segments` | `model`、`git`、`duration`、`badges`、`cost`、`perf`、`context`、`quota` 的布尔开关 | 全部 `true` | 控制 `identity`、`usage`（及 `zen` 折叠尾部）的行内片段开关。 |
 | `osc8Links` | `boolean` | `true` | 是否为 `+N more` / `snapshot` 输出 OSC 8 超链接（`NO_COLOR`、`TERM=dumb`、SSH 下自动关闭）。 |
 | `maxAgentChips` | 整数 `0..20` | `8` | Swarm/Agent 芯片单行最大显示数量（超出折叠为 `+N more`，`0` 为隐藏）。 |
-
-`hud-config.json` 与 `--set` 继续无损兼容旧版 `showModeLine`、`showPerfCapsule`、`showQuota`、`showCost`、`showSwarmChips`、`showToolsLine`、`showSkillsMcpLine`、`showTodosLine` 键名。
 
 </details>
 
@@ -199,7 +197,7 @@ agy-hud import-profile --in ./agy-profile --merge-mcp
 ## 安全与可靠性
 
 - **零运行时依赖**：构建为独立 ESM 产物（`dist/hud.mjs`、`dist/cli.mjs`、`dist/mcp-hud.mjs`），仅使用 Node.js 内置模块（`node:sqlite`、`node:fs`、`node:child_process`）与纯 TypeScript Protobuf 解码器。
-- **只读遥测与路径隔离**：会话 SQLite 数据库与 Antigravity App/IDE 目录严格以只读方式访问（`?mode=ro` / `?immutable=1`，50ms 超时），所有缓存文件均收口于 `<cliHome>/cache`；`conversation_id`、`transcript_path` 与 Skill 路径均经可信根目录校验，阻断路径穿越与符号链接逃逸。
+- **只读遥测与路径隔离**：会话 SQLite 数据库与 Antigravity App/IDE 目录严格以只读方式访问（`?immutable=1` 或在系统临时目录创建隔离的 WAL 只读副本，50ms 超时，对宿主目录零写入），所有缓存文件均收口于 `<cliHome>/cache`；`conversation_id`、`transcript_path` 与 Skill 路径均经可信根目录校验，阻断路径穿越与符号链接逃逸。
 - **归属校验与原子回滚**：`settings.json` 由单一带锁写入模块（`src/cli/installer/settings.ts`）管理；命令启动器携带 `agy-hud-shim:v1` 归属头（Windows 下自动成对生成 `.cmd` 与伴生 POSIX 脚本），在 `wire`/`install` 时执行 5 秒 `--help` 冒烟门禁且绝不修改 shell rc 或 Windows 注册表；预检阶段拒绝覆盖外部文件或符号链接，`off` 与 `unwire`/`uninstall` 严格校验规范路径归属，损坏的 JSON 报错并原样保留，失败事务按字节校验原子回滚。
 - **纯本地数据边界**：仅读取 statusLine stdin JSON、本地 Antigravity 会话目录、当前目录 `.git/HEAD` 及（迁移命令中的）`~/.gemini/config`，不发起任何网络请求；MCP App HTML 完全内联且符合 `default-src 'none'` CSP 策略。
 

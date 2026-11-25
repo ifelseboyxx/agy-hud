@@ -111,7 +111,7 @@ agy plugin uninstall agy-hud
 ```
 
 - **Quick in-session revert**: run `/statusline delete` inside Antigravity CLI to switch back to the built-in default status line immediately.
-- **Uninstalled plugin before running `unwire`?** Running the leftover `agy-hud` command prints the exact `rm` / `del` path on `stderr` and exits `1` without deleting files on its own; you can remove that file directly or run `unwire`.
+- **Uninstalled plugin before running `unwire`?** Running the leftover `agy-hud` command prints the exact `rm` / `del` path on `stderr` and exits `1` without deleting files on its own; delete that shim file manually and run `/statusline delete` inside Antigravity CLI (or remove `statusLine` from `~/.gemini/antigravity-cli/settings.json`) to revert the status line.
 - **Source / link-install uninstall**: inside a local checkout, run `node scripts/install.mjs uninstall --restore-statusline`.
 - **File footprint**: `unwire` + `agy plugin uninstall` removes `~/.gemini/config/plugins/agy-hud`, the owned `agy-hud` command, and `~/.gemini/antigravity-cli/cache/agy-hud-statusline-backup.json` (after restoring your previous `statusLine`). Optional preferences (`~/.gemini/antigravity-cli/hud-config.json`) and local snapshot caches (`~/.gemini/antigravity-cli/cache/agy_hud_*`) can be deleted manually if you want a full clean slate.
 
@@ -156,7 +156,7 @@ agy-hud configure compact
 # Enable, disable, or reorder Line Modules and Inline Segments in one command
 agy-hud configure compact --enable tools,agents --disable activity,cost --order identity,usage,tools,agents
 
-# Update top-level options, segments, or legacy show* aliases
+# Update top-level options or inline segments
 agy-hud configure --set osc8Links=false --set maxAgentChips=6 --set segments.perf=true
 
 # Reset to full defaults
@@ -175,8 +175,6 @@ Settings live in `~/.gemini/antigravity-cli/hud-config.json` (respects `GEMINI_C
 | `segments` | Booleans for `model`, `git`, `duration`, `badges`, `cost`, `perf`, `context`, `quota` | All `true` | Toggleable inline segments within `identity` and `usage` (and `zen` folded tail). |
 | `osc8Links` | `boolean` | `true` | Emit OSC 8 hyperlinks on `+N more` / `snapshot` (suppressed under `NO_COLOR`, `TERM=dumb`, or SSH). |
 | `maxAgentChips` | integer `0..20` | `8` | Maximum Swarm/Agent chips shown before `+N more` (`0` hides the row). |
-
-Legacy `showModeLine`, `showPerfCapsule`, `showQuota`, `showCost`, `showSwarmChips`, `showToolsLine`, `showSkillsMcpLine`, and `showTodosLine` keys remain supported in `hud-config.json` and `--set` aliases.
 
 </details>
 
@@ -199,7 +197,7 @@ agy-hud import-profile --in ./agy-profile --merge-mcp
 ## Security & Reliability
 
 - **Zero runtime dependencies**: bundled into self-contained ESM (`dist/hud.mjs`, `dist/cli.mjs`, `dist/mcp-hud.mjs`) using only Node.js built-ins (`node:sqlite`, `node:fs`, `node:child_process`) and a pure-TypeScript Protobuf decoder.
-- **Read-only telemetry & path containment**: session SQLite databases and Antigravity App/IDE roots are accessed strictly read-only (`?mode=ro` / `?immutable=1`, 50ms timeout) with all caches confined to `<cliHome>/cache`. `conversation_id`, `transcript_path`, and skill paths are verified against trusted roots to block traversal and symlink escapes.
+- **Read-only telemetry & path containment**: session SQLite databases and Antigravity App/IDE roots are accessed strictly read-only (`?immutable=1` or an isolated temporary WAL snapshot copy under `os.tmpdir()`, 50ms timeout, zero writes to host roots) with all caches confined to `<cliHome>/cache`. `conversation_id`, `transcript_path`, and skill paths are verified against trusted roots to block traversal and symlink escapes.
 - **Ownership-gated writes & atomic rollback**: `settings.json` is written through a single locked writer (`src/cli/installer/settings.ts`). Command launchers carry explicit `agy-hud-shim:v1` ownership headers (including a Windows `.cmd` + companion POSIX script pair) and pass a `5 s` `--help` smoke check during `wire`/`install` without touching shell rc files or the Windows Registry. Preflight refuses foreign files or symlinks before staging anything, `off`/`unwire`/`uninstall` verify canonical ownership, corrupt user JSON fails closed without being overwritten, and failed `install`/`wire` transactions roll back atomically.
 - **Local-only scope**: reads statusLine stdin JSON, local Antigravity session roots, local `.git/HEAD`, and (during profile commands) `~/.gemini/config`. Makes no network requests; the MCP App HTML is 100% self-contained (`default-src 'none'` CSP compliant).
 

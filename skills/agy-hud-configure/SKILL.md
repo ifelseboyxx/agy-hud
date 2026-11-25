@@ -33,10 +33,10 @@ description: 配置 agy-hud 状态栏模块、预设方案（zen/minimal/compact
   ```bash
   agy-hud configure compact --enable tools,agents --disable activity,cost --order identity,usage,tools,agents
   ```
-- 单独修改顶层选项（`osc8Links`、`maxAgentChips`）、片段（`segments.<id>`）或兼容旧 `show*` 别名：
+- 单独修改顶层选项（`osc8Links`、`maxAgentChips`）或行内片段（`segments.<id>`）：
   ```bash
   agy-hud configure --set osc8Links=false --set maxAgentChips=6 --set segments.perf=true
-  agy-hud configure --set showCost=false --set showSkillsMcpLine=true
+  agy-hud configure --set segments.cost=false --enable skills,mcps
   ```
 - 重置为默认 `full` 配置：
   ```bash
