@@ -1,21 +1,6 @@
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
 
-import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
-import {
-  BRIGHT_CYAN,
-  BRIGHT_RED,
-  BRIGHT_WHITE,
-  BRIGHT_YELLOW,
-  CYAN,
-  DEFAULT_TERM_WIDTH,
-  GRAY,
-  GREEN,
-  MAGENTA,
-  RESET,
-  truncateToWidth,
-  YELLOW,
-} from '../render/ansi.ts';
-import { type ActivityLineFormatOptions, packActivityLine, type PackableLineItem } from '../render/pack-line.ts';
+import { isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
 import type {
   ActivityAgentEntry,
   AgentEntry,
@@ -27,9 +12,7 @@ import type {
 } from '../types.ts';
 import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
 
-const AGENT_RETENTION_SECONDS = 60;
 const TAIL_READ_BYTES = 16384;
-const MAX_VISIBLE_AGENTS = 8;
 const MAX_AGENT_LABEL_LEN = 28;
 
 const WORKING_STATES: ReadonlySet<string> = new Set([
@@ -47,10 +30,6 @@ const WAITING_STATES: ReadonlySet<string> = new Set(['WAITING', 'IDLE', 'PAUSED'
 export interface ParsedStdinSubagent extends AgentEntry {
   key: string;
   altKey: string;
-}
-
-export interface RuntimeBadgesOptions {
-  hasTodosLine?: boolean;
 }
 
 function classifyStatus(rawStatus: unknown): AgentState {
@@ -217,15 +196,17 @@ function loadSwarmEntries(cliHome: string, data: StatusLineData): AgentEntry[] |
       continue;
     }
     const role = typeof member.role === 'string' ? member.role.trim().toLowerCase() : '';
-    if (name === 'coordinator' || role === 'coordinator' || member.killed === true) {
+    if (name === 'coordinator' || role === 'coordinator') {
       continue;
     }
+    const isKilled = member.killed === true;
+    const stoppedTs = isKilled ? parseIsoTimestampSec(member.killed_at ?? member.stopped_at) : null;
     entries.push({
       name,
       type: role.length > 0 && role !== 'worker' ? role : '',
       model: typeof member.model === 'string' ? member.model.trim() : '',
-      state: memberSwarmState(cliHome, member),
-      ts: null,
+      state: isKilled ? 'done' : memberSwarmState(cliHome, member),
+      ts: stoppedTs,
     });
   }
   return entries;
@@ -267,7 +248,7 @@ export function syncSwarmFromStdin(
   }
   for (const sa of stdinEntries) {
     const target = byName.get(sa.key) ?? byName.get(sa.altKey);
-    if (!target) {
+    if (!target || target.state === 'done') {
       continue;
     }
     if (sa.state === 'working' || sa.state === 'waiting') {
@@ -332,131 +313,4 @@ export function collectAgentsSummary(
     total: kind === 'swarm' ? alive : entries.length,
     entries,
   };
-}
-
-export function formatRuntimeBadges(data: StatusLineData, options?: RuntimeBadgesOptions): string[] {
-  const badges: string[] = [];
-  const aname = nonEmptyStr(data.agent?.name);
-  if (aname !== undefined) {
-    badges.push(`${BRIGHT_CYAN}@${aname.slice(0, 20)}${RESET}`);
-  }
-
-  const battle = data.battle;
-  if (battle) {
-    const bstatus = nonEmptyStr(battle.status)?.toLowerCase() ?? '';
-    if (
-      bstatus.length > 0 &&
-      bstatus !== 'none' &&
-      bstatus !== 'inactive' &&
-      bstatus !== 'ended' &&
-      bstatus !== 'idle'
-    ) {
-      const arm = nonEmptyStr(battle.focused_arm);
-      const armStr = arm !== undefined ? ` ${arm}` : '';
-      badges.push(`${BRIGHT_YELLOW}Battle${armStr}${RESET}`);
-    }
-  }
-
-  if (options?.hasTodosLine !== true && typeof data.task_count === 'number' && data.task_count > 0) {
-    badges.push(`${CYAN}BG ${BRIGHT_WHITE}${data.task_count}${RESET}`);
-  }
-
-  if (data.tool_confirmation_pending === true) {
-    badges.push(`${BRIGHT_RED}! Approval${RESET}`);
-  }
-
-  if (typeof data.pending_input_count === 'number' && data.pending_input_count > 0) {
-    badges.push(`${YELLOW}Q:${data.pending_input_count}${RESET}`);
-  }
-
-  return badges;
-}
-
-export function formatAgentsBadge(summary: AgentsSummary | null | undefined): string {
-  if (!summary || summary.alive <= 0) {
-    return '';
-  }
-  const { kind, working, alive, total } = summary;
-  if (kind === 'swarm') {
-    const wColor = working > 0 ? BRIGHT_YELLOW : GRAY;
-    return `${MAGENTA}Swarm ${wColor}${working}${GRAY}/${BRIGHT_WHITE}${alive}${RESET}`;
-  }
-  if (total > alive) {
-    return `${MAGENTA}Agents ${BRIGHT_YELLOW}${alive}${GRAY}/${BRIGHT_WHITE}${total}${RESET}`;
-  }
-  return `${MAGENTA}Agents ${BRIGHT_YELLOW}${alive}${RESET}`;
-}
-
-function makeMemberChipItem(entry: AgentEntry): PackableLineItem {
-  const icon = entry.state === 'working' ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`;
-  return {
-    render: () => `${icon} ${MAGENTA}${entry.name}${RESET}`,
-    renderEllipsized: (maxCols: number) =>
-      maxCols >= 3
-        ? `${icon} ${MAGENTA}${truncateToWidth(entry.name, maxCols - 2)}${RESET}`
-        : `${MAGENTA}${truncateToWidth(entry.name, maxCols)}${RESET}`,
-  };
-}
-
-export function formatAgentsSection(
-  summary: AgentsSummary | null | undefined,
-  maxAgentChips: number = MAX_VISIBLE_AGENTS,
-  nowSec: number = Date.now() / 1000,
-  termWidth: number = DEFAULT_TERM_WIDTH,
-  options?: ActivityLineFormatOptions,
-): string {
-  if (!summary || summary.entries.length === 0 || maxAgentChips <= 0) {
-    return '';
-  }
-  const { kind, working, alive, total, entries } = summary;
-
-  if (alive > 0) {
-    const ordered = [...entries.filter((e) => e.state === 'working'), ...entries.filter((e) => e.state === 'waiting')];
-    const prefix =
-      kind === 'swarm'
-        ? `  ${working > 0 ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`} Swarm ${GRAY}(${working === 0 ? `0/${alive} waiting` : `${working}/${alive}`}):${RESET} `
-        : `  ${YELLOW}◐${RESET} Agents ${GRAY}(${total > alive ? `${alive}/${total}` : String(alive)}):${RESET} `;
-    return packActivityLine({
-      prefix,
-      separator: ', ',
-      items: ordered.map(makeMemberChipItem),
-      maxItems: maxAgentChips,
-      termWidth,
-      formatOverflow: options?.formatOverflow,
-    });
-  }
-
-  const recent: { entry: AgentEntry; ts: number; idx: number }[] = [];
-  for (let idx = 0; idx < entries.length; idx += 1) {
-    const entry = entries[idx];
-    if (entry && entry.state === 'done' && isFiniteNum(entry.ts) && nowSec - entry.ts <= AGENT_RETENTION_SECONDS) {
-      recent.push({ entry, ts: entry.ts, idx });
-    }
-  }
-  if (recent.length === 0) {
-    return '';
-  }
-
-  const byNewest = [...recent].sort((a, b) => (b.ts !== a.ts ? b.ts - a.ts : b.idx - a.idx));
-  const doneItems: PackableLineItem[] = byNewest.map(({ entry }) => ({
-    render: () => `${MAGENTA}${entry.name}${RESET}`,
-    renderEllipsized: (maxCols: number) => `${MAGENTA}${truncateToWidth(entry.name, maxCols)}${RESET}`,
-  }));
-  return packActivityLine({
-    prefix: `  ${GREEN}✓${RESET} Agents ${GRAY}(${recent.length} done):${RESET} `,
-    separator: ', ',
-    items: doneItems,
-    maxItems: maxAgentChips,
-    termWidth,
-    formatOverflow: options?.formatOverflow,
-    sortSelectedIndices: (selected) =>
-      [...selected].sort((ia, ib) => {
-        const a = byNewest[ia];
-        const b = byNewest[ib];
-        if (!a || !b) {
-          return ia - ib;
-        }
-        return a.ts !== b.ts ? a.ts - b.ts : a.idx - b.idx;
-      }),
-  });
 }

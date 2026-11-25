@@ -125,31 +125,43 @@ function computeToolsLineLayout(
   }
 
   let shownCompleted = 0;
-  for (let k = 1; k <= completedWidths.length; k += 1) {
-    const hidden = totalSlots - shownRunning - k;
-    if (runningWidths.length > 0 && hidden <= 0) {
-      break;
+  if (shownRunning === runningWidths.length) {
+    for (let k = 1; k <= completedWidths.length; k += 1) {
+      const hidden = totalSlots - shownRunning - k;
+      if (runningWidths.length > 0 && hidden <= 0) {
+        break;
+      }
+      const width = completedWidths[k - 1] ?? 0;
+      const itemCols = shownRunning === 0 && k === 1 ? width : HUD_TOOLS_SEP_COLS + width;
+      curCols += itemCols;
+      const overflowCols = hidden > 0 ? HUD_TOOLS_SEP_COLS + visibleLen(formatOverflow(hidden)) : 0;
+      if (curCols + overflowCols <= budget) {
+        shownCompleted = k;
+      } else {
+        break;
+      }
     }
-    const width = completedWidths[k - 1] ?? 0;
-    const itemCols = shownRunning === 0 && k === 1 ? width : HUD_TOOLS_SEP_COLS + width;
-    curCols += itemCols;
-    const overflowCols = hidden > 0 ? HUD_TOOLS_SEP_COLS + visibleLen(formatOverflow(hidden)) : 0;
-    if (curCols + overflowCols <= budget) {
-      shownCompleted = k;
-    } else {
-      break;
-    }
+  }
+  if (runningWidths.length === 0 && completedWidths.length > 0 && shownCompleted === 0) {
+    shownCompleted = 1;
   }
   return { allFit: false, shownRunning, shownCompleted };
 }
 
-export function computeHudVisibleCompletedCap(
+export interface HudVisibleToolsCap {
+  readonly shownRunning: number;
+  readonly shownCompleted: number;
+}
+
+export function computeHudVisibleToolsCap(
   runningTools: readonly HudToolRunningSpec[],
   completedTools: readonly HudToolCompletedSpec[],
   maxCols: number,
   formatOverflow: (hiddenCount: number) => string = formatDefaultOverflow,
-): number {
-  if (completedTools.length === 0) return 0;
+): HudVisibleToolsCap {
+  if (runningTools.length === 0 && completedTools.length === 0) {
+    return { shownRunning: 0, shownCompleted: 0 };
+  }
   const runningWidths = runningTools
     .slice(-MAX_RUNNING_TOOLS)
     .reverse()
@@ -160,14 +172,24 @@ export function computeHudVisibleCompletedCap(
   const completedWidths = completedTools
     .slice(0, MAX_TOOL_SUMMARY)
     .map((ct) => visibleLen(`✓ ${ct.disp} ×${ct.count}`));
-  return computeToolsLineLayout(
+  const layout = computeToolsLineLayout(
     runningWidths,
     runningTools.length,
     completedWidths,
     completedTools.length,
     maxCols,
     formatOverflow,
-  ).shownCompleted;
+  );
+  return { shownRunning: layout.shownRunning, shownCompleted: layout.shownCompleted };
+}
+
+export function computeHudVisibleCompletedCap(
+  runningTools: readonly HudToolRunningSpec[],
+  completedTools: readonly HudToolCompletedSpec[],
+  maxCols: number,
+  formatOverflow: (hiddenCount: number) => string = formatDefaultOverflow,
+): number {
+  return computeHudVisibleToolsCap(runningTools, completedTools, maxCols, formatOverflow).shownCompleted;
 }
 
 export function formatToolsLine(

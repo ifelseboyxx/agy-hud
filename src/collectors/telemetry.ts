@@ -1,10 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { pathToFileURL } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { isFiniteNum, isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
-import { fmtTokens, GRAY, RESET } from '../render/ansi.ts';
+import { writeBufferAtomicSync } from '../fs-utils.ts';
 import type {
   CliSettings,
   GenMetadataRow,
@@ -22,11 +19,12 @@ import {
 import type { CompactionCheckpoint } from './compaction.ts';
 import { parseGenMetadataBlob } from './proto.ts';
 import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
+import { readSqliteVersionTag, withReadonlyDb } from './sqlite-readonly.ts';
 
 export { parseGenMetadataBlob } from './proto.ts';
+export { withReadonlyDb } from './sqlite-readonly.ts';
 
 const TELEMETRY_CACHE_VERSION = 2;
-const SQLITE_TIMEOUT_MS = 50;
 const MIN_STREAM_WINDOW_SEC = 0.5;
 const MAX_BURST_STREAM_TPS = 400.0;
 
@@ -65,41 +63,6 @@ interface DbLoadResult {
   ckpt: CompactionCheckpoint | null;
 }
 
-export function statSignature(filePath: string): [number, number] {
-  try {
-    const st = statSync(filePath, { bigint: true });
-    return [Number(st.mtimeNs), Number(st.size)];
-  } catch {
-    return [0, 0];
-  }
-}
-
-function sigMatches(a: readonly number[], b: readonly number[]): boolean {
-  return a.length === b.length && a.every((v, idx) => v === b[idx]);
-}
-
-export function openReadonlyDb(dbPath: string): DatabaseSync | null {
-  const baseUri = pathToFileURL(dbPath).href;
-  const targets = [`${baseUri}?mode=ro`, `${baseUri}?immutable=1`];
-  for (const uri of targets) {
-    let db: DatabaseSync | null = null;
-    try {
-      db = new DatabaseSync(uri, { readOnly: true, timeout: SQLITE_TIMEOUT_MS });
-      db.prepare('PRAGMA schema_version').get();
-      return db;
-    } catch {
-      if (db !== null) {
-        try {
-          db.close();
-        } catch {
-          // Ignore close error on failed probe.
-        }
-      }
-    }
-  }
-  return null;
-}
-
 function toNumber(val: unknown): number {
   if (typeof val === 'number') {
     return val;
@@ -110,16 +73,8 @@ function toNumber(val: unknown): number {
   return 0;
 }
 
-function fetchUpdatedRows(
-  dbPath: string,
-  cachedRows: Record<string, GenMetadataRow>,
-  cachedCkpt: CompactionCheckpoint | null,
-): DbLoadResult {
-  const db = openReadonlyDb(dbPath);
-  if (db === null) {
-    return { rows: cachedRows, ckpt: cachedCkpt };
-  }
-  try {
+function fetchUpdatedRows(dbPath: string, cachedRows: Record<string, GenMetadataRow>): DbLoadResult | null {
+  return withReadonlyDb<DbLoadResult>(dbPath, (db) => {
     const ckpt = fetchLatestCheckpoint(db);
     const statsRow = db.prepare('SELECT COUNT(*) AS cnt, COALESCE(MAX(idx), -1) AS max_idx FROM gen_metadata').get();
     const count = isPlainObject(statsRow) ? toNumber(statsRow.cnt) : 0;
@@ -149,9 +104,7 @@ function fetchUpdatedRows(
       }
     }
     return { rows: updated, ckpt };
-  } finally {
-    db.close();
-  }
+  });
 }
 
 interface CachedTelemetryLookup {
@@ -175,16 +128,6 @@ function isGenMetadataRow(value: unknown): value is GenMetadataRow {
   );
 }
 
-function parseCachedSig(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const sig: number[] = [];
-  for (const item of value) {
-    if (!isFiniteNum(item)) return null;
-    sig.push(item);
-  }
-  return sig;
-}
-
 function parseCachedRows(value: unknown): Record<string, GenMetadataRow> | null {
   if (!isPlainObject(value)) return null;
   const rows: Record<string, GenMetadataRow> = {};
@@ -195,7 +138,7 @@ function parseCachedRows(value: unknown): Record<string, GenMetadataRow> | null 
   return rows;
 }
 
-function readTelemetryCache(cacheFile: string, expectedSig: readonly number[]): CachedTelemetryLookup {
+function readTelemetryCache(cacheFile: string, expectedVersionTag: string): CachedTelemetryLookup {
   if (!existsSync(cacheFile)) {
     return { hit: false, rows: {}, ckpt: null };
   }
@@ -204,13 +147,13 @@ function readTelemetryCache(cacheFile: string, expectedSig: readonly number[]): 
     if (!isPlainObject(parsed) || parsed.v !== TELEMETRY_CACHE_VERSION) {
       return { hit: false, rows: {}, ckpt: null };
     }
-    const sig = parseCachedSig(parsed.sig);
+    const versionTag = typeof parsed.versionTag === 'string' && parsed.versionTag.length > 0 ? parsed.versionTag : null;
     const rows = parseCachedRows(parsed.rows);
-    if (sig === null || rows === null) {
+    if (versionTag === null || rows === null) {
       return { hit: false, rows: {}, ckpt: null };
     }
     const validCkpt = isCompactionCheckpoint(parsed.ckpt) ? parsed.ckpt : null;
-    return { hit: sigMatches(sig, expectedSig), rows, ckpt: validCkpt };
+    return { hit: versionTag === expectedVersionTag, rows, ckpt: validCkpt };
   } catch {
     return { hit: false, rows: {}, ckpt: null };
   }
@@ -222,40 +165,44 @@ function loadDbRows(dataRoot: string, cacheCliHome: string, convId: string): DbL
     return { rows: {}, ckpt: null };
   }
   const dbPath = resolveCliSubdirFile(dataRoot, 'conversations', `${safeId}.db`);
-  const walPath = resolveCliSubdirFile(dataRoot, 'conversations', `${safeId}.db-wal`);
-  const shmPath = resolveCliSubdirFile(dataRoot, 'conversations', `${safeId}.db-shm`);
-  if (dbPath === null || walPath === null || shmPath === null || !existsSync(dbPath)) {
+  if (dbPath === null || !existsSync(dbPath)) {
     return { rows: {}, ckpt: null };
   }
-  const sig = [...statSignature(dbPath), ...statSignature(walPath)];
+  const versionTag = readSqliteVersionTag(dbPath);
+  if (versionTag.length === 0) {
+    return { rows: {}, ckpt: null };
+  }
   const cacheFile = resolveCliSubdirFile(cacheCliHome, 'cache', `agy_hud_telemetry_${safeId}.json`);
   if (cacheFile === null) {
     return { rows: {}, ckpt: null };
   }
 
-  const cached = readTelemetryCache(cacheFile, sig);
+  const cached = readTelemetryCache(cacheFile, versionTag);
   if (cached.hit) {
     return { rows: cached.rows, ckpt: cached.ckpt };
   }
   const cachedRows = cached.rows;
   const cachedCkpt = cached.ckpt;
 
-  let loaded: DbLoadResult;
+  let loaded: DbLoadResult | null;
   try {
-    loaded = fetchUpdatedRows(dbPath, cachedRows, cachedCkpt);
+    loaded = fetchUpdatedRows(dbPath, cachedRows);
   } catch {
     return { rows: cachedRows, ckpt: cachedCkpt };
   }
+  if (loaded === null) {
+    return { rows: cachedRows, ckpt: cachedCkpt };
+  }
 
-  try {
-    mkdirSync(path.dirname(cacheFile), { recursive: true });
-    writeFileSync(
-      cacheFile,
-      JSON.stringify({ v: TELEMETRY_CACHE_VERSION, sig, rows: loaded.rows, ckpt: loaded.ckpt }),
-      'utf8',
-    );
-  } catch {
-    // Best-effort telemetry cache write.
+  if (readSqliteVersionTag(dbPath) === versionTag) {
+    try {
+      writeBufferAtomicSync(
+        cacheFile,
+        JSON.stringify({ v: TELEMETRY_CACHE_VERSION, versionTag, rows: loaded.rows, ckpt: loaded.ckpt }),
+      );
+    } catch {
+      // Best-effort telemetry cache write.
+    }
   }
   return loaded;
 }
@@ -350,33 +297,6 @@ export function loadSessionTelemetryFromRoot(
 
 export function loadSessionTelemetry(cliHome: string, data: StatusLineData): SessionTelemetry {
   return loadSessionTelemetryFromRoot(cliHome, cliHome, resolveConversationId(data), data);
-}
-
-export function formatContextCapacity(
-  ctxObj: StatusLineContextWindow | undefined,
-  telemetry: SessionTelemetry | null | undefined,
-): string {
-  const winSize = ctxObj?.context_window_size;
-  const maxTok = isFiniteNum(winSize) && winSize > 0 ? Math.trunc(winSize) : (telemetry?.ctxMax ?? null);
-  if (!isFiniteNum(maxTok) || maxTok <= 0) {
-    return '';
-  }
-
-  if (telemetry?.compacted === true && isFiniteNum(telemetry.ctxUsed)) {
-    return `${GRAY}(~${fmtTokens(Math.trunc(telemetry.ctxUsed))}/${fmtTokens(maxTok)})${RESET}`;
-  }
-
-  let usedTok: number;
-  const ctxPct = ctxObj?.used_percentage;
-  if (isFiniteNum(ctxPct)) {
-    usedTok = Math.round((Math.max(0, ctxPct) / 100) * maxTok);
-  } else if (isFiniteNum(telemetry?.ctxUsed)) {
-    usedTok = Math.trunc(telemetry.ctxUsed);
-  } else {
-    return '';
-  }
-
-  return `${GRAY}(${fmtTokens(usedTok)}/${fmtTokens(maxTok)})${RESET}`;
 }
 
 export function resolveQuotaReset(entry: QuotaBucketItem, nowSec: number = Date.now() / 1000): QuotaResetInfo {

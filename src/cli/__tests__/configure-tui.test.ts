@@ -50,13 +50,18 @@ void describe('configure TUI state machine', () => {
     assert.equal(applyConfigureTuiKey(state, '\x1b[A'), 'noop');
   });
 
-  void it('returns save on Enter and cancel on q, Q, Esc, or Ctrl+C in either tier', () => {
+  void it('returns save on Enter in either tier', () => {
     for (const tier of ['presets', 'modules'] as const) {
       for (const saveKey of ['\r', '\n']) {
         const st = createConfigureTuiState(buildPresetConfig('compact'));
         st.tier = tier;
         assert.equal(applyConfigureTuiKey(st, saveKey), 'save');
       }
+    }
+  });
+
+  void it('returns cancel on q, Q, Esc, or Ctrl+C in either tier', () => {
+    for (const tier of ['presets', 'modules'] as const) {
       for (const cancelKey of ['q', 'Q', '\x1b', '\x03']) {
         const st = createConfigureTuiState(buildPresetConfig('compact'));
         st.tier = tier;
@@ -223,5 +228,21 @@ void describe('configure TUI live preview and frame rendering', () => {
     assert.ok(fullPlain.includes('[x]'));
     assert.ok(fullPlain.includes('[ ]'));
     assert.ok(fullPlain.includes('Inline Segments'));
+  });
+
+  void it('reflects osc8Links toggle in live preview', () => {
+    const compactOn = buildConfigurePreviewLines(buildPresetConfig('compact', { osc8Links: true }), 110, false);
+    const compactOff = buildConfigurePreviewLines(buildPresetConfig('compact', { osc8Links: false }), 110, false);
+    assert.ok(compactOn.some((line) => line.includes('· snapshot')));
+    assert.equal(
+      compactOff.some((line) => line.includes('· snapshot')),
+      false,
+    );
+  });
+
+  void it('renders bare MCP server names in live preview fixture', () => {
+    const fullPreview = buildConfigurePreviewLines(buildPresetConfig('full'), 110, false);
+    const mcpLine = fullPreview.find((line) => line.includes('MCPs (2):'));
+    assert.equal(mcpLine?.trim(), '✓ MCPs (2): agy-fast, chrome-devtools');
   });
 });

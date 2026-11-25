@@ -1,5 +1,5 @@
 import { isFiniteNum } from '../core/guards.ts';
-import type { SessionTelemetry } from '../types.ts';
+import type { SessionTelemetry, StatusLineContextWindow } from '../types.ts';
 
 export const RESET: string = '\x1b[0m';
 export const BOLD: string = '\x1b[1m';
@@ -58,12 +58,20 @@ export function isWideCodePoint(cp: number): boolean {
   );
 }
 
+const ZERO_WIDTH_CHAR_RE = /^[\p{Mn}\p{Me}\p{Cf}]$/u;
+
+function charDisplayWidth(ch: string): number {
+  if (ZERO_WIDTH_CHAR_RE.test(ch)) {
+    return 0;
+  }
+  return isWideCodePoint(ch.codePointAt(0) ?? 0) ? 2 : 1;
+}
+
 export function visibleLen(text: string): number {
   const plain = stripAnsi(text);
   let cols = 0;
   for (const ch of plain) {
-    const cp = ch.codePointAt(0) ?? 0;
-    cols += isWideCodePoint(cp) ? 2 : 1;
+    cols += charDisplayWidth(ch);
   }
   return cols;
 }
@@ -83,7 +91,13 @@ export function truncateToWidth(text: string, maxCols: number): string {
   let out = '';
   let cols = 0;
   for (const ch of plain) {
-    const w = isWideCodePoint(ch.codePointAt(0) ?? 0) ? 2 : 1;
+    const w = charDisplayWidth(ch);
+    if (w === 0) {
+      if (out.length > 0) {
+        out += ch;
+      }
+      continue;
+    }
     if (cols + w > limit - 1) {
       break;
     }
@@ -263,4 +277,31 @@ export function fitPerfCapsule(
     }
   }
   return baseLine;
+}
+
+export function formatContextCapacity(
+  ctxObj: StatusLineContextWindow | undefined,
+  telemetry: SessionTelemetry | null | undefined,
+): string {
+  const winSize = ctxObj?.context_window_size;
+  const maxTok = isFiniteNum(winSize) && winSize > 0 ? Math.trunc(winSize) : (telemetry?.ctxMax ?? null);
+  if (!isFiniteNum(maxTok) || maxTok <= 0) {
+    return '';
+  }
+
+  if (telemetry?.compacted === true && isFiniteNum(telemetry.ctxUsed)) {
+    return `${GRAY}(~${fmtTokens(Math.trunc(telemetry.ctxUsed))}/${fmtTokens(maxTok)})${RESET}`;
+  }
+
+  let usedTok: number;
+  const ctxPct = ctxObj?.used_percentage;
+  if (isFiniteNum(ctxPct)) {
+    usedTok = Math.round((Math.max(0, ctxPct) / 100) * maxTok);
+  } else if (isFiniteNum(telemetry?.ctxUsed)) {
+    usedTok = Math.trunc(telemetry.ctxUsed);
+  } else {
+    return '';
+  }
+
+  return `${GRAY}(${fmtTokens(usedTok)}/${fmtTokens(maxTok)})${RESET}`;
 }

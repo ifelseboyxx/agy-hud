@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
+import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
 import { mergeHudConfig } from '../core/hud-config.ts';
-import { resolveCliHome } from '../core/paths.ts';
+import { readJsonObjectSync, writeBufferAtomicSync } from '../fs-utils.ts';
 import type { CliSettings, HudConfig, StatusLineData, StatusLineVcs } from '../types.ts';
 import { detectAgyFlags, type AgyProcFlags } from './proc.ts';
 import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
@@ -17,27 +17,13 @@ export interface GitBranchInfo {
   dirty: boolean;
 }
 
-export function cliHomeDir(env: NodeJS.ProcessEnv = process.env): string {
-  return resolveCliHome(undefined, env);
-}
-
-function readJsonRecord(filePath: string): Record<string, unknown> | null {
-  try {
-    const raw = readFileSync(filePath, 'utf8');
-    const parsed: unknown = JSON.parse(raw);
-    return isPlainObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 export function readCliSettings(cliHome: string): CliSettings {
-  const loaded = readJsonRecord(path.join(cliHome, 'settings.json'));
+  const loaded = readJsonObjectSync(path.join(cliHome, 'settings.json'), false);
   return loaded !== null ? (loaded as CliSettings) : {};
 }
 
 export function readHudConfig(cliHome: string): HudConfig {
-  const loaded = readJsonRecord(path.join(cliHome, 'hud-config.json'));
+  const loaded = readJsonObjectSync(path.join(cliHome, 'hud-config.json'), false);
   return mergeHudConfig(loaded);
 }
 
@@ -124,7 +110,7 @@ export function getSessionElapsedSeconds(
     return null;
   }
   const nowSec = Date.now() / 1000;
-  const loaded = readJsonRecord(cacheFile);
+  const loaded = readJsonObjectSync(cacheFile, false);
   const records: Record<string, number> = Object.create(null) as Record<string, number>;
 
   if (loaded) {
@@ -140,8 +126,7 @@ export function getSessionElapsedSeconds(
     startTs = nowSec;
     records[sessionKey] = nowSec;
     try {
-      mkdirSync(path.dirname(cacheFile), { recursive: true });
-      writeFileSync(cacheFile, JSON.stringify(records), 'utf8');
+      writeBufferAtomicSync(cacheFile, JSON.stringify(records));
     } catch {
       // Best-effort session timestamp persistence.
     }

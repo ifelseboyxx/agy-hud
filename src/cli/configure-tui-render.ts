@@ -1,6 +1,3 @@
-import os from 'node:os';
-import path from 'node:path';
-
 import { HUD_LINE_IDS, HUD_SEGMENT_IDS, VALID_HUD_PRESETS } from '../core/hud-config.ts';
 import {
   BOLD,
@@ -15,7 +12,8 @@ import {
   visibleLen,
   YELLOW,
 } from '../render/ansi.ts';
-import { renderHudLines } from '../render/lines.ts';
+import { formatHudLines } from '../render/format-hud.ts';
+import { formatActivitySummarySnapshotTail, formatOsc8Overflow } from '../render/osc8.ts';
 import type {
   AgentsSummary,
   HudConfig,
@@ -37,7 +35,7 @@ const MIN_TUI_COLS = 56;
 const DEFAULT_TUI_ROWS = 28;
 const MIN_TUI_ROWS = 12;
 const PREVIEW_NOW_SEC = 1_780_000_000;
-const PREVIEW_UNUSED_CLI_HOME = path.join(os.tmpdir(), 'agy-hud-configure-preview-unused');
+const PREVIEW_OSC8_URI = 'file:///preview/agy-hud-snapshot.md';
 
 export type ConfigureTuiTier = 'presets' | 'modules';
 
@@ -145,7 +143,7 @@ function createPreviewFixture(termWidth: number): {
       { name: 'batch_search', disp: 'batch_search', target: 'src/cli', running: false, isSkillRead: false },
     ],
     skills: ['tdd', 'codebase-design'],
-    mcps: ['agy-fast (6)', 'chrome-devtools (2)'],
+    mcps: ['agy-fast', 'chrome-devtools'],
     agents: [],
   };
 
@@ -154,7 +152,7 @@ function createPreviewFixture(termWidth: number): {
     working: 2,
     waiting: 0,
     alive: 2,
-    total: 3,
+    total: 2,
     entries: [
       { name: 'Reviewer', type: 'review', model: 'Gemini 4 Flash', state: 'working', ts: PREVIEW_NOW_SEC - 15 },
       { name: 'Tester', type: 'test', model: 'Gemini 4 Flash', state: 'working', ts: PREVIEW_NOW_SEC - 8 },
@@ -195,20 +193,32 @@ export function getConfigureTier2Items(config: HudConfig): readonly ConfigureTie
 export function buildConfigurePreviewLines(config: HudConfig, termWidth: number, color: boolean): string[] {
   const width = Math.max(MIN_TUI_COLS, Math.floor(termWidth));
   const fixture = createPreviewFixture(width);
-  const lines = renderHudLines(PREVIEW_UNUSED_CLI_HOME, fixture.data, {
+  const lines = formatHudLines({
+    data: fixture.data,
+    config,
     cliSettings: {},
-    hudConfig: config,
     telemetry: fixture.telemetry,
     activity: fixture.activity,
     agentsSummary: fixture.agentsSummary,
     todos: fixture.todos,
+    termWidth: width,
     nowSec: PREVIEW_NOW_SEC,
-    agyPid: null,
-    bypass: false,
-    cliMode: 'plan',
-    branch: 'main',
-    dirty: true,
-    elapsedSeconds: 754,
+    modeOptions: { bypass: false, cliMode: 'plan' },
+    identityOptions: {
+      branch: 'main',
+      dirty: true,
+      elapsedSeconds: 754,
+      nowSec: PREVIEW_NOW_SEC,
+    },
+    ...(config.osc8Links
+      ? {
+          activityLineOptions: {
+            formatOverflow: (hiddenCount) => formatOsc8Overflow(hiddenCount, PREVIEW_OSC8_URI),
+          },
+          formatActivitySummaryTail: (remainingCols) =>
+            formatActivitySummarySnapshotTail(remainingCols, PREVIEW_OSC8_URI),
+        }
+      : {}),
   });
   return color ? lines : lines.map((line) => stripAnsi(line));
 }

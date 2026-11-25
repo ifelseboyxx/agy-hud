@@ -5,9 +5,10 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
+import { formatContextCapacity } from '../../render/ansi.ts';
 import type { StatusLineData } from '../../types.ts';
 import { computeCompactedUsed, isCompactionActive, parseKvStepIdx } from '../compaction.ts';
-import { formatContextCapacity, loadSessionTelemetry, parseGenMetadataBlob } from '../telemetry.ts';
+import { loadSessionTelemetry, parseGenMetadataBlob } from '../telemetry.ts';
 
 function encodeVarint(value: number): number[] {
   const bytes: number[] = [];

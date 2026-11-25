@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { aggregateCompletedTools } from '../../collectors/activity-parse.ts';
 import { buildPresetConfig } from '../../core/hud-config.ts';
 import { type AgentsSummary, type TranscriptActivity, type TranscriptToolEntry } from '../../types.ts';
-import { formatNamesLine, formatToolsLine } from '../activity-lines.ts';
+import { computeHudVisibleToolsCap, formatNamesLine, formatToolsLine } from '../activity-lines.ts';
 import {
   BRIGHT_CYAN,
   GRAY,
@@ -279,7 +279,7 @@ void describe('aggregateCompletedTools and formatToolsLine', () => {
     assert.ok(visibleLen(line) <= 159);
   });
 
-  void it('shrinks running tools from 2 to 1 on narrow widths and counts squeezed running call in +N more', () => {
+  void it('withholds completed tools when narrow width hides a running tool', () => {
     const tools = [
       makeTool('edit_file', { target: 'older-long-target-module.ts', running: true }),
       makeTool('run_command', { target: 'pnpm verify --filter', running: true }),
@@ -288,15 +288,13 @@ void describe('aggregateCompletedTools and formatToolsLine', () => {
       makeTool('Edit'),
       makeTool('Grep'),
     ];
-    // 2 running calls (~34 cols + ~41 cols) exceed 80 cols together -> shrink to 1 latest running call,
-    // then fit completed Read ×2 & Edit ×1 into remaining space; hidden = (2 - 1) + (3 - 2) = 2.
+    // 2 running calls (~34 cols + ~41 cols) exceed 80 cols together -> shrink to 1 latest running call;
+    // do not let completed tools steal width while a running tool is hidden: hidden = (2 - 1) + 3 = 4.
     const line = formatToolsLine(tools, false, 80);
     const plain = stripAnsi(line);
 
     assert.ok(visibleLen(line) <= 79);
-    assert.equal(plain.startsWith('  ◐ run_command: pnpm verify --filter | ✓ Read ×2 | '), true);
-    assert.equal(plain.includes('older-long-target-module.ts'), false);
-    assert.equal(plain.endsWith('| +2 more'), true);
+    assert.equal(plain, '  ◐ run_command: pnpm verify --filter | +4 more');
   });
 
   void it('ellipsizes item 0 when a single running or completed tool exceeds narrow budget with +N more', () => {
@@ -418,5 +416,26 @@ void describe('aggregateCompletedTools and formatToolsLine', () => {
     for (const line of activityLines) {
       assert.ok(visibleLen(line) <= 79, `Activity Line exceeded 79 cols (${visibleLen(line)}): ${stripAnsi(line)}`);
     }
+  });
+
+  void it('measures combining diacritics as zero-width and keeps clusters intact during truncation', () => {
+    const accented = 'cafe\u0301';
+    assert.equal(visibleLen(accented), 4);
+    assert.equal(truncateToWidth('e\u0301abcdef', 4), 'e\u0301ab…');
+    assert.equal(visibleLen(truncateToWidth('e\u0301abcdef', 4)), 4);
+  });
+
+  void it('keeps ultra-narrow 20-column Skills line within termWidth - 1 budget', () => {
+    const line = formatNamesLine('Skills', ['code-review', 'tdd', 'grilling', 'research'], undefined, 20);
+    assert.ok(visibleLen(line) <= 19, `expected <= 19 cols, got ${visibleLen(line)}: ${stripAnsi(line)}`);
+  });
+
+  void it('preserves item-0 floor in computeHudVisibleToolsCap when no tools are running', () => {
+    const cap = computeHudVisibleToolsCap(
+      [],
+      [{ disp: 'very-long-mcp-namespace:extremely-long-tool-operation-name', count: 3 }],
+      25,
+    );
+    assert.deepEqual(cap, { shownRunning: 0, shownCompleted: 1 });
   });
 });

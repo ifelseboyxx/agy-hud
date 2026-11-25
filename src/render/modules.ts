@@ -1,6 +1,5 @@
 import path from 'node:path';
 
-import { formatAgentsBadge, formatAgentsSection, formatRuntimeBadges } from '../collectors/agents.ts';
 import { detectAgyFlags } from '../collectors/proc.ts';
 import {
   detectGitBranch,
@@ -8,7 +7,7 @@ import {
   readCliSettings,
   type GitBranchInfo,
 } from '../collectors/settings.ts';
-import { formatContextCapacity, parseModelAndEffort, resolveQuotaReset } from '../collectors/telemetry.ts';
+import { parseModelAndEffort, resolveQuotaReset } from '../collectors/telemetry.ts';
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
 import type {
   AgentsSummary,
@@ -24,6 +23,7 @@ import type {
 } from '../types.ts';
 import { formatNamesLine, formatTodosLine, formatToolsLine } from './activity-lines.ts';
 import { formatActivitySummaryLine } from './activity-summary.ts';
+import { formatAgentsBadge, formatAgentsSection, formatRuntimeBadges } from './agents-render.ts';
 import {
   BOLD,
   BRIGHT_BLUE,
@@ -39,6 +39,7 @@ import {
   DEFAULT_TERM_WIDTH,
   fitPerfCapsule,
   fmtDuration,
+  formatContextCapacity,
   GRAY,
   GREEN,
   renderBar,
@@ -244,19 +245,16 @@ export function buildModeLine(
   return ` ${GRAY}▸ ${mode} mode${RESET}${vimTag} ${hint}`;
 }
 
-export function buildLine1(
-  cliHome: string,
-  data: StatusLineData,
-  config: HudConfig,
-  telemetry: SessionTelemetry | null,
-  cliSettings: CliSettings,
-  agentsSummary: AgentsSummary | null,
-  hasTodosLine: boolean,
-  options?: IdentityLineOptions,
-): string {
+export function buildIdentityLine(ctx: HudModuleRenderContext): string {
+  const { cliHome, data, config, telemetry, cliSettings, agentsSummary, hasTodosLine, identityOptions: options } = ctx;
   const sep = ` ${GRAY}│${RESET} `;
   const parts: string[] = [];
-  const termWidth = isFiniteNum(data.terminal_width) ? data.terminal_width : DEFAULT_TERM_WIDTH;
+  const termWidth =
+    isFiniteNum(ctx.termWidth) && ctx.termWidth > 0
+      ? ctx.termWidth
+      : isFiniteNum(data.terminal_width) && data.terminal_width > 0
+        ? data.terminal_width
+        : DEFAULT_TERM_WIDTH;
   const budget = resolveLineBudget(termWidth);
 
   if (config.segments.model) {
@@ -352,16 +350,22 @@ export function buildLine1(
   return config.segments.perf ? fitPerfCapsule(baseLine, telemetry, termWidth) : baseLine;
 }
 
-export function buildLine2(
+export function buildUsageLine(
   data: StatusLineData,
   config: HudConfig,
   telemetry: SessionTelemetry | null,
   nowSec: number = Date.now() / 1000,
+  explicitTermWidth?: number,
 ): string {
   const sep = ` ${GRAY}│${RESET} `;
   const subSep = ` ${GRAY}|${RESET} `;
   const items: string[] = [];
-  const termWidth = isFiniteNum(data.terminal_width) ? data.terminal_width : DEFAULT_TERM_WIDTH;
+  const termWidth =
+    isFiniteNum(explicitTermWidth) && explicitTermWidth > 0
+      ? explicitTermWidth
+      : isFiniteNum(data.terminal_width) && data.terminal_width > 0
+        ? data.terminal_width
+        : DEFAULT_TERM_WIDTH;
 
   if (config.segments.context) {
     const ctxPct = resolveContextPct(data, telemetry);
@@ -429,18 +433,8 @@ export function buildLine2(
 
 export const LINE_MODULE_REGISTRY: Readonly<Record<HudLineId, LineModuleRenderer>> = {
   mode: (ctx) => buildModeLine(ctx.cliHome, ctx.data, ctx.cliSettings, ctx.modeOptions),
-  identity: (ctx) =>
-    buildLine1(
-      ctx.cliHome,
-      ctx.data,
-      ctx.config,
-      ctx.telemetry,
-      ctx.cliSettings,
-      ctx.agentsSummary,
-      ctx.hasTodosLine,
-      ctx.identityOptions,
-    ),
-  usage: (ctx) => buildLine2(ctx.data, ctx.config, ctx.telemetry, ctx.nowSec),
+  identity: (ctx) => buildIdentityLine(ctx),
+  usage: (ctx) => buildUsageLine(ctx.data, ctx.config, ctx.telemetry, ctx.nowSec, ctx.termWidth),
   activity: (ctx) =>
     formatActivitySummaryLine({
       enabledLines: ctx.enabledLines,

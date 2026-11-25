@@ -11,7 +11,13 @@ import { renderHudFromData } from '../../hud-entry.ts';
 import type { AgentsSummary, HudConfig, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
 import { DEFAULT_HUD_CONFIG } from '../../types.ts';
 import { buildPerfSegments, fitPerfCapsule, renderBar, stripAnsi, visibleLen } from '../ansi.ts';
-import { buildLine2, buildModeLine, formatToolsLine, resolveEffectiveExceeds200k } from '../lines.ts';
+import {
+  buildModeLine,
+  buildUsageLine,
+  formatHudLines,
+  formatToolsLine,
+  resolveEffectiveExceeds200k,
+} from '../lines.ts';
 
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
 
@@ -80,7 +86,7 @@ void describe('render and hud-entry', () => {
     assert.ok(bypassLine.includes('bypass permissions on [plan]'));
 
     const line2 = stripAnsi(
-      buildLine2(
+      buildUsageLine(
         {
           model: { id: 'claude-opus-4-1' },
           context_window: { used_percentage: 42, context_window_size: 1_000_000 },
@@ -99,7 +105,7 @@ void describe('render and hud-entry', () => {
     assert.ok(line2.includes('G 5h: 90.00% (30m)'));
 
     const narrowLine2 = stripAnsi(
-      buildLine2(
+      buildUsageLine(
         {
           model: { id: 'claude-opus-4-1' },
           context_window: { used_percentage: 42, context_window_size: 1_000_000 },
@@ -130,12 +136,12 @@ void describe('render and hud-entry', () => {
       ctxMax: 512_000,
       compacted: true,
     };
-    const compactedLine2 = stripAnsi(buildLine2(staleCompactData, DEFAULT_HUD_CONFIG, compactedTel));
+    const compactedLine2 = stripAnsi(buildUsageLine(staleCompactData, DEFAULT_HUD_CONFIG, compactedTel));
     assert.ok(compactedLine2.includes('Context █░░░░░░░░░ 5% (~25k/512k)'));
     assert.equal(resolveEffectiveExceeds200k(staleCompactData, compactedTel), false);
 
     const normalTel: SessionTelemetry = { ...compactedTel, ctxUsed: 268_800, compacted: false };
-    const normalLine2 = stripAnsi(buildLine2(staleCompactData, DEFAULT_HUD_CONFIG, normalTel));
+    const normalLine2 = stripAnsi(buildUsageLine(staleCompactData, DEFAULT_HUD_CONFIG, normalTel));
     assert.ok(normalLine2.includes('Context █████░░░░░ 53% (269k/512k)'));
     assert.equal(resolveEffectiveExceeds200k(staleCompactData, normalTel), true);
   });
@@ -300,5 +306,77 @@ void describe('render and hud-entry', () => {
     const clean = stripAnsi(validRes.stdout);
     assert.ok(clean.includes('[Orchestrator (Carbon) ◑ high]'));
     assert.ok(clean.includes('Context ██░░░░░░░░ 20%'));
+  });
+
+  void it('honors explicit termWidth over data.terminal_width for identity line', () => {
+    const data: StatusLineData = {
+      model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
+      terminal_width: 160,
+    };
+    const telemetry: SessionTelemetry = {
+      genCount: 3,
+      tps: 92.4,
+      ttft: 1.85,
+      cachePct: 91.2,
+      ctxUsed: 420_000,
+      ctxMax: 1_000_000,
+    };
+    const lines = formatHudLines({
+      data,
+      config: buildPresetConfig('minimal'),
+      cliSettings: {},
+      telemetry,
+      activity: null,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 68,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+
+    assert.equal(lines[0]?.includes('Cache 91%'), false);
+  });
+
+  void it('honors explicit termWidth over data.terminal_width for usage line and ignores non-positive widths', () => {
+    const data: StatusLineData = {
+      model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
+      context_window: { used_percentage: 42, context_window_size: 1_000_000 },
+      quota: {
+        '3p-5h': { remaining_fraction: 0.75, reset_in_seconds: 3600 },
+        'gemini-5h': { remaining_fraction: 0.9, reset_in_seconds: 1800 },
+      },
+      terminal_width: 160,
+    };
+    const narrowLines = formatHudLines({
+      data,
+      config: buildPresetConfig('minimal'),
+      cliSettings: {},
+      telemetry: null,
+      activity: null,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 68,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+    assert.equal(narrowLines[1]?.includes('(420k/1M)'), false);
+    assert.equal(narrowLines[1]?.includes('G 5h:'), false);
+
+    const zeroWidthLines = formatHudLines({
+      data,
+      config: buildPresetConfig('minimal'),
+      cliSettings: {},
+      telemetry: null,
+      activity: null,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 0,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+    assert.ok(zeroWidthLines[1]?.includes('(420k/1M)'));
   });
 });

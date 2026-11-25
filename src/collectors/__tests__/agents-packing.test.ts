@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { formatAgentsSection } from '../../render/agents-render.ts';
 import { GRAY, RESET, stripAnsi, visibleLen } from '../../render/ansi.ts';
 import { type AgentEntry, type AgentsSummary, DEFAULT_HUD_CONFIG } from '../../types.ts';
-import { formatAgentsSection } from '../agents.ts';
 
 const ESC = String.fromCharCode(0x1b);
 

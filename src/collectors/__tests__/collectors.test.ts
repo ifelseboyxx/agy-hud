@@ -5,21 +5,15 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { stripAnsi } from '../../render/ansi.ts';
+import { resolveCliHome } from '../../core/paths.ts';
+import { formatAgentsBadge, formatRuntimeBadges } from '../../render/agents-render.ts';
+import { formatContextCapacity, stripAnsi } from '../../render/ansi.ts';
 import type { StatusLineData } from '../../types.ts';
 import { DEFAULT_HUD_CONFIG } from '../../types.ts';
 import { BUILTIN_SLASH_CMDS, loadTodos, loadTranscriptActivity } from '../activity.ts';
+import { cleanAgentLabel, collectAgentsSummary, syncSwarmFromStdin, transcriptTurnEnded } from '../agents.ts';
+import { detectGitBranch, getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../settings.ts';
 import {
-  cleanAgentLabel,
-  collectAgentsSummary,
-  formatAgentsBadge,
-  formatRuntimeBadges,
-  syncSwarmFromStdin,
-  transcriptTurnEnded,
-} from '../agents.ts';
-import { cliHomeDir, detectGitBranch, getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../settings.ts';
-import {
-  formatContextCapacity,
   loadSessionTelemetry,
   parseGenMetadataBlob,
   parseModelAndEffort,
@@ -93,13 +87,13 @@ void describe('collectors', () => {
     }
   });
 
-  void it('resolves cliHomeDir, settings, hud-config defaults, git branch, and elapsed seconds', () => {
+  void it('resolves cliHome, settings, hud-config defaults, git branch, and elapsed seconds', () => {
     assert.equal(
-      cliHomeDir({ GEMINI_CLI_HOME: tmpRoot } as NodeJS.ProcessEnv),
+      resolveCliHome(undefined, { GEMINI_CLI_HOME: tmpRoot } as NodeJS.ProcessEnv),
       path.join(tmpRoot, '.gemini', 'antigravity-cli'),
     );
     assert.equal(
-      cliHomeDir({ GEMINI_CLI_HOME: '   ', HOME: tmpRoot } as NodeJS.ProcessEnv),
+      resolveCliHome(undefined, { GEMINI_CLI_HOME: '   ', HOME: tmpRoot } as NodeJS.ProcessEnv),
       path.join(tmpRoot, '.gemini', 'antigravity-cli'),
     );
 
@@ -115,7 +109,7 @@ void describe('collectors', () => {
 
     writeFileSync(
       path.join(cliHome, 'hud-config.json'),
-      JSON.stringify({ preset: 'compact', showCost: false, maxAgentChips: 2, showTodosLine: 'invalid' }),
+      JSON.stringify({ preset: 'compact', maxAgentChips: 2, segments: { cost: false, perf: 'invalid' } }),
       'utf8',
     );
     const hudCfg = readHudConfig(cliHome);
@@ -323,6 +317,7 @@ void describe('collectors', () => {
       false,
     );
     assert.equal(summary.entries.find((e) => e.name === 'hud-core')?.model, 'gemini-4-hydrogen');
+    assert.equal(summary.entries.find((e) => e.name === 'old-worker')?.state, 'done');
 
     assert.equal(cleanAgentLabel('  `worker-alpha`\nignored line ', ''), 'worker-alpha');
     assert.equal(cleanAgentLabel('a'.repeat(40), '').length, 28);

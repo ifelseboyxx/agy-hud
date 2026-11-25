@@ -1,5 +1,5 @@
 import { isFiniteNum } from '../core/guards.ts';
-import { DEFAULT_TERM_WIDTH, GRAY, RESET, visibleLen } from './ansi.ts';
+import { DEFAULT_TERM_WIDTH, GRAY, RESET, truncateToWidth, visibleLen } from './ansi.ts';
 
 export interface ActivityLineFormatOptions {
   formatOverflow?: (hiddenCount: number) => string;
@@ -68,7 +68,11 @@ export function packActivityLine(input: PackActivityLineInput): string {
       if (!first) {
         return '';
       }
-      return `${prefix}${first.renderEllipsized(Math.max(1, budget - prefixCols))}`;
+      const avail = budget - prefixCols;
+      if (avail < 1) {
+        return truncateToWidth(`${prefix}${first.render()}`, budget);
+      }
+      return `${prefix}${first.renderEllipsized(avail)}`;
     }
   }
 
@@ -91,7 +95,10 @@ export function packActivityLine(input: PackActivityLineInput): string {
       return '';
     }
     const overflow = formatOverflow(total - 1);
-    const avail = Math.max(1, budget - prefixCols - sepCols - visibleLen(overflow));
+    const avail = budget - prefixCols - sepCols - visibleLen(overflow);
+    if (avail < 1) {
+      return truncateToWidth(`${prefix}${first.render()}${separator}${overflow}`, budget);
+    }
     return `${prefix}${first.renderEllipsized(avail)}${separator}${overflow}`;
   }
 
