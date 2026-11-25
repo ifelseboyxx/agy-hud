@@ -1,43 +1,34 @@
 #!/usr/bin/env node
 import { SessionResolutionError } from '../collectors/session-index.ts';
-import { isPlainObject } from '../core/guards.ts';
+import { isPlainObject, nonEmptyStr } from '../core/guards.ts';
 import { isMainEntry } from '../core/paths.ts';
 import { fmtTokens } from '../render/ansi.ts';
 import type { SessionSourceFilter } from '../snapshot-types.ts';
 import { buildInspectorHtml, INSPECTOR_MIME_TYPE, INSPECTOR_RESOURCE_URI } from './hud-inspector-ui.ts';
 import {
+  capJsonRpcResponse,
+  clipUtf8Bytes,
+  HARD_MAX_MCP_RESPONSE_BYTES,
+  type JsonRpcErrorObject,
+  type JsonRpcErrorResponse,
+  type JsonRpcId,
+  type JsonRpcResponse,
+  type JsonRpcSuccessResponse,
+} from './hud-mcp-cap.ts';
+import {
+  capInspectorPayload,
   pollHudSnapshot,
   type HudPollArgs,
   type HudPollOptions,
   type HudPollSnapshotData,
 } from './hud-mcp-snapshot.ts';
 
+export type { JsonRpcErrorObject, JsonRpcErrorResponse, JsonRpcId, JsonRpcResponse, JsonRpcSuccessResponse };
+
 const DEFAULT_PROTOCOL_VERSION = '2025-03-26';
 const SERVER_NAME = 'agy-hud-inspector';
 const SERVER_VERSION = '0.1.0';
 const VALID_SOURCES: ReadonlySet<string> = new Set(['auto', 'cli', 'app', 'all']);
-
-export type JsonRpcId = string | number | null;
-
-export interface JsonRpcSuccessResponse {
-  jsonrpc: '2.0';
-  id: JsonRpcId;
-  result: unknown;
-}
-
-export interface JsonRpcErrorObject {
-  code: number;
-  message: string;
-  data?: unknown;
-}
-
-export interface JsonRpcErrorResponse {
-  jsonrpc: '2.0';
-  id: JsonRpcId;
-  error: JsonRpcErrorObject;
-}
-
-export type JsonRpcResponse = JsonRpcSuccessResponse | JsonRpcErrorResponse;
 
 export interface McpServerContext extends HudPollOptions {}
 
@@ -153,14 +144,16 @@ function parsePollToolArgs(
 function formatInspectorFallbackText(payload: HudPollSnapshotData): string {
   const snap = payload.snapshot;
   if (snap === null) {
-    return 'HUD Inspector: no local Antigravity sessions found.';
+    return payload.truncated === true
+      ? 'HUD Inspector: snapshot truncated to fit 1 MiB response limit.'
+      : 'HUD Inspector: no local Antigravity sessions found.';
   }
   const badge = snap.surface.toUpperCase();
   const tel = snap.telemetry;
-  const parts: string[] = [`[${badge}] ${snap.title} (${snap.shortId})`];
+  const parts: string[] = [`[${badge}] ${clipUtf8Bytes(snap.title, 160)} (${clipUtf8Bytes(snap.shortId, 24)})`];
   if (tel.ctxPct !== null) {
-    const used = fmtTokens(tel.ctxUsed) || '0';
-    const max = fmtTokens(tel.ctxMax) || '?';
+    const used = nonEmptyStr(fmtTokens(tel.ctxUsed)) ?? '0';
+    const max = nonEmptyStr(fmtTokens(tel.ctxMax)) ?? '?';
     parts.push(`Ctx ${tel.ctxPct.toFixed(0)}% (${used}/${max})`);
   }
   if (tel.tps !== null) {
@@ -173,7 +166,31 @@ function formatInspectorFallbackText(payload: HudPollSnapshotData): string {
   if (snap.skills.length > 0) parts.push(`${snap.skills.length} skills`);
   if (snap.mcps.length > 0) parts.push(`${snap.mcps.length} MCPs`);
   if (snap.agents.length > 0) parts.push(`${snap.agents.length} ${snap.agentsKind}`);
+  if (payload.truncated === true) parts.push('[truncated]');
   return parts.join(' | ');
+}
+
+function buildCappedPollRpcResponse(id: JsonRpcId, payload: HudPollSnapshotData): JsonRpcSuccessResponse {
+  const build = (data: HudPollSnapshotData): JsonRpcSuccessResponse =>
+    makeRpcResult(id, {
+      content: [{ type: 'text', text: formatInspectorFallbackText(data) }],
+      structuredContent: data,
+    });
+  const initial = build(payload);
+  if (Buffer.byteLength(JSON.stringify(initial), 'utf8') <= HARD_MAX_MCP_RESPONSE_BYTES) {
+    return initial;
+  }
+  const wrapperBytes = Buffer.byteLength(
+    JSON.stringify(
+      makeRpcResult(id, {
+        content: [{ type: 'text', text: formatInspectorFallbackText(payload) }],
+        structuredContent: null,
+      }),
+    ),
+    'utf8',
+  );
+  const remaining = Math.max(256, HARD_MAX_MCP_RESPONSE_BYTES - wrapperBytes - 64);
+  return build(capInspectorPayload(payload, remaining));
 }
 
 function handleToolsCall(id: JsonRpcId, params: unknown, ctx: McpServerContext): JsonRpcResponse {
@@ -202,10 +219,7 @@ function handleToolsCall(id: JsonRpcId, params: unknown, ctx: McpServerContext):
         structuredContent: pollResult,
       });
     }
-    return makeRpcResult(id, {
-      content: [{ type: 'text', text: formatInspectorFallbackText(pollResult) }],
-      structuredContent: pollResult,
-    });
+    return buildCappedPollRpcResponse(id, pollResult);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const code = err instanceof SessionResolutionError ? err.code : 'internal-error';
@@ -247,7 +261,7 @@ function parseJsonRpcId(raw: unknown): JsonRpcId | undefined {
   return undefined;
 }
 
-export function handleMcpMessage(raw: unknown, ctx: McpServerContext = {}): JsonRpcResponse | null {
+function dispatchMcpMessage(raw: unknown, ctx: McpServerContext): JsonRpcResponse | null {
   if (!isPlainObject(raw) || raw.jsonrpc !== '2.0' || typeof raw.method !== 'string') {
     return makeRpcError(null, -32600, 'Invalid JSON-RPC 2.0 request.');
   }
@@ -295,6 +309,11 @@ export function handleMcpMessage(raw: unknown, ctx: McpServerContext = {}): Json
     default:
       return makeRpcError(reqId, -32601, `Method not found: ${raw.method}`);
   }
+}
+
+export function handleMcpMessage(raw: unknown, ctx: McpServerContext = {}): JsonRpcResponse | null {
+  const response = dispatchMcpMessage(raw, ctx);
+  return response !== null ? capJsonRpcResponse(response, HARD_MAX_MCP_RESPONSE_BYTES) : null;
 }
 
 export function createMcpLineHandler(ctx: McpServerContext = {}): (line: string) => string | null {

@@ -1,4 +1,7 @@
-export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
+export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback) {
+    return typeof val === "string" && val.length > 0 ? val : fallback;
+  }
+  function esc(val) {
     return String(val == null ? "" : val)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
@@ -72,8 +75,8 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
     return '<span class="va-target-text" title="' + esc(target) + '">' + esc(target) + "</span>";
   }
   function renderRunningToolItem(rt) {
-    var label = rt.target || rt.fullTarget || "";
-    var titleText = rt.fullTarget || label;
+    var label = pickStr(rt.target, pickStr(rt.fullTarget, ""));
+    var titleText = pickStr(rt.fullTarget, label);
     var tgtHtml = rt.fileUri
       ? '<button type="button" class="va-target-btn va-run-tgt" data-file-uri="' + esc(rt.fileUri) +
         '" title="Open in side pane: ' + esc(titleText) + '">' + FILE_ICO + "<span>" + esc(label) + "</span></button>"
@@ -86,9 +89,9 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
     var runTools = Array.isArray(d.runningTools) ? d.runningTools : [];
     var matchedRunning = runTools.filter(function (rt) {
       if (!q) return true;
-      if ((rt.disp || "").toLowerCase().indexOf(q) !== -1) return true;
-      if ((rt.target || "").toLowerCase().indexOf(q) !== -1) return true;
-      return (rt.fullTarget || "").toLowerCase().indexOf(q) !== -1;
+      if (pickStr(rt.disp, "").toLowerCase().indexOf(q) !== -1) return true;
+      if (pickStr(rt.target, "").toLowerCase().indexOf(q) !== -1) return true;
+      return pickStr(rt.fullTarget, "").toLowerCase().indexOf(q) !== -1;
     });
     var runHtml = matchedRunning.length === 0
       ? ""
@@ -100,8 +103,8 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
     var filtered = d.completedTools.filter(function (t) {
       if (!q) return true;
       if (t.disp.toLowerCase().indexOf(q) !== -1) return true;
-      if ((t.latestTarget || "").toLowerCase().indexOf(q) !== -1) return true;
-      return (t.recentTargets || []).some(function (rt) { return rt.toLowerCase().indexOf(q) !== -1; });
+      if (pickStr(t.latestTarget, "").toLowerCase().indexOf(q) !== -1) return true;
+      return (Array.isArray(t.recentTargets) ? t.recentTargets : []).some(function (rt) { return rt.toLowerCase().indexOf(q) !== -1; });
     });
     var completedCard = filtered.length === 0
       ? (matchedRunning.length > 0 ? "" : '<div class="va-card"><div class="va-row" style="color:var(--text-tertiary)">No matching tools.</div></div>')
@@ -109,14 +112,14 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
           var open = state.expandedTool === t.disp;
           var pct = Math.max(4, Math.round((t.count / maxCnt) * 100));
           var targets = Array.isArray(t.recentTargets) ? t.recentTargets : [];
-          var uris = t.targetUris || {};
+          var uris = t.targetUris != null ? t.targetUris : {};
           var targetsHtml = open && targets.length > 0
-            ? '<div class="va-targets">' + targets.map(function (p) { return renderToolTargetItem(p, uris[p] || null); }).join("") + "</div>"
+            ? '<div class="va-targets">' + targets.map(function (p) { return renderToolTargetItem(p, pickStr(uris[p], null)); }).join("") + "</div>"
             : "";
           return (
             '<div class="va-row"><div class="va-row-main clickable" data-va-tool="' + esc(t.disp) + '">' +
             '<span class="va-name">' + esc(t.disp) + '</span><span class="num" style="color:var(--text-tertiary)">&times;' + t.count + "</span>" +
-            '<span class="va-tgt">' + esc(t.latestTarget || "\u2014") + "</span></div>" +
+            '<span class="va-tgt">' + esc(pickStr(t.latestTarget, "\u2014")) + "</span></div>" +
             '<div class="va-bar-bg"><div class="va-bar-fg" style="width:' + pct + '%"></div></div>' + targetsHtml + "</div>"
           );
         }).join("") + "</div>";
@@ -172,12 +175,13 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function esc(val) {
     var topTools = d.completedTools.length === 0
       ? '<div class="va-row" style="color:var(--text-tertiary)">No tool calls yet.</div>'
       : d.completedTools.slice(0, 4).map(function (t) {
-          var first = (t.recentTargets && t.recentTargets[0]) || t.fullTarget || "";
-          var uri = first && t.targetUris ? t.targetUris[first] || "" : "";
-          var attr = uri ? ' data-file-uri="' + esc(uri) + '" class="va-row-main clickable"' : ' class="va-row-main"';
+          var firstTarget = Array.isArray(t.recentTargets) && t.recentTargets.length > 0 ? t.recentTargets[0] : "";
+          var first = pickStr(firstTarget, pickStr(t.fullTarget, ""));
+          var uri = first.length > 0 && t.targetUris != null ? pickStr(t.targetUris[first], "") : "";
+          var attr = uri.length > 0 ? ' data-file-uri="' + esc(uri) + '" class="va-row-main clickable"' : ' class="va-row-main"';
           return '<div class="va-row"><div' + attr + '><span class="dot ok"></span><span class="va-name">' + esc(t.disp) +
             '</span><span class="num" style="color:var(--text-tertiary)">&times;' + t.count +
-            '</span><span class="va-tgt">' + esc(t.latestTarget || "\u2014") + "</span></div></div>";
+            '</span><span class="va-tgt">' + esc(pickStr(t.latestTarget, "\u2014")) + "</span></div></div>";
         }).join("");
     var mcpChips = d.mcps.map(function (m) {
       return '<span class="va-chip"><span class="dot" style="background:var(--accent-mcp)"></span><span class="num">' +

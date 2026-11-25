@@ -6,7 +6,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { capInspectorPayload, pollHudSnapshot, type HudPollSnapshotData } from '../hud-mcp-snapshot.ts';
+import { writeSnapshotEnvelope } from '../../collectors/snapshot-envelope.ts';
+import { handleMcpMessage } from '../hud-mcp-entry.ts';
+import {
+  capInspectorPayload,
+  HARD_MAX_MCP_RESPONSE_BYTES,
+  pollHudSnapshot,
+  type HudPollSnapshotData,
+} from '../hud-mcp-snapshot.ts';
 
 function encodeVarint(value: number): number[] {
   const bytes: number[] = [];
@@ -152,6 +159,8 @@ void describe('hud-mcp-snapshot polling and ETag', () => {
   void it('loads read-only client sessions while writing caches only to cliHome', () => {
     const convId = 'app-mcp-12345678';
     const fileA = path.join(wsDir, 'src', 'index.ts');
+    mkdirSync(path.dirname(fileA), { recursive: true });
+    writeFileSync(fileA, 'export const ok = true;\n', 'utf8');
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     seedAppSession(appRoot, wsDir, convId, 'App Inspector Session', [
       { type: 'USER_INPUT', content: '/tdd' },
@@ -313,5 +322,101 @@ void describe('hud-mcp-snapshot polling and ETag', () => {
     const finalBytes = Buffer.byteLength(JSON.stringify(capped), 'utf8');
     assert.ok(finalBytes < 1_048_576, `expected < 1 MiB, got ${finalBytes}`);
     assert.equal(capped.truncated, true);
+  });
+
+  void it('caps oversized CJK title payloads strictly below 1 MiB with truncation marker', () => {
+    const hugeCjkTitle = '中文超长会话标题测试'.repeat(45_000);
+    assert.ok(Buffer.byteLength(hugeCjkTitle, 'utf8') > HARD_MAX_MCP_RESPONSE_BYTES);
+    const convId = 'app-cjk-huge-1234';
+    seedAppSession(appRoot, wsDir, convId, hugeCjkTitle, [
+      {
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        model: 'Gemini 4 Carbon',
+        created_at: '2026-06-01T11:58:00Z',
+        tool_calls: [{ name: 'read_file', args: { Path: path.join(wsDir, 'a.ts') } }],
+      },
+    ]);
+
+    const rpcResponse = handleMcpMessage(
+      {
+        jsonrpc: '2.0',
+        id: 9,
+        method: 'tools/call',
+        params: { name: 'hud_poll_snapshot', arguments: { source: 'all' } },
+      },
+      { cliHome, geminiRoot, cwd: wsDir, nowMs: Date.parse('2026-06-01T12:00:00Z') },
+    );
+    assert.ok(rpcResponse !== null && 'result' in rpcResponse);
+    const wireBytes = Buffer.byteLength(JSON.stringify(rpcResponse), 'utf8');
+    assert.ok(wireBytes <= HARD_MAX_MCP_RESPONSE_BYTES, `expected <= 1 MiB, got ${wireBytes}`);
+    const resultObj = rpcResponse.result as { structuredContent: HudPollSnapshotData };
+    assert.equal(resultObj.structuredContent.truncated, true);
+    assert.ok(resultObj.structuredContent.snapshot !== null);
+  });
+
+  void it('keeps MCP ETag unchanged across CLI snapshot envelope heartbeats', () => {
+    const convId = 'cli-heartbeat-etag';
+    const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
+    mkdirSync(logsDir, { recursive: true });
+    writeFileSync(
+      path.join(logsDir, 'transcript.jsonl'),
+      `${JSON.stringify({ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] })}\n`,
+      'utf8',
+    );
+    const t0 = Date.parse('2026-06-01T12:00:00Z');
+    const data = { conversation_id: convId, conversation_title: 'Heartbeat CLI', cwd: wsDir };
+    writeSnapshotEnvelope(cliHome, data, 4242, { nowMs: t0 });
+
+    const first = pollHudSnapshot(
+      { sessionId: convId, source: 'cli' },
+      { cliHome, geminiRoot, cwd: wsDir, nowMs: t0, isAlive: (p) => p === 4242 },
+    );
+    assert.equal(first.unchanged, false);
+
+    // Heartbeat rewrites envelope after 40s with identical semantic fields.
+    writeSnapshotEnvelope(cliHome, data, 4242, { nowMs: t0 + 40_000 });
+    const second = pollHudSnapshot(
+      { sessionId: convId, source: 'cli', etag: first.etag },
+      { cliHome, geminiRoot, cwd: wsDir, nowMs: t0 + 41_000, isAlive: (p) => p === 4242 },
+    );
+    assert.deepEqual(second, { unchanged: true, etag: first.etag });
+  });
+
+  void it('omits fileView URIs for directories and nonexistent absolute paths', () => {
+    const convId = 'app-uri-file-only-1234';
+    const realFile = path.join(wsDir, 'src', 'real.ts');
+    const dirTarget = path.join(wsDir, 'src');
+    const missingFile = path.join(wsDir, 'src', 'does-not-exist.ts');
+    mkdirSync(dirTarget, { recursive: true });
+    writeFileSync(realFile, 'export const x = 1;\n', 'utf8');
+
+    seedAppSession(appRoot, wsDir, convId, 'URI File Check', [
+      {
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        tool_calls: [
+          { name: 'read_file', args: { Path: realFile } },
+          { name: 'read_file', args: { Path: dirTarget } },
+          { name: 'read_file', args: { Path: missingFile } },
+        ],
+      },
+      {
+        type: 'PLANNER_RESPONSE',
+        status: 'RUNNING',
+        tool_calls: [{ name: 'read_file', args: { Path: dirTarget } }],
+      },
+    ]);
+
+    const res = pollHudSnapshot(
+      { sessionId: convId, source: 'all' },
+      { cliHome, geminiRoot, cwd: wsDir, nowMs: Date.parse('2026-06-01T12:00:00Z') },
+    );
+    assert.equal(res.unchanged, false);
+    const readTool = res.snapshot?.completedTools.find((t) => t.disp === 'read_file');
+    assert.equal(readTool?.targetUris[realFile], pathToFileURL(realFile).href);
+    assert.equal(readTool?.targetUris[dirTarget], undefined);
+    assert.equal(readTool?.targetUris[missingFile], undefined);
+    assert.equal(res.snapshot?.runningTools[0]?.fileUri, null);
   });
 });
