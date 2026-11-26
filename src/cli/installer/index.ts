@@ -3,7 +3,7 @@ import type { Stats } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { getCliHomeLockPath, getTargetLockPath, withFileLocksSync } from '../../core/file-lock.ts';
+import { getCliHomeLockPath, getShimBinLockPath, getTargetLockPath, withFileLocksSync } from '../../core/file-lock.ts';
 import { resolveCliHome } from '../../core/paths.ts';
 import { getSettingsPaths } from '../../core/statusline-ownership.ts';
 import { lstatIfPresentSync, makeTempSuffix } from '../../fs-utils.ts';
@@ -28,32 +28,32 @@ import {
   createWireRollbackSteps,
   disableCliStatusLine,
   preflightStatusLineBackup,
-  restoreCliStatusLine,
   wireCliStatusLine,
   type WireStatusLineResult,
 } from './settings.ts';
 import {
+  assertShimBinDirUsable,
   assertShimWritablePreflight,
   createShimRemovalRollbackSteps,
   createShimRollbackSteps,
-  formatPathHint,
-  installCliShim,
-  isDirOnPath,
-  removeOwnedCliShim,
-  type RemoveCliShimResult,
   type ShimWriteReceipt,
 } from './shim.ts';
-import { printShimRemovalResult, runUnwire, runWire } from './wire.ts';
-
-const MAX_UNINSTALL_LOCK_RETRIES = 3;
+import {
+  applyWireShimAndDoctor,
+  printPathHintIfNeeded,
+  printTeardownResults,
+  runUnwire,
+  runWire,
+  teardownShimAndStatusLine,
+  WIRE_REQUIRED_FILES,
+  withDynamicInstallerLocks,
+  type TeardownReceipts,
+  type WireAndShimReceipts,
+} from './wire.ts';
 
 const RUNTIME_FILES: readonly string[] = [
-  'plugin.json',
-  'mcp_config.json',
+  ...WIRE_REQUIRED_FILES,
   'assets/logo.svg',
-  'dist/hud.mjs',
-  'dist/cli.mjs',
-  'dist/mcp-hud.mjs',
   'dist/index.mjs',
   'dist/index.d.mts',
   'dist/types.d.mts',
@@ -177,10 +177,10 @@ function buildInstallRollbackSteps(
 function runInstall(opts: InstallerOptions): void {
   const resolvedDst = path.resolve(opts.targetDir);
   const cliHome = resolveCliHome();
-  const locks =
-    opts.wireStatusLine || opts.manageShim
-      ? [getTargetLockPath(resolvedDst), getCliHomeLockPath(cliHome)]
-      : [getTargetLockPath(resolvedDst)];
+  if (opts.manageShim) assertShimBinDirUsable(opts.binDir);
+  const locks = [getTargetLockPath(resolvedDst)];
+  if (opts.wireStatusLine || opts.manageShim) locks.push(getCliHomeLockPath(cliHome));
+  if (opts.manageShim) locks.push(getShimBinLockPath(opts.binDir));
   withFileLocksSync(locks, () => {
     const resolvedSrc = realpathSync(PACKAGE_ROOT);
     const dstStat = lstatIfPresentSync(resolvedDst);
@@ -204,8 +204,7 @@ function runInstall(opts: InstallerOptions): void {
       createdTarget: false,
       createdIdentity: null,
     };
-    let wireReceipt: WireStatusLineResult | null = null;
-    let shimReceipt: ShimWriteReceipt | null = null;
+    const receipts: WireAndShimReceipts = { wireReceipt: null, shimReceipt: null };
     const agyAvailable = hasAgyCli();
 
     try {
@@ -214,27 +213,24 @@ function runInstall(opts: InstallerOptions): void {
       } else {
         stagePluginInstall(stage, opts, resolvedSrc, resolvedDst, dstStat, makeTempSuffix());
       }
-      if (opts.wireStatusLine) {
-        wireReceipt = wireCliStatusLine(cliHome, resolvedDst);
-        if (!opts.quiet) writeInstallerLine(`Wired statusLine in ${wireReceipt.settingsPath}`);
-      }
-      if (opts.manageShim) {
-        shimReceipt = installCliShim(opts.binDir, resolvedDst);
-        if (!opts.quiet) writeInstallerLine(`Installed CLI shim at ${shimReceipt.primaryPath}`);
-      }
-      const { ok } = runDoctor({
-        targetDir: resolvedDst,
-        quiet: opts.quiet,
+      applyWireShimAndDoctor({
+        opts,
+        cliHome,
+        resolvedDst,
         packageRoot: PACKAGE_ROOT,
-        binDir: opts.binDir,
-        requireShim: opts.manageShim,
-        noShim: opts.noShim,
-        checkMalformedShim: opts.manageShim,
+        wireStatusLine: opts.wireStatusLine,
         agyAvailable,
+        doctorFailMessage: 'Post-install doctor check failed.',
+        receipts,
       });
-      if (!ok) throw new Error('Post-install doctor check failed.');
     } catch (err) {
-      const steps = buildInstallRollbackSteps(wireReceipt, shimReceipt, stage, resolvedDst, sameDirectory);
+      const steps = buildInstallRollbackSteps(
+        receipts.wireReceipt,
+        receipts.shimReceipt,
+        stage,
+        resolvedDst,
+        sameDirectory,
+      );
       throw makeRollbackError(err, runRollbackSteps(steps));
     }
 
@@ -249,9 +245,7 @@ function runInstall(opts: InstallerOptions): void {
         );
       }
     }
-    if (opts.manageShim && !opts.quiet && !isDirOnPath(opts.binDir)) {
-      writeInstallerLine(formatPathHint(opts.binDir));
-    }
+    printPathHintIfNeeded(opts);
   });
 }
 
@@ -260,47 +254,43 @@ function runUninstall(opts: InstallerOptions): void {
   const cliHome = resolveCliHome();
   const resolvedSrc = realpathSync(PACKAGE_ROOT);
   assertNotActiveSourceRepo(resolvedSrc, resolvedDst, lstatIfPresentSync(resolvedDst));
-  let lockTarget = pathExists(path.dirname(resolvedDst));
-  let lockCliHome = (opts.restoreStatusLine || opts.manageShim) && pathExists(cliHome);
 
-  for (let attempt = 0; attempt < MAX_UNINSTALL_LOCK_RETRIES; attempt += 1) {
-    const locks: string[] = [];
-    if (lockTarget) locks.push(getTargetLockPath(resolvedDst));
-    if (lockCliHome) locks.push(getCliHomeLockPath(cliHome));
-    const outcome = withFileLocksSync(locks, (): 'done' | 'retry' => {
-      const needTarget = !lockTarget && pathExists(path.dirname(resolvedDst));
-      const needCliHome = (opts.restoreStatusLine || opts.manageShim) && !lockCliHome && pathExists(cliHome);
-      if (needTarget || needCliHome) {
-        if (needTarget) lockTarget = true;
-        if (needCliHome) lockCliHome = true;
-        return 'retry';
-      }
+  withDynamicInstallerLocks(
+    resolvedDst,
+    cliHome,
+    {
+      includeCliHome: opts.restoreStatusLine || opts.manageShim,
+      binDir: opts.manageShim ? opts.binDir : undefined,
+    },
+    ({ lockTarget, lockCliHome, lockBinDir }) => {
       const dstStat = lockTarget ? lstatIfPresentSync(resolvedDst) : null;
       if (dstStat) {
         assertNotActiveSourceRepo(resolvedSrc, resolvedDst, dstStat);
         assertRemovableTarget(resolvedDst, dstStat, PLUGIN_NAME);
         if (!dstStat.isSymbolicLink()) assertDirectoryTreeRemovable(resolvedDst);
       }
-      if (opts.restoreStatusLine && lockCliHome) {
+      const shouldRestoreStatusLine = opts.restoreStatusLine && lockCliHome;
+      if (shouldRestoreStatusLine) {
         preflightStatusLineBackup(cliHome, resolvedDst, 'restore');
       }
       const stagedRemovalPath = dstStat ? `${resolvedDst}.removing.${makeTempSuffix()}` : null;
       let movedToStaging = false;
-      let removedShim: RemoveCliShimResult | null = null;
-      let restored = null;
+      const receipts: TeardownReceipts = { removedShim: null, restored: null };
       try {
         if (dstStat && stagedRemovalPath !== null) {
           moveVerifiedTarget(resolvedDst, dstStat, stagedRemovalPath);
           movedToStaging = true;
         }
-        if (opts.manageShim) {
-          removedShim = removeOwnedCliShim(opts.binDir, resolvedDst);
-        }
-        if (opts.restoreStatusLine && lockCliHome) {
-          restored = restoreCliStatusLine(cliHome, resolvedDst);
-        }
+        teardownShimAndStatusLine(
+          opts,
+          cliHome,
+          resolvedDst,
+          shouldRestoreStatusLine,
+          receipts,
+          opts.manageShim && lockBinDir,
+        );
       } catch (err) {
-        const steps: RollbackStep[] = [...createShimRemovalRollbackSteps(removedShim)];
+        const steps: RollbackStep[] = [...createShimRemovalRollbackSteps(receipts.removedShim)];
         if (movedToStaging && stagedRemovalPath !== null && dstStat !== null) {
           steps.push([
             'restore plugin target',
@@ -313,16 +303,12 @@ function runUninstall(opts: InstallerOptions): void {
         }
         throw makeRollbackError(err, runRollbackSteps(steps));
       }
-      if (restored?.changed && !opts.quiet) writeInstallerLine('Restored prior statusLine configuration.');
-      else if (restored?.skippedReason === 'not-owned' && !opts.quiet) {
-        writeInstallerLine('Skipped statusLine restore: current statusLine does not point to this installation.');
-      }
-      printShimRemovalResult(removedShim, opts.quiet);
+      printTeardownResults(receipts, opts.quiet);
       if (!dstStat) {
-        if (!opts.quiet && !removedShim?.removed) {
+        if (!opts.quiet && !receipts.removedShim?.removed) {
           writeInstallerLine(`Nothing to remove (${resolvedDst} does not exist).`);
         }
-        return 'done';
+        return;
       }
       toggleAgyPlugin(opts, 'disable');
       if (movedToStaging && stagedRemovalPath !== null) {
@@ -336,10 +322,8 @@ function runUninstall(opts: InstallerOptions): void {
         }
       }
       if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`);
-      return 'done';
-    });
-    if (outcome === 'done') return;
-  }
+    },
+  );
 }
 
 function runToggle(opts: InstallerOptions, enable: boolean): void {

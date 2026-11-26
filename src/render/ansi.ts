@@ -305,3 +305,38 @@ export function formatContextCapacity(
 
   return `${GRAY}(${fmtTokens(usedTok)}/${fmtTokens(maxTok)})${RESET}`;
 }
+
+export interface FormattedTelemetryFields {
+  readonly ctx: { readonly text: string; readonly pct: number } | null;
+  readonly tpsText: string | null;
+  readonly ttftText: string | null;
+  readonly cacheText: string | null;
+}
+
+export function formatTelemetryFields(telemetry: SessionTelemetry | null | undefined): FormattedTelemetryFields {
+  if (!telemetry) {
+    return { ctx: null, tpsText: null, ttftText: null, cacheText: null };
+  }
+  let ctx: { readonly text: string; readonly pct: number } | null = null;
+  if (isFiniteNum(telemetry.ctxUsed) && isFiniteNum(telemetry.ctxMax) && telemetry.ctxMax > 0) {
+    const pct = Math.min(100, Math.round((telemetry.ctxUsed / telemetry.ctxMax) * 100));
+    ctx = { text: `${fmtTokens(telemetry.ctxUsed)}/${fmtTokens(telemetry.ctxMax)} (${pct}%)`, pct };
+  }
+  const tpsText =
+    isFiniteNum(telemetry.tps) && telemetry.tps > 0
+      ? telemetry.tps >= 100
+        ? `${telemetry.tps.toFixed(0)} t/s`
+        : `${telemetry.tps.toFixed(1)} t/s`
+      : null;
+  const ttftText =
+    isFiniteNum(telemetry.ttft) && telemetry.ttft > 0
+      ? telemetry.ttft < 10
+        ? `${telemetry.ttft.toFixed(2)}s`
+        : `${telemetry.ttft.toFixed(1)}s`
+      : null;
+  const cacheText =
+    isFiniteNum(telemetry.cachePct) && (telemetry.genCount > 0 || telemetry.cachePct > 0)
+      ? `${Math.round(Math.max(0, Math.min(100, telemetry.cachePct)))}%`
+      : null;
+  return { ctx, tpsText, ttftText, cacheText };
+}

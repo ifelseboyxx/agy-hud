@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { aggregateCompletedTools } from '../../collectors/activity-parse.ts';
+import { aggregateCompletedTools } from '../../collectors/activity-aggregate.ts';
 import { buildPresetConfig } from '../../core/hud-config.ts';
 import { type AgentsSummary, type TranscriptActivity, type TranscriptToolEntry } from '../../types.ts';
 import { computeHudVisibleToolsCap, formatNamesLine, formatToolsLine } from '../activity-lines.ts';

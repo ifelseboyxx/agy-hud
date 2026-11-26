@@ -133,7 +133,33 @@ function isWalPairSnapshotEqual(a: WalPairSnapshot, b: WalPairSnapshot): boolean
   return isFileVersionEqual(a.db, b.db) && isFileVersionEqual(a.wal, b.wal);
 }
 
+function isRegularNonSymlinkFile(filePath: string): boolean {
+  let st: ReturnType<typeof lstatIfPresentSync>;
+  try {
+    st = lstatIfPresentSync(filePath);
+  } catch {
+    return false;
+  }
+  return st !== null && !st.isSymbolicLink() && st.isFile();
+}
+
+function hasUnsafeSqliteSidecar(dbPath: string): boolean {
+  for (const suffix of ['-wal', '-shm']) {
+    let st: ReturnType<typeof lstatIfPresentSync>;
+    try {
+      st = lstatIfPresentSync(`${dbPath}${suffix}`);
+    } catch {
+      return true;
+    }
+    if (st !== null && (st.isSymbolicLink() || !st.isFile())) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function readSqliteVersionTag(dbPath: string): string {
+  if (!isRegularNonSymlinkFile(dbPath) || hasUnsafeSqliteSidecar(dbPath)) return '';
   const pair = captureWalPairSnapshot(dbPath, `${dbPath}-wal`);
   if (pair.db === null && pair.wal === null) return '';
   const fmt = (snap: FileVersionSnapshot | null): string =>
@@ -237,6 +263,7 @@ export function withReadonlyDb<T>(
   reader: (db: DatabaseSync) => T,
   options?: ReadonlyDbOptions,
 ): T | null {
+  if (!isRegularNonSymlinkFile(dbPath) || hasUnsafeSqliteSidecar(dbPath)) return null;
   if (hasActiveWalFile(dbPath)) {
     const snap = readViaTempWalSnapshot(dbPath, reader, options);
     if (snap.status === 'ok') {

@@ -15,7 +15,7 @@ import { isFiniteNum, nonEmptyStr } from './core/guards.ts';
 import { buildPresetConfig, cloneHudConfig, PRESET_TEMPLATES } from './core/hud-config.ts';
 import { lstatIfPresentSync, statIfPresentSync } from './fs-utils.ts';
 import { DEFAULT_TERM_WIDTH } from './render/ansi.ts';
-import { formatHudLines, resolveEffectiveExceeds200k } from './render/format-hud.ts';
+import { formatHudLines, normalizeEffectiveStatusData } from './render/format-hud.ts';
 import { hasAnyActivityLine } from './render/modules.ts';
 import {
   canEmitOsc8Links,
@@ -147,10 +147,7 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
         ? (collectors?.loadSessionTelemetry ?? loadSessionTelemetry)(cliHome, data)
         : null;
 
-  const effectiveData: StatusLineData =
-    data.exceeds_200k_tokens === true && !resolveEffectiveExceeds200k(data, telemetry)
-      ? { ...data, exceeds_200k_tokens: false }
-      : data;
+  const effectiveData = normalizeEffectiveStatusData(data, telemetry);
 
   const needActivity = config.segments.badges || hasAnyActivityLine(config.lines);
   const activity =

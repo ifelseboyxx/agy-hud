@@ -45,13 +45,19 @@ export function resolveEffectiveExceeds200k(
   return data.exceeds_200k_tokens === true;
 }
 
+export function normalizeEffectiveStatusData(
+  data: StatusLineData,
+  telemetry: SessionTelemetry | null | undefined,
+): StatusLineData {
+  return data.exceeds_200k_tokens === true && !resolveEffectiveExceeds200k(data, telemetry)
+    ? { ...data, exceeds_200k_tokens: false }
+    : data;
+}
+
 export function formatHudLines(input: FormatHudLinesInput): string[] {
   const { config, telemetry } = input;
   const enabledLines = new Set<HudLineId>(config.lines);
-  const effectiveData: StatusLineData =
-    input.data.exceeds_200k_tokens === true && !resolveEffectiveExceeds200k(input.data, telemetry)
-      ? { ...input.data, exceeds_200k_tokens: false }
-      : input.data;
+  const effectiveData = normalizeEffectiveStatusData(input.data, telemetry);
 
   const hasTodosLine = enabledLines.has('todos') && formatTodosLine(input.todos).length > 0;
   const termWidth =

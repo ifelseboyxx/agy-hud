@@ -1,5 +1,6 @@
-import { aggregateCompletedTools } from '../collectors/activity-parse.ts';
-import { selectNewestFirst } from '../core/guards.ts';
+import { aggregateCompletedTools } from '../collectors/activity-aggregate.ts';
+import { shortenTarget } from '../collectors/activity-parse.ts';
+import { nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { CompletedToolAggregate, TodoSummary, TranscriptToolEntry } from '../types.ts';
 import { CYAN, DEFAULT_TERM_WIDTH, GRAY, GREEN, RESET, truncateToWidth, visibleLen, YELLOW } from './ansi.ts';
@@ -25,6 +26,7 @@ export interface HudToolRunningSpec {
   readonly name?: string;
   readonly disp: string;
   readonly target: string;
+  readonly fullTarget?: string;
 }
 
 export interface HudToolCompletedSpec {
@@ -38,9 +40,18 @@ interface ToolsLineLayout {
   readonly shownCompleted: number;
 }
 
+function resolveRunningToolLabel(
+  spec: HudToolRunningSpec,
+  shortenRawTarget: boolean,
+): { readonly disp: string; readonly target: string } {
+  const disp = sanitizeTerminalLabel(spec.disp.length > 0 ? spec.disp : (spec.name ?? ''));
+  const rawTarget = shortenRawTarget ? (nonEmptyStr(spec.fullTarget) ?? spec.target) : spec.target;
+  const shortened = shortenRawTarget && rawTarget.length > 0 ? shortenTarget(rawTarget) : rawTarget;
+  return { disp, target: sanitizeTerminalLabel(shortened) };
+}
+
 export function makeRunningToolItem(entry: TranscriptToolEntry): PackableLineItem {
-  const disp = sanitizeTerminalLabel(entry.disp.length > 0 ? entry.disp : entry.name);
-  const target = sanitizeTerminalLabel(entry.target);
+  const { disp, target } = resolveRunningToolLabel(entry, false);
   const tgt = target.length > 0 ? `${GRAY}: ${target}${RESET}` : '';
   const full = `${YELLOW}◐${RESET} ${CYAN}${disp}${RESET}${tgt}`;
   return {
@@ -168,8 +179,7 @@ export function computeHudVisibleToolsCap(
     return { shownRunning: 0, shownCompleted: 0 };
   }
   const runningWidths = selectNewestFirst(runningTools, MAX_RUNNING_TOOLS).map((rt) => {
-    const disp = sanitizeTerminalLabel(rt.disp.length > 0 ? rt.disp : (rt.name ?? ''));
-    const target = sanitizeTerminalLabel(rt.target);
+    const { disp, target } = resolveRunningToolLabel(rt, true);
     return visibleLen(target.length > 0 ? `◐ ${disp}: ${target}` : `◐ ${disp}`);
   });
   const completedWidths = completedTools

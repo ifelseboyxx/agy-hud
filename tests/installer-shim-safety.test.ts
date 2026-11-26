@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, write
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
+import { inspectCliShim } from '../src/cli/installer/shim.ts';
 import {
   createFakeAgyBin,
   createTempDirTracker,
@@ -10,6 +11,7 @@ import {
   makeIsolatedEnv,
   readJson,
   spawnNodeScriptAsync,
+  waitForFile,
   writeJson,
   type ScriptResult,
 } from './helpers.ts';
@@ -239,5 +241,73 @@ void describe('CLI shim rollback safety and doctor diagnostics', { concurrency: 
     const missingCliDoc = await runInstallAsync(['doctor', '--target', targetB, '--bin-dir', binDir], env);
     assert.notEqual(missingCliDoc.status, 0);
     assert.ok(missingCliDoc.stdout.includes('missing'));
+  });
+
+  void it('serializes separate installs and uninstalls sharing a binDir and preserves repointed shim', async (t) => {
+    if (process.platform === 'win32') return;
+    const localTracker = createTempDirTracker();
+    t.after(() => localTracker.cleanup());
+    const root = localTracker.makeTempDir('agy-hud-shared-bindir-');
+    const homeA = path.join(root, 'home-a');
+    const homeB = path.join(root, 'home-b');
+    const targetA = path.join(root, 'plugin-a');
+    const targetB = path.join(root, 'plugin-b');
+    const sharedBin = path.join(root, 'shared-bin');
+    const shimPath = path.join(sharedBin, 'agy-hud');
+    mkdirSync(homeA, { recursive: true });
+    mkdirSync(homeB, { recursive: true });
+
+    const envA = makeFastEnv(homeA);
+    assert.equal(
+      (await runInstallAsync(['install', '--target', targetA, '--bin-dir', sharedBin, '--no-enable', '--quiet'], envA))
+        .status,
+      0,
+    );
+    assert.equal(inspectCliShim(sharedBin, targetA, envA).status, 'owned-self');
+
+    const bEntered = path.join(root, 'b-entered.flag');
+    const bRelease = path.join(root, 'b-release.flag');
+    const pauseBinB = createFakeAgyBin(
+      homeB,
+      'b-hold',
+      `  echo "entered" > ${JSON.stringify(bEntered)}
+  while [ ! -f ${JSON.stringify(bRelease)} ]; do sleep 0.02; done
+  exit 0`,
+    );
+    const envB = makeIsolatedEnv(homeB, { PATH: `${pauseBinB}${path.delimiter}${process.env.PATH ?? ''}` });
+
+    const procB = runInstallAsync(
+      ['install', '--target', targetB, '--bin-dir', sharedBin, '--no-enable', '--quiet'],
+      envB,
+    );
+    let procA: Promise<ScriptResult> | null = null;
+    try {
+      await waitForFile(bEntered, procB);
+      const repointedBytes = readFileSync(shimPath);
+      assert.equal(inspectCliShim(sharedBin, targetB, envB).status, 'owned-self');
+
+      let aSettled = false;
+      procA = runInstallAsync(
+        ['uninstall', '--target', targetA, '--bin-dir', sharedBin, '--no-enable', '--quiet'],
+        envA,
+      ).then((res) => {
+        aSettled = true;
+        return res;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(aSettled, false, 'uninstall A must wait on shared binDir lock while install B holds it');
+
+      writeFileSync(bRelease, 'go', 'utf8');
+      const [resB, resA] = await Promise.all([procB, procA]);
+      assert.equal(resB.status, 0, resB.stderr);
+      assert.equal(resA.status, 0, resA.stderr);
+      assert.equal(existsSync(targetA), false);
+      assert.equal(existsSync(targetB), true);
+      assert.deepEqual(readFileSync(shimPath), repointedBytes);
+      assert.equal(inspectCliShim(sharedBin, targetB, envB).status, 'owned-self');
+    } finally {
+      if (!existsSync(bRelease)) writeFileSync(bRelease, 'go', 'utf8');
+      await Promise.allSettled(procA ? [procB, procA] : [procB]);
+    }
   });
 });

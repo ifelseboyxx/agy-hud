@@ -39,7 +39,7 @@ Key boundaries:
 All four user-facing surfaces (terminal HUD, OSC 8 Markdown, CLI `snapshot`, and MCP `HUD Inspector`) share two canonical primitives so counts, ordering, and in-place rewrites stay identical:
 
 1. **Incremental transcript scanning** (`src/collectors/transcript-scanner.ts`): Computes stable-prefix hashes (`ino`, `size`, `mtimeNs`, `contentHash`, `stablePrefixHash`) and detects in-place same-inode/same-length transcript rewrites. Consumed by both `src/collectors/activity.ts` (HUD hot path) and `src/collectors/snapshot-transcript.ts` (full snapshot loader).
-2. **Activity aggregation** (`src/collectors/activity-aggregate.ts`): Canonical completed-tool grouping, MCP server/subtool grouping, and count-preserving agent merging (retaining multiple completed runs with identical names). Consumed by both `src/collectors/snapshot-loader.ts` and `src/render/osc8-markdown.ts`.
+2. **Activity aggregation** (`src/collectors/activity-aggregate.ts`): Canonical completed-tool grouping, MCP server/subtool grouping, and count-preserving agent merging (retaining multiple completed runs with identical names). Consumed by `src/collectors/activity.ts`, `src/collectors/snapshot-loader.ts`, `src/render/activity-lines.ts`, `src/render/activity-summary.ts`, and `src/render/osc8-markdown.ts`.
 
 Cross-surface parity is guarded by `tests/surface-parity.test.ts`.
 

@@ -6,7 +6,14 @@ import type {
   SnapshotMcpServer,
   SnapshotRunningTool,
 } from '../snapshot-types.ts';
-import type { ActivityAgentEntry, AgentEntry, AgentsKind, AgentsSummary } from '../types.ts';
+import type {
+  ActivityAgentEntry,
+  AgentEntry,
+  AgentsKind,
+  AgentsSummary,
+  CompletedToolAggregate,
+  TranscriptToolEntry,
+} from '../types.ts';
 import { shortenTarget } from './activity-parse.ts';
 import { cleanAgentLabel } from './agents.ts';
 import { formatRelativeAge } from './snapshot-envelope.ts';
@@ -30,6 +37,9 @@ export interface AggregateToolsOptions {
   knownMcpServers?: readonly string[];
   targetDisplayLen?: number;
   hideSkillReads?: boolean;
+  preferEntryTarget?: boolean;
+  collectMcps?: boolean;
+  collectRunning?: boolean;
 }
 
 export interface AggregatedToolActivity {
@@ -77,6 +87,9 @@ export function aggregateActivityTools(
   const knownServers = options.knownMcpServers ?? [];
   const targetDisplayLen = options.targetDisplayLen ?? SNAPSHOT_TARGET_DISPLAY_LEN;
   const hideSkillReads = options.hideSkillReads ?? true;
+  const preferEntryTarget = options.preferEntryTarget === true;
+  const collectMcps = options.collectMcps !== false;
+  const collectRunning = options.collectRunning !== false;
 
   const runningTools: SnapshotRunningTool[] = [];
   const completedMap = new Map<
@@ -95,16 +108,18 @@ export function aggregateActivityTools(
     return subCounts;
   };
 
-  for (const srv of knownServers) {
-    if (srv.length > 0) {
-      ensureServer(srv);
+  if (collectMcps) {
+    for (const srv of knownServers) {
+      if (srv.length > 0) {
+        ensureServer(srv);
+      }
     }
   }
   const knownSet = new Set<string>(knownServers);
   let totalToolCalls = 0;
 
   for (const call of tools) {
-    const mcpPair = resolveToolMcpPair(call, knownSet);
+    const mcpPair = collectMcps ? resolveToolMcpPair(call, knownSet) : null;
     if (mcpPair !== null) {
       const subCounts = ensureServer(mcpPair[0]);
       subCounts.set(mcpPair[1], (subCounts.get(mcpPair[1]) ?? 0) + 1);
@@ -112,6 +127,7 @@ export function aggregateActivityTools(
 
     if (hideSkillReads && call.isSkillRead) continue;
     totalToolCalls += 1;
+    if (call.running && !collectRunning) continue;
 
     const disp = call.disp.length > 0 ? call.disp : call.name;
     const rawTarget = typeof call.fullTarget === 'string' && call.fullTarget.length > 0 ? call.fullTarget : call.target;
@@ -158,7 +174,11 @@ export function aggregateActivityTools(
       return {
         disp,
         count: info.count,
-        latestTarget: fullTarget.length > 0 ? shortenTarget(fullTarget, targetDisplayLen) : info.latestShort,
+        latestTarget: preferEntryTarget
+          ? info.latestShort
+          : fullTarget.length > 0
+            ? shortenTarget(fullTarget, targetDisplayLen)
+            : info.latestShort,
         fullTarget,
         recentTargets: info.targets,
         ...(unlinkedTargets.length > 0 ? { unlinkedTargets } : {}),
@@ -176,6 +196,25 @@ export function aggregateActivityTools(
   });
 
   return { runningTools, completedTools, totalToolCalls, mcps };
+}
+
+export function aggregateCompletedTools(
+  tools: readonly TranscriptToolEntry[],
+  hasSkills = false,
+): CompletedToolAggregate[] {
+  const { completedTools } = aggregateActivityTools(tools, {
+    hideSkillReads: hasSkills,
+    preferEntryTarget: true,
+    collectMcps: false,
+    collectRunning: false,
+  });
+  return completedTools.map(({ disp, count, latestTarget, fullTarget, recentTargets }) => ({
+    disp,
+    count,
+    latestTarget,
+    fullTarget,
+    recentTargets,
+  }));
 }
 
 export function mergeActivityAgents(

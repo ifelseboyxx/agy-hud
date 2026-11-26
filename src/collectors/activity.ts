@@ -3,13 +3,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { nonEmptyStr } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { StatusLineData, TodoSummary, TranscriptActivity, TranscriptToolEntry } from '../types.ts';
+import { aggregateCompletedTools } from './activity-aggregate.ts';
 import {
   ACTIVITY_CACHE_SCHEMA_VERSION,
   type ActivityCacheRecord,
   readActivityCache,
   writeActivityCache,
 } from './activity-cache.ts';
-import { aggregateCompletedTools, listMcpServers, shortenTarget } from './activity-parse.ts';
+import { listMcpServers, shortenTarget } from './activity-parse.ts';
 import { resolveCliSubdirFile, resolveConversationId, resolveSafeTranscriptFile } from './safe-path.ts';
 import { scanTranscriptWithCache, type ScannedToolCall } from './transcript-scanner.ts';
 

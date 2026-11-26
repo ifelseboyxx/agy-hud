@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { shortenTarget } from '../../collectors/activity-parse.ts';
+import { formatToolsLine } from '../../render/activity-lines.ts';
 import { stripAnsi, visibleLen } from '../../render/ansi.ts';
 import type { ActivitySnapshot, SnapshotCompletedTool, SnapshotRunningTool } from '../../snapshot-types.ts';
+import type { TranscriptToolEntry } from '../../types.ts';
 import {
   renderStructuredInspector,
   renderStructuredInspectorLines,
@@ -169,6 +172,83 @@ void describe('Structured Inspector terminal renderer', () => {
     const firstRunningIdx = lines.findIndex((line) => line.includes('◐'));
     const firstCompletedIdx = lines.findIndex((line) => line.includes('✓'));
     assert.ok(firstRunningIdx >= 0 && firstCompletedIdx > firstRunningIdx);
+  });
+
+  void it('tags the second running tool with [+more] on narrow widths when HUD shrinks shownRunning to 1', () => {
+    const runningTools: SnapshotRunningTool[] = [
+      {
+        name: 'edit_file',
+        disp: 'edit_file',
+        target: 'older-long-target-module.ts',
+        fullTarget: '/repo/older-long-target-module.ts',
+        isMcp: false,
+      },
+      {
+        name: 'run_command',
+        disp: 'run_command',
+        target: 'pnpm verify --filter',
+        fullTarget: 'pnpm verify --filter',
+        isMcp: false,
+      },
+    ];
+    const snap = makeSnapshot({ runningTools });
+    const lines = renderStructuredInspectorLines(snap, { sections: ['tools'], color: false, width: 60 });
+    const runningLines = lines.filter((line) => line.includes('◐'));
+    assert.equal(runningLines.length, 2);
+    assert.ok(runningLines[0]?.includes('run_command'));
+    assert.equal(runningLines[0]?.includes('[+more]'), false);
+    assert.ok(runningLines[1]?.includes('edit_file'));
+    assert.equal(runningLines[1]?.includes('[+more]'), true);
+  });
+
+  void it('does not emit spurious [+more] when 21-34 char snapshot running targets fit HUD 20-char shortening', () => {
+    const runningTools: SnapshotRunningTool[] = [
+      {
+        name: 'edit_file',
+        disp: 'edit_file',
+        target: 'older-long-target-module.ts',
+        fullTarget: '/repo/older-long-target-module.ts',
+        isMcp: false,
+      },
+      {
+        name: 'run_command',
+        disp: 'run_command',
+        target: 'pnpm verify --filter',
+        fullTarget: 'pnpm verify --filter',
+        isMcp: false,
+      },
+    ];
+    const snap = makeSnapshot({ runningTools, completedTools: [], totalToolCalls: 2 });
+    const lines = renderStructuredInspectorLines(snap, { sections: ['tools'], color: false, width: 80 });
+    const runningLines = lines.filter((line) => line.includes('◐'));
+    assert.equal(runningLines.length, 2);
+    assert.equal(runningLines[0]?.includes('[+more]'), false);
+    assert.equal(runningLines[1]?.includes('[+more]'), false);
+  });
+
+  void it('keeps HUD and CLI running-tool parity at 39 cols for filenames with leading whitespace', () => {
+    const olderFull = '/repo/b.c';
+    const newerFull = '/repo/ a.ts';
+    const transcriptTools: TranscriptToolEntry[] = [
+      { name: 'edit_file', disp: 'edit_file', target: shortenTarget(olderFull), running: true, isSkillRead: false },
+      { name: 'read_file', disp: 'read_file', target: shortenTarget(newerFull), running: true, isSkillRead: false },
+    ];
+    const hudPlain = stripAnsi(formatToolsLine(transcriptTools, false, 39));
+    assert.equal(hudPlain.includes('read_file: a.ts'), true);
+    assert.equal(hudPlain.includes('edit_file: b.c'), true);
+    assert.equal(hudPlain.includes('more'), false);
+
+    const runningTools: SnapshotRunningTool[] = [
+      { name: 'edit_file', disp: 'edit_file', target: shortenTarget(olderFull), fullTarget: olderFull, isMcp: false },
+      { name: 'read_file', disp: 'read_file', target: shortenTarget(newerFull), fullTarget: newerFull, isMcp: false },
+    ];
+    const snap = makeSnapshot({ runningTools, completedTools: [], totalToolCalls: 2 });
+    const runningLines = renderStructuredInspectorLines(snap, { sections: ['tools'], color: false, width: 39 }).filter(
+      (line) => line.includes('◐'),
+    );
+    assert.equal(runningLines.length, 2);
+    assert.equal(runningLines[0]?.includes('[+more]'), false);
+    assert.equal(runningLines[1]?.includes('[+more]'), false);
   });
 
   void it('renders completed tools in 2 aligned columns at cols >= 98 with > 4 types and collapses to 1 column below 98', () => {

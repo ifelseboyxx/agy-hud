@@ -9,7 +9,7 @@ import {
   BRIGHT_WHITE,
   colorForUsedPct,
   CYAN,
-  fmtTokens,
+  formatTelemetryFields,
   GRAY,
   GREEN,
   MAGENTA,
@@ -140,22 +140,19 @@ function formatTelemetryStripLine(
   if (snapshot.model.length > 0) {
     parts.push(`${palette.cyan}${sanitizeTerminalText(snapshot.model)}${palette.reset}`);
   }
-  if (tel.ctxUsed !== null && tel.ctxMax !== null && tel.ctxMax > 0) {
-    const pct = Math.min(100, Math.round((tel.ctxUsed / tel.ctxMax) * 100));
-    const ctxCol = useColor ? colorForUsedPct(pct) : '';
-    parts.push(`Ctx ${ctxCol}${fmtTokens(tel.ctxUsed)}/${fmtTokens(tel.ctxMax)} (${pct}%)${palette.reset}`);
+  const fields = formatTelemetryFields(tel);
+  if (fields.ctx !== null) {
+    const ctxCol = useColor ? colorForUsedPct(fields.ctx.pct) : '';
+    parts.push(`Ctx ${ctxCol}${fields.ctx.text}${palette.reset}`);
   }
-  if (tel.tps !== null && tel.tps > 0) {
-    const tpsText = tel.tps >= 100 ? `${tel.tps.toFixed(0)} t/s` : `${tel.tps.toFixed(1)} t/s`;
-    parts.push(`${palette.green}${tpsText}${palette.reset}`);
+  if (fields.tpsText !== null) {
+    parts.push(`${palette.green}${fields.tpsText}${palette.reset}`);
   }
-  if (tel.ttft !== null && tel.ttft > 0) {
-    const ttftText = tel.ttft < 10 ? `${tel.ttft.toFixed(2)}s` : `${tel.ttft.toFixed(1)}s`;
-    parts.push(`TTFT ${ttftText}`);
+  if (fields.ttftText !== null) {
+    parts.push(`TTFT ${fields.ttftText}`);
   }
-  if (tel.cachePct !== null && (tel.genCount > 0 || tel.cachePct > 0)) {
-    const pct = Math.round(Math.max(0, Math.min(100, tel.cachePct)));
-    parts.push(`Cache ${pct}%`);
+  if (fields.cacheText !== null) {
+    parts.push(`Cache ${fields.cacheText}`);
   }
   if (parts.length === 0) return '';
 

@@ -100,6 +100,22 @@ function captureProcessRun(fn: () => number): { code: number; stdout: string; st
   }
 }
 
+function makeStreams(
+  isTTY: boolean,
+  cols = 100,
+  rows = 24,
+): {
+  stdin: MockConfigureInput;
+  stdout: MockConfigureOutput;
+  stderr: ReturnType<typeof makeStderrCapture>;
+} {
+  return {
+    stdin: new MockConfigureInput(isTTY),
+    stdout: new MockConfigureOutput(isTTY, isTTY ? cols : undefined, isTTY ? rows : undefined),
+    stderr: makeStderrCapture(),
+  };
+}
+
 afterEach(() => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
@@ -110,86 +126,131 @@ afterEach(() => {
 });
 
 void describe('runConfigureInteractive TTY runner', () => {
-  void it('enforces TTY guard with actionable non-interactive hint and zero ANSI control sequences', async () => {
-    const cliHome = makeTempCliHome('agy-hud-tui-nontty-');
-    const stdin = new MockConfigureInput(false);
-    const stdout = new MockConfigureOutput(false);
-    const stderr = makeStderrCapture();
+  void it('exits 1 with actionable non-interactive hint without writing disk when not a TTY', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-nontty-hint-');
+    const { stdin, stdout, stderr } = makeStreams(false);
 
     const code = await runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream });
 
     assert.equal(code, 1);
-    assert.deepEqual(stdin.rawModes, []);
-    assert.equal(stdin.resumed, false);
-    assert.equal(stdout.joined(), '');
-    assert.equal(stderr.text().includes('\x1b['), false);
     assert.ok(stderr.text().includes('agy-hud configure <preset>'));
     assert.equal(existsSync(path.join(cliHome, 'hud-config.json')), false);
   });
 
-  void it('saves selected Tier 1 preset atomically on Enter and restores terminal state', async () => {
+  void it('emits zero ANSI control sequences and skips raw mode on non-TTY', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-nontty-ansi-');
+    const { stdin, stdout, stderr } = makeStreams(false);
+
+    await runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream });
+
+    assert.deepEqual(stdin.rawModes, []);
+    assert.equal(stdin.resumed, false);
+    assert.equal(stdout.joined(), '');
+    assert.equal(stderr.text().includes('\x1b['), false);
+  });
+
+  void it('saves selected Tier 1 preset atomically on Enter', async () => {
     const cliHome = makeTempCliHome('agy-hud-tui-t1-save-');
-    const stdin = new MockConfigureInput(true);
-    const stdout = new MockConfigureOutput(true, 100, 24);
-    const stderr = makeStderrCapture();
+    const { stdin, stdout, stderr } = makeStreams(true);
 
     const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
-
-    assert.deepEqual(stdin.rawModes, [true]);
-    assert.equal(stdin.resumed, true);
-    assert.ok(stdout.joined().startsWith('\x1b[?1049h\x1b[?25l'));
-
-    const writesBeforeResize = stdout.chunks.length;
-    stdout.columns = 112;
-    stdout.rows = 28;
-    stdout.emit('resize');
-    assert.ok(stdout.chunks.length > writesBeforeResize);
-
     // full (idx 4) -> Up -> swarm (idx 3) -> Enter
     stdin.emit('data', Buffer.from('\x1b[A'));
     stdin.emit('data', Buffer.from('\r'));
     const code = await promise;
 
     assert.equal(code, 0);
-    assert.deepEqual(stdin.rawModes, [true, false]);
-    assert.equal(stdin.paused, true);
-    assert.ok(stdout.joined().includes('\x1b[?25h\x1b[?1049l'));
-    assert.equal(stdout.listenerCount('resize'), 0);
-    assert.equal(stdin.listenerCount('data'), 0);
-
     const saved = JSON.parse(readFileSync(path.join(cliHome, 'hud-config.json'), 'utf8')) as HudConfig;
     assert.equal(saved.preset, 'swarm');
     assert.deepEqual(saved.lines, ['mode', 'identity', 'usage', 'agents', 'todos']);
   });
 
-  void it('saves Tier 2 module toggles, row reordering, and osc8Links atomically on Enter', async () => {
-    const cliHome = makeTempCliHome('agy-hud-tui-t2-save-');
-    mkdirSync(cliHome, { recursive: true });
-    writeFileSync(path.join(cliHome, 'hud-config.json'), `${JSON.stringify(buildPresetConfig('compact'))}\n`, 'utf8');
-    const stdin = new MockConfigureInput(true);
-    const stdout = new MockConfigureOutput(true, 100, 24);
-    const stderr = makeStderrCapture();
+  void it('restores raw mode, alt-screen, cursor, and stream listeners on exit', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-t1-restore-');
+    const { stdin, stdout, stderr } = makeStreams(true);
 
     const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
+    assert.deepEqual(stdin.rawModes, [true]);
+    assert.equal(stdin.resumed, true);
+    assert.ok(stdout.joined().startsWith('\x1b[?1049h\x1b[?25l'));
 
+    stdin.emit('data', Buffer.from('\r'));
+    assert.equal(await promise, 0);
+    assert.deepEqual(stdin.rawModes, [true, false]);
+    assert.equal(stdin.paused, true);
+    assert.ok(stdout.joined().includes('\x1b[?25h\x1b[?1049l'));
+    assert.equal(stdout.listenerCount('resize'), 0);
+    assert.equal(stdin.listenerCount('data'), 0);
+  });
+
+  void it('redraws the interactive frame when stdout emits resize', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-resize-');
+    const { stdin, stdout, stderr } = makeStreams(true);
+
+    const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
+    const writesBeforeResize = stdout.chunks.length;
+    stdout.columns = 112;
+    stdout.rows = 28;
+    stdout.emit('resize');
+    assert.ok(stdout.chunks.length > writesBeforeResize);
+
+    stdin.emit('data', Buffer.from('q'));
+    assert.equal(await promise, 0);
+  });
+
+  void it('persists Tier 2 line reordering on Enter', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-t2-order-');
+    mkdirSync(cliHome, { recursive: true });
+    writeFileSync(path.join(cliHome, 'hud-config.json'), `${JSON.stringify(buildPresetConfig('compact'))}\n`, 'utf8');
+    const { stdin, stdout, stderr } = makeStreams(true);
+
+    const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
     stdin.emit('data', Buffer.from('\t'));
     stdin.emit('data', Buffer.from('\x1b[B'));
     stdin.emit('data', Buffer.from('\x1b[B'));
     stdin.emit('data', Buffer.from('['));
-    stdin.emit('data', Buffer.from('\x1b[B'));
-    stdin.emit('data', Buffer.from('\x1b[B'));
-    stdin.emit('data', Buffer.from('\x1b[B'));
+    stdin.emit('data', Buffer.from('\r'));
+
+    assert.equal(await promise, 0);
+    const saved = JSON.parse(readFileSync(path.join(cliHome, 'hud-config.json'), 'utf8')) as HudConfig;
+    assert.deepEqual(saved.lines, ['mode', 'usage', 'identity', 'activity']);
+  });
+
+  void it('persists Tier 2 line module toggle on Enter', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-t2-toggle-');
+    mkdirSync(cliHome, { recursive: true });
+    writeFileSync(path.join(cliHome, 'hud-config.json'), `${JSON.stringify(buildPresetConfig('compact'))}\n`, 'utf8');
+    const { stdin, stdout, stderr } = makeStreams(true);
+
+    const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
+    stdin.emit('data', Buffer.from('\t'));
+    for (let i = 0; i < 4; i += 1) {
+      stdin.emit('data', Buffer.from('\x1b[B'));
+    }
     stdin.emit('data', Buffer.from(' '));
-    for (let i = 0; i < 15; i += 1) {
+    stdin.emit('data', Buffer.from('\r'));
+
+    assert.equal(await promise, 0);
+    const saved = JSON.parse(readFileSync(path.join(cliHome, 'hud-config.json'), 'utf8')) as HudConfig;
+    assert.deepEqual(saved.lines, ['mode', 'identity', 'usage', 'activity', 'tools']);
+  });
+
+  void it('persists Tier 2 osc8Links toggle on Enter', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-t2-osc8-');
+    mkdirSync(cliHome, { recursive: true });
+    writeFileSync(path.join(cliHome, 'hud-config.json'), `${JSON.stringify(buildPresetConfig('compact'))}\n`, 'utf8');
+    const { stdin, stdout, stderr } = makeStreams(true);
+
+    const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
+    stdin.emit('data', Buffer.from('\t'));
+    for (let i = 0; i < 20; i += 1) {
       stdin.emit('data', Buffer.from('j'));
     }
     stdin.emit('data', Buffer.from(' '));
     stdin.emit('data', Buffer.from('\r'));
-    const code = await promise;
 
-    assert.equal(code, 0);
+    assert.equal(await promise, 0);
     const saved = JSON.parse(readFileSync(path.join(cliHome, 'hud-config.json'), 'utf8')) as HudConfig;
-    assert.deepEqual(saved.lines, ['mode', 'usage', 'identity', 'activity', 'tools']);
     assert.equal(saved.osc8Links, false);
   });
 
@@ -200,9 +261,7 @@ void describe('runConfigureInteractive TTY runner', () => {
     const originalRaw = `${JSON.stringify(buildPresetConfig('zen'), null, 2)}\n`;
     writeFileSync(configPath, originalRaw, 'utf8');
 
-    const stdin = new MockConfigureInput(true);
-    const stdout = new MockConfigureOutput(true, 100, 24);
-    const stderr = makeStderrCapture();
+    const { stdin, stdout, stderr } = makeStreams(true);
 
     const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
     stdin.emit('data', Buffer.from('\x1b[B'));
@@ -221,9 +280,7 @@ void describe('runConfigureInteractive TTY runner', () => {
     const originalRaw = `${JSON.stringify(buildPresetConfig('compact'), null, 2)}\n`;
     writeFileSync(configPath, originalRaw, 'utf8');
 
-    const stdin = new MockConfigureInput(true);
-    const stdout = new MockConfigureOutput(true, 100, 24);
-    const stderr = makeStderrCapture();
+    const { stdin, stdout, stderr } = makeStreams(true);
 
     const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
     stdin.emit('data', Buffer.from('\t'));
@@ -236,11 +293,9 @@ void describe('runConfigureInteractive TTY runner', () => {
     assert.ok(stdout.joined().endsWith('\x1b[?25h\x1b[?1049l'));
   });
 
-  void it('distinguishes split CSI arrows from standalone Esc timeout cancel without modifying disk', async () => {
-    const cliHome = makeTempCliHome('agy-hud-tui-esc-');
-    const stdin = new MockConfigureInput(true);
-    const stdout = new MockConfigureOutput(true, 100, 24);
-    const stderr = makeStderrCapture();
+  void it('treats split CSI arrow sequence as navigation without canceling', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-csi-');
+    const { stdin, stdout, stderr } = makeStreams(true);
 
     const promise = runConfigureInteractive({
       cliHome,
@@ -250,7 +305,6 @@ void describe('runConfigureInteractive TTY runner', () => {
       color: false,
       escTimeoutMs: 25,
     });
-
     const initialWrites = stdout.chunks.length;
     stdin.emit('data', Buffer.from('\x1b'));
     await new Promise((r) => setTimeout(r, 5));
@@ -260,6 +314,22 @@ void describe('runConfigureInteractive TTY runner', () => {
     assert.ok(stdout.chunks.length > initialWrites, 'split arrow CSI should update selection and redraw');
     assert.equal(stdout.joined().includes('\x1b[?1049l'), false, 'split arrow CSI must not cancel');
 
+    stdin.emit('data', Buffer.from('q'));
+    assert.equal(await promise, 0);
+  });
+
+  void it('cancels without writing disk after standalone Esc timeout', async () => {
+    const cliHome = makeTempCliHome('agy-hud-tui-esc-');
+    const { stdin, stdout, stderr } = makeStreams(true);
+
+    const promise = runConfigureInteractive({
+      cliHome,
+      stdin,
+      stdout,
+      stderr: stderr.stream,
+      color: false,
+      escTimeoutMs: 25,
+    });
     stdin.emit('data', Buffer.from('\x1b'));
     const code = await promise;
 
@@ -270,12 +340,10 @@ void describe('runConfigureInteractive TTY runner', () => {
 
   void it('restores alt-screen and cursor in finally even if entering raw mode throws', async () => {
     const cliHome = makeTempCliHome('agy-hud-tui-err-');
-    const stdin = new MockConfigureInput(true);
+    const { stdin, stdout, stderr } = makeStreams(true);
     stdin.setRawMode = (): void => {
       throw new Error('raw mode failed');
     };
-    const stdout = new MockConfigureOutput(true, 100, 24);
-    const stderr = makeStderrCapture();
 
     await assert.rejects(
       runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false }),
@@ -293,9 +361,7 @@ void describe('runConfigureInteractive TTY runner', () => {
     const rawCorrupt = '{broken-json';
     writeFileSync(configPath, rawCorrupt, 'utf8');
 
-    const stdin = new MockConfigureInput(true);
-    const stdout = new MockConfigureOutput(true, 100, 24);
-    const stderr = makeStderrCapture();
+    const { stdin, stdout, stderr } = makeStreams(true);
 
     await assert.rejects(
       runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false }),
@@ -310,9 +376,7 @@ void describe('runConfigureInteractive TTY runner', () => {
 void describe('configure -i CLI entry wiring', () => {
   void it('enforces non-TTY guard through runCliEntryAsync configure --interactive', async () => {
     const cliHome = makeTempCliHome('agy-hud-cli-tui-nontty-');
-    const nonTtyIn = new MockConfigureInput(false);
-    const nonTtyOut = new MockConfigureOutput(false);
-    const nonTtyErr = makeStderrCapture();
+    const { stdin: nonTtyIn, stdout: nonTtyOut, stderr: nonTtyErr } = makeStreams(false);
 
     const code = await runCliEntryAsync(['configure', '--interactive'], {
       cliHome,
@@ -329,9 +393,7 @@ void describe('configure -i CLI entry wiring', () => {
 
   void it('saves preset edits through runCliEntryAsync configure -i on a TTY', async () => {
     const cliHome = makeTempCliHome('agy-hud-cli-tui-tty-');
-    const ttyIn = new MockConfigureInput(true);
-    const ttyOut = new MockConfigureOutput(true, 100, 24);
-    const ttyErr = makeStderrCapture();
+    const { stdin: ttyIn, stdout: ttyOut, stderr: ttyErr } = makeStreams(true);
 
     const savePromise = runCliEntryAsync(['configure', '-i'], {
       cliHome,
@@ -356,9 +418,7 @@ void describe('configure -i CLI entry wiring', () => {
     mkdirSync(cliHome, { recursive: true });
     writeFileSync(path.join(cliHome, 'hud-config.json'), '{bad', 'utf8');
 
-    const ttyIn = new MockConfigureInput(true);
-    const ttyOut = new MockConfigureOutput(true, 100, 24);
-    const ttyErr = makeStderrCapture();
+    const { stdin: ttyIn, stdout: ttyOut, stderr: ttyErr } = makeStreams(true);
     const code = await runCliEntryAsync(['configure', '-i'], {
       cliHome,
       stdin: ttyIn,

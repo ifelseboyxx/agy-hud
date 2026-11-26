@@ -1,10 +1,10 @@
 import { aggregateActivityTools, mergeActivityAgents } from '../collectors/activity-aggregate.ts';
 import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
-import { isFiniteNum, nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
+import { nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { SessionSurface } from '../snapshot-types.ts';
 import type { AgentsSummary, SessionTelemetry, StatusLineData, TranscriptActivity } from '../types.ts';
-import { fmtTokens } from './ansi.ts';
+import { formatTelemetryFields } from './ansi.ts';
 
 const HUD_RUNNING_TOOL_CAP = 2;
 const HUD_COMPLETED_TOOL_CAP = 8;
@@ -51,23 +51,12 @@ function formatCodeCell(text: string, inTable = true): string {
 }
 
 export function formatMarkdownTelemetry(telemetry: SessionTelemetry | null | undefined): string {
-  if (!telemetry) {
-    return '';
-  }
+  const fields = formatTelemetryFields(telemetry);
   const parts: string[] = [];
-  if (isFiniteNum(telemetry.ctxUsed) && isFiniteNum(telemetry.ctxMax) && telemetry.ctxMax > 0) {
-    const pct = Math.min(100, Math.round((telemetry.ctxUsed / telemetry.ctxMax) * 100));
-    parts.push(`Ctx ${fmtTokens(telemetry.ctxUsed)}/${fmtTokens(telemetry.ctxMax)} (${pct}%)`);
-  }
-  if (isFiniteNum(telemetry.tps) && telemetry.tps > 0) {
-    parts.push(telemetry.tps >= 100 ? `${telemetry.tps.toFixed(0)} t/s` : `${telemetry.tps.toFixed(1)} t/s`);
-  }
-  if (isFiniteNum(telemetry.ttft) && telemetry.ttft > 0) {
-    parts.push(`TTFT ${telemetry.ttft < 10 ? `${telemetry.ttft.toFixed(2)}s` : `${telemetry.ttft.toFixed(1)}s`}`);
-  }
-  if (isFiniteNum(telemetry.cachePct) && (telemetry.genCount > 0 || telemetry.cachePct > 0)) {
-    parts.push(`Cache ${Math.round(Math.max(0, Math.min(100, telemetry.cachePct)))}%`);
-  }
+  if (fields.ctx !== null) parts.push(`Ctx ${fields.ctx.text}`);
+  if (fields.tpsText !== null) parts.push(fields.tpsText);
+  if (fields.ttftText !== null) parts.push(`TTFT ${fields.ttftText}`);
+  if (fields.cacheText !== null) parts.push(`Cache ${fields.cacheText}`);
   return parts.join(' · ');
 }
 

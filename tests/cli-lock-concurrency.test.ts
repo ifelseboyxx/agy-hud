@@ -139,48 +139,46 @@ void describe('CLI configure and import-profile cliHomeLock isolation', async ()
     assert.equal(persisted.osc8Links, false, 'configure must preserve post-lock osc8Links across preset switch');
   });
 
-  await it('validates hud-config upfront without creating cliHome and locks MCP-only import-profile --merge-mcp', async () => {
+  await it('fails upfront on invalid hud-config preset without creating missing cliHome', () => {
+    const root = makeTempDir('agy-hud-imp-precheck-');
+    const inDir = path.join(root, 'bad-bundle');
+    const cliHome = path.join(root, 'fresh-cli-home');
+    const geminiRoot = path.join(root, 'fresh-gemini');
+    writeJson(path.join(inDir, 'hud-config.json'), { preset: 'invalid-preset' });
+
+    assert.throws(() => importProfile({ inDir, cliHome, geminiRoot }), /Invalid 'preset'/);
+    assert.equal(existsSync(cliHome), false, 'failed upfront validation must not create empty cliHome directory');
+  });
+
+  await it('blocks MCP-only import-profile --merge-mcp on MCP lock and preserves concurrent servers', async () => {
     if (process.platform === 'win32') return;
 
-    // 1. Invalid preset in inDir/hud-config.json must fail upfront before creating missing cliHome.
-    const root1 = makeTempDir('agy-hud-imp-precheck-');
-    const inDir1 = path.join(root1, 'bad-bundle');
-    const cliHome1 = path.join(root1, 'fresh-cli-home');
-    const geminiRoot1 = path.join(root1, 'fresh-gemini');
-    writeJson(path.join(inDir1, 'hud-config.json'), { preset: 'invalid-preset' });
-    assert.throws(
-      () => importProfile({ inDir: inDir1, cliHome: cliHome1, geminiRoot: geminiRoot1 }),
-      /Invalid 'preset'/,
-    );
-    assert.equal(existsSync(cliHome1), false, 'failed upfront validation must not create empty cliHome directory');
+    const root = makeTempDir('agy-hud-mcp-lock-');
+    const inDir = path.join(root, 'mcp-bundle');
+    const geminiRoot = path.join(root, '.gemini');
+    const mcpPath = path.join(geminiRoot, 'config', 'mcp_config.json');
+    writeJson(mcpPath, { mcpServers: { initial: { command: 'node' } } });
+    writeJson(path.join(inDir, 'mcp_config.template.json'), { mcpServers: { incoming: { command: 'npx' } } });
 
-    // 2. MCP-only import-profile --merge-mcp must acquire the MCP lock and observe post-lock mcp_config.json changes.
-    const root2 = makeTempDir('agy-hud-mcp-lock-');
-    const inDir2 = path.join(root2, 'mcp-bundle');
-    const geminiRoot2 = path.join(root2, '.gemini');
-    const mcpPath2 = path.join(geminiRoot2, 'config', 'mcp_config.json');
-    writeJson(mcpPath2, { mcpServers: { initial: { command: 'node' } } });
-    writeJson(path.join(inDir2, 'mcp_config.template.json'), { mcpServers: { incoming: { command: 'npx' } } });
-
-    const env2 = makeIsolatedEnv(root2);
-    const mcpLock2 = getMcpConfigLockPath(geminiRoot2);
-    const lockEntered = path.join(root2, 'mcp-lock-entered.flag');
-    const lockRelease = path.join(root2, 'mcp-lock-release.flag');
+    const env = makeIsolatedEnv(root);
+    const mcpLock = getMcpConfigLockPath(geminiRoot);
+    const lockEntered = path.join(root, 'mcp-lock-entered.flag');
+    const lockRelease = path.join(root, 'mcp-lock-release.flag');
 
     const holderCode = `import { existsSync, writeFileSync } from 'node:fs';
 import { withFileLocksSync } from './src/core/file-lock.ts';
 const cell = new Int32Array(new SharedArrayBuffer(4));
-withFileLocksSync([${JSON.stringify(mcpLock2)}], () => {
+withFileLocksSync([${JSON.stringify(mcpLock)}], () => {
   writeFileSync(${JSON.stringify(lockEntered)}, 'held', 'utf8');
   while (!existsSync(${JSON.stringify(lockRelease)})) Atomics.wait(cell, 0, 0, 20);
-  writeFileSync(${JSON.stringify(mcpPath2)}, JSON.stringify({ mcpServers: { initial: { command: 'node' }, concurrent: { command: 'uvx' } } }, null, 2) + '\\n', 'utf8');
+  writeFileSync(${JSON.stringify(mcpPath)}, JSON.stringify({ mcpServers: { initial: { command: 'node' }, concurrent: { command: 'uvx' } } }, null, 2) + '\\n', 'utf8');
 }, 10_000);
 `;
-    const procHolder = spawnNodeAsync(['--input-type=module', '-e', holderCode], env2);
+    const procHolder = spawnNodeAsync(['--input-type=module', '-e', holderCode], env);
     await waitForFile(lockEntered, procHolder);
 
     let mcpImportSettled = false;
-    const procImport = spawnNodeAsync([DIST_CLI, 'import-profile', '--in', inDir2, '--merge-mcp'], env2).then((res) => {
+    const procImport = spawnNodeAsync([DIST_CLI, 'import-profile', '--in', inDir, '--merge-mcp'], env).then((res) => {
       mcpImportSettled = true;
       return res;
     });
@@ -192,7 +190,7 @@ withFileLocksSync([${JSON.stringify(mcpLock2)}], () => {
     assert.equal(holderRes.status, 0, holderRes.stderr);
     assert.equal(importRes.status, 0, importRes.stderr);
 
-    const mergedServers = readJson(mcpPath2).mcpServers as Record<string, unknown>;
+    const mergedServers = readJson(mcpPath).mcpServers as Record<string, unknown>;
     assert.ok(mergedServers.initial);
     assert.ok(
       mergedServers.concurrent,

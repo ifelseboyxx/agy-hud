@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
-import { getCliHomeLockPath, getTargetLockPath } from '../src/core/file-lock.ts';
+import { installCliShim } from '../src/cli/installer/shim.ts';
+import { getCliHomeLockPath, getShimBinLockPath, getTargetLockPath } from '../src/core/file-lock.ts';
 import {
   createFakeAgyBin,
   createTempDirTracker,
@@ -171,5 +172,71 @@ void describe('installer target/cliHome lock intersection and escalation', async
     assert.equal(existsSync(targetDir), false);
     assert.deepEqual(readJson(settingsPath).statusLine, updatedPriorSl);
     assert.equal(existsSync(backupPath), false);
+  });
+
+  await it('escalates uninstall locks to binDirLock when binDir appears concurrently', async () => {
+    if (process.platform === 'win32') return;
+
+    const root = makeTempDir('agy-hud-uninst-bin-escalate-');
+    const targetA = path.join(root, 'a-plugin');
+    const targetB = path.join(root, 'b-plugin');
+    const sharedBin = path.join(root, 'z-bin');
+    const env = makeIsolatedEnv(path.join(root, 'home-a'));
+    assert.equal(existsSync(sharedBin), false);
+
+    const targetEntered = path.join(root, 'target-entered.flag');
+    const targetRelease = path.join(root, 'target-release.flag');
+    const binEntered = path.join(root, 'bin-entered.flag');
+    const binRelease = path.join(root, 'bin-release.flag');
+
+    const procTargetHold = spawnLockHolder(getTargetLockPath(targetA), targetEntered, targetRelease, env);
+    let procBinHold: Promise<ScriptResult> | null = null;
+    let procUninst: Promise<ScriptResult> | null = null;
+    try {
+      await waitForFile(targetEntered, procTargetHold);
+
+      let uninstSettled = false;
+      procUninst = spawnNodeAsync(
+        [INSTALL_SCRIPT, 'uninstall', '--target', targetA, '--bin-dir', sharedBin, '--no-enable', '--quiet'],
+        env,
+      ).then((res) => {
+        uninstSettled = true;
+        return res;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(uninstSettled, false, 'uninstall must wait on targetLock');
+      assert.equal(existsSync(sharedBin), false, 'uninstall must not create missing binDir before locking');
+
+      writeJson(path.join(targetA, 'plugin.json'), { name: 'agy-hud' });
+      const shimA = installCliShim(sharedBin, targetA, env);
+      assert.equal(existsSync(shimA.primaryPath), true);
+
+      procBinHold = spawnLockHolder(getShimBinLockPath(sharedBin), binEntered, binRelease, env);
+      await waitForFile(binEntered, procBinHold);
+
+      writeFileSync(targetRelease, 'go', 'utf8');
+      await procTargetHold;
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(uninstSettled, false, 'uninstall must escalate to binDirLock once binDir appears concurrently');
+
+      const shimB = installCliShim(sharedBin, targetB, env);
+      const bytesB = readFileSync(shimB.primaryPath);
+      writeFileSync(binRelease, 'go', 'utf8');
+      await procBinHold;
+
+      const resUninst = await procUninst;
+      assert.equal(resUninst.status, 0, resUninst.stderr);
+      assert.equal(existsSync(targetA), false);
+      assert.deepEqual(readFileSync(shimB.primaryPath), bytesB);
+    } finally {
+      if (!existsSync(targetRelease)) writeFileSync(targetRelease, 'go', 'utf8');
+      if (!existsSync(binRelease)) writeFileSync(binRelease, 'go', 'utf8');
+      await Promise.allSettled([
+        procTargetHold,
+        ...(procBinHold ? [procBinHold] : []),
+        ...(procUninst ? [procUninst] : []),
+      ]);
+    }
   });
 });

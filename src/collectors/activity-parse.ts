@@ -2,11 +2,9 @@ import { closeSync, openSync, readdirSync, readSync } from 'node:fs';
 import path from 'node:path';
 
 import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
-import type { CompletedToolAggregate, TranscriptToolEntry } from '../types.ts';
 import { resolveSafeSkillFile, resolveTrustedCliDir } from './safe-path.ts';
 
 const MAX_TARGET_LEN = 20;
-const MAX_RECENT_TARGETS = 6;
 const SKILL_HEAD_MAX_BYTES = 512;
 
 const SKILL_PATH_RE = /^(.*?\/skills\/([^/]+))\/(?:SKILL\.md$|references\/)/;
@@ -311,40 +309,4 @@ export function extractUserInputSkills(content: string): string[] {
     }
   }
   return found;
-}
-
-export function aggregateCompletedTools(
-  tools: readonly TranscriptToolEntry[],
-  hasSkills = false,
-): CompletedToolAggregate[] {
-  const byDisp = new Map<string, CompletedToolAggregate>();
-  for (const entry of tools) {
-    if (entry.running || (hasSkills && entry.isSkillRead)) {
-      continue;
-    }
-    const disp = entry.disp.length > 0 ? entry.disp : entry.name;
-    let agg = byDisp.get(disp);
-    if (!agg) {
-      agg = { disp, count: 0, latestTarget: '', fullTarget: '', recentTargets: [] };
-      byDisp.set(disp, agg);
-    }
-    agg.count += 1;
-    if (entry.target.length > 0) {
-      agg.latestTarget = entry.target;
-    }
-    const rawTarget =
-      typeof entry.fullTarget === 'string' && entry.fullTarget.length > 0 ? entry.fullTarget : entry.target;
-    if (rawTarget.length > 0) {
-      agg.fullTarget = rawTarget;
-      const existingIdx = agg.recentTargets.indexOf(rawTarget);
-      if (existingIdx !== -1) {
-        agg.recentTargets.splice(existingIdx, 1);
-      }
-      agg.recentTargets.unshift(rawTarget);
-      if (agg.recentTargets.length > MAX_RECENT_TARGETS) {
-        agg.recentTargets.pop();
-      }
-    }
-  }
-  return [...byDisp.values()].sort((a, b) => (b.count !== a.count ? b.count - a.count : a.disp.localeCompare(b.disp)));
 }

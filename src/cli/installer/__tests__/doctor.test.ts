@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -10,8 +19,10 @@ import { runInstallerCli } from '../index.ts';
 function seedMockPlugin(dir: string): void {
   mkdirSync(path.join(dir, 'dist'), { recursive: true });
   writeFileSync(path.join(dir, 'plugin.json'), '{"name":"agy-hud"}\n', 'utf8');
+  writeFileSync(path.join(dir, 'mcp_config.json'), '{"mcpServers":{}}\n', 'utf8');
   writeFileSync(path.join(dir, 'dist', 'hud.mjs'), "process.stdout.write('ok\\n');\n", 'utf8');
   writeFileSync(path.join(dir, 'dist', 'cli.mjs'), "process.stdout.write('help\\n');\n", 'utf8');
+  writeFileSync(path.join(dir, 'dist', 'mcp-hud.mjs'), 'process.exit(0);\n', 'utf8');
 }
 
 void describe('doctor malformed CLI shim handling', () => {
@@ -89,6 +100,116 @@ void describe('doctor malformed CLI shim handling', () => {
       () => runInstallerCli(['wire', '--target', targetDir, '--bin-dir', binDir, '--no-enable', '--quiet']),
       /malformed/i,
     );
+  });
+
+  void it('fails wire preflight when mcp_config.json is missing', () => {
+    const targetDir = path.join(tmpRoot, 'plugin-no-mcp-cfg');
+    seedMockPlugin(targetDir);
+    rmSync(path.join(targetDir, 'mcp_config.json'));
+
+    assert.throws(
+      () => runInstallerCli(['wire', '--target', targetDir, '--no-shim', '--no-enable', '--quiet']),
+      /Missing required file.*mcp_config\.json/,
+    );
+  });
+
+  void it('fails wire preflight when dist/mcp-hud.mjs is missing', () => {
+    const targetDir = path.join(tmpRoot, 'plugin-no-mcp-bin');
+    seedMockPlugin(targetDir);
+    rmSync(path.join(targetDir, 'dist', 'mcp-hud.mjs'));
+
+    assert.throws(
+      () => runInstallerCli(['wire', '--target', targetDir, '--no-shim', '--no-enable', '--quiet']),
+      /Missing required file.*dist\/mcp-hud\.mjs/,
+    );
+  });
+
+  function assertWirePreflightRejectsWithoutMutation(
+    tag: string,
+    mutatePlugin: (targetDir: string) => void,
+    expectedError: RegExp,
+  ): void {
+    const targetDir = path.join(tmpRoot, `plugin-${tag}`);
+    const binDir = path.join(tmpRoot, `bin-${tag}`);
+    const cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
+    const settingsPath = path.join(cliHome, 'settings.json');
+    const backupPath = path.join(cliHome, 'cache', 'agy-hud-statusline-backup.json');
+    const originalSettings = '{"statusLine":{"type":"command","command":"/prior/hud.sh","enabled":true}}\n';
+    seedMockPlugin(targetDir);
+    mutatePlugin(targetDir);
+    mkdirSync(cliHome, { recursive: true });
+    writeFileSync(settingsPath, originalSettings, 'utf8');
+    process.env.PATH = path.dirname(process.execPath);
+
+    assert.throws(
+      () => runInstallerCli(['wire', '--target', targetDir, '--bin-dir', binDir, '--no-enable', '--quiet']),
+      expectedError,
+    );
+    assert.equal(readFileSync(settingsPath, 'utf8'), originalSettings);
+    assert.equal(existsSync(backupPath), false);
+    assert.equal(existsSync(path.join(binDir, 'agy-hud')), false);
+  }
+
+  void it('fails wire preflight without mutating host files when mcp_config.json is a directory', () => {
+    if (process.platform === 'win32') return;
+    assertWirePreflightRejectsWithoutMutation(
+      'dir-mcp-cfg',
+      (targetDir) => {
+        rmSync(path.join(targetDir, 'mcp_config.json'));
+        mkdirSync(path.join(targetDir, 'mcp_config.json'));
+      },
+      /Missing required file.*mcp_config\.json/,
+    );
+  });
+
+  void it('fails wire preflight without mutating host files when mcp_config.json is a dangling symlink', () => {
+    if (process.platform === 'win32') return;
+    assertWirePreflightRejectsWithoutMutation(
+      'dangling-mcp-cfg',
+      (targetDir) => {
+        rmSync(path.join(targetDir, 'mcp_config.json'));
+        symlinkSync(path.join(tmpRoot, 'nonexistent-mcp-config.json'), path.join(targetDir, 'mcp_config.json'));
+      },
+      /Missing required file.*mcp_config\.json/,
+    );
+  });
+
+  void it('fails wire preflight without mutating host files when dist/mcp-hud.mjs is a directory', () => {
+    if (process.platform === 'win32') return;
+    assertWirePreflightRejectsWithoutMutation(
+      'dir-mcp-bin',
+      (targetDir) => {
+        rmSync(path.join(targetDir, 'dist', 'mcp-hud.mjs'));
+        mkdirSync(path.join(targetDir, 'dist', 'mcp-hud.mjs'));
+      },
+      /Missing required file.*dist\/mcp-hud\.mjs/,
+    );
+  });
+
+  void it('fails wire preflight without mutating host files when dist/mcp-hud.mjs is a dangling symlink', () => {
+    if (process.platform === 'win32') return;
+    assertWirePreflightRejectsWithoutMutation(
+      'dangling-mcp-bin',
+      (targetDir) => {
+        rmSync(path.join(targetDir, 'dist', 'mcp-hud.mjs'));
+        symlinkSync(path.join(tmpRoot, 'nonexistent-mcp-hud.mjs'), path.join(targetDir, 'dist', 'mcp-hud.mjs'));
+      },
+      /Missing required file.*dist\/mcp-hud\.mjs/,
+    );
+  });
+
+  void it('allows wire preflight to pass for a Link Install symlinked plugin directory', () => {
+    if (process.platform === 'win32') return;
+    const realPluginDir = path.join(tmpRoot, 'repo-plugin');
+    const linkTargetDir = path.join(tmpRoot, 'linked-plugin');
+    const binDir = path.join(tmpRoot, 'bin-link-ok');
+    seedMockPlugin(realPluginDir);
+    symlinkSync(realPluginDir, linkTargetDir, 'dir');
+    process.env.PATH = path.dirname(process.execPath);
+
+    const code = runInstallerCli(['wire', '--target', linkTargetDir, '--bin-dir', binDir, '--no-enable', '--quiet']);
+    assert.equal(code, 0);
+    assert.equal(existsSync(path.join(binDir, 'agy-hud')), true);
   });
 
   void it('isolates doctor HUD stdin smoke check from the user CLI Home', () => {

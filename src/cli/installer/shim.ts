@@ -1,23 +1,27 @@
 import { spawnSync } from 'node:child_process';
-import { closeSync, openSync, readSync, rmSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, openSync, unlinkSync } from 'node:fs';
+import type { Stats } from 'node:fs';
 import path from 'node:path';
 
-import { isSameCanonicalFilePath } from '../../core/statusline-ownership.ts';
+import { getErrCode } from '../../core/guards.ts';
 import {
   captureEntrySnapshotSync,
   type EntrySnapshotSync,
   lstatIfPresentSync,
+  POSIX_MODE_MASK,
+  readFdRange,
   restoreOwnedEntrySnapshotSync,
   statIfPresentSync,
   writeBufferAtomicSync,
 } from '../../fs-utils.ts';
-import { makeRollbackError, runRollbackSteps, type RollbackStep } from './fs-ops.ts';
+import { isSameStatIdentity, makeRollbackError, runRollbackSteps, type RollbackStep } from './fs-ops.ts';
 import {
   expectedCliMjsPath,
   formatPathHint,
   formatShimScriptCmd,
   formatShimScriptPosix,
   isDirOnPath,
+  parseShimHeader,
   resolveInstallNodePath,
   resolveShimBinDir,
   resolveShimPaths,
@@ -40,6 +44,7 @@ export {
 const SHIM_FILE_MODE = 0o755;
 const EXEC_BIT_MASK = 0o111;
 const MAX_SHIM_HEADER_BYTES = 4096;
+const MAX_SHIM_FILE_BYTES = 64 * 1024;
 const DEFAULT_SHIM_SMOKE_TIMEOUT_MS = 5000;
 const MS_PER_SECOND = 1000;
 
@@ -86,11 +91,13 @@ export interface RemovedShimFile {
   readonly snapshot: EntrySnapshotSync;
 }
 
+export type ShimSkipReason = 'missing' | 'foreign' | 'owned-other';
+
 export interface RemoveCliShimResult {
   readonly binDir: string;
   readonly primaryPath: string;
   readonly removed: boolean;
-  readonly skippedReason: 'missing' | 'foreign' | 'owned-other' | null;
+  readonly skippedReason: ShimSkipReason | null;
   readonly removedFiles: readonly RemovedShimFile[];
 }
 
@@ -104,9 +111,7 @@ function readHeaderPrefixSync(filePath: string): Buffer | null {
   let fd: number | undefined;
   try {
     fd = openSync(filePath, 'r');
-    const buf = Buffer.alloc(MAX_SHIM_HEADER_BYTES);
-    const bytesRead = readSync(fd, buf, 0, MAX_SHIM_HEADER_BYTES, 0);
-    return buf.subarray(0, bytesRead);
+    return readFdRange(fd, 0, MAX_SHIM_HEADER_BYTES);
   } catch {
     return null;
   } finally {
@@ -135,33 +140,11 @@ function inspectSingleShimFile(
   }
   const executable = platform === 'win32' || (st.mode & EXEC_BIT_MASK) !== 0;
   const raw = readHeaderPrefixSync(filePath);
-  if (!raw || raw.includes(0)) {
+  if (!raw) {
     return { filePath, kind, state: 'foreign', target: null, matchesSelf: false, executable };
   }
-  const lines = raw.toString('utf8').split(/\r?\n/);
-  const line1 = lines[0] ?? '';
-  const line2 = lines[1] ?? '';
-  const expectedLine1 = kind === 'cmd' ? '@echo off' : '#!/bin/sh';
-  const headerPrefix = kind === 'cmd' ? `@rem ${SHIM_HEADER_VERSION}` : `# ${SHIM_HEADER_VERSION}`;
-
-  if (line2 !== headerPrefix && !line2.startsWith(`${headerPrefix} `)) {
-    return { filePath, kind, state: 'foreign', target: null, matchesSelf: false, executable };
-  }
-  const rest = line2.slice(headerPrefix.length).trim();
-  const match = /^target=(.+)$/.exec(rest);
-  const parsedTarget = match?.[1]?.trim() ?? '';
-  const matchesSelf = parsedTarget.length > 0 && isSameCanonicalFilePath(parsedTarget, expectedTarget);
-  if (line1 !== expectedLine1 || parsedTarget.length === 0) {
-    return {
-      filePath,
-      kind,
-      state: 'malformed',
-      target: parsedTarget.length > 0 ? parsedTarget : null,
-      matchesSelf,
-      executable,
-    };
-  }
-  return { filePath, kind, state: 'valid', target: parsedTarget, matchesSelf, executable };
+  const parsed = parseShimHeader(raw, kind, expectedTarget);
+  return { filePath, kind, state: parsed.state, target: parsed.target, matchesSelf: parsed.matchesSelf, executable };
 }
 
 export function inspectCliShim(
@@ -244,16 +227,23 @@ export function inspectCliShim(
   };
 }
 
+export function assertShimBinDirUsable(binDir: string): void {
+  const dirStat = statIfPresentSync(binDir);
+  if (dirStat !== null && !dirStat.isDirectory()) {
+    throw new Error(`CLI shim directory path is not a directory: ${binDir}. Pass --bin-dir <dir> or --no-shim.`);
+  }
+  if (dirStat === null && lstatIfPresentSync(binDir)?.isSymbolicLink()) {
+    throw new Error(`CLI shim directory path is a dangling symlink: ${binDir}. Pass --bin-dir <dir> or --no-shim.`);
+  }
+}
+
 export function assertShimWritablePreflight(
   binDir: string,
   targetDir: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  const dirStat = statIfPresentSync(binDir);
-  if (dirStat !== null && !dirStat.isDirectory()) {
-    throw new Error(`CLI shim directory path is not a directory: ${binDir}. Pass --bin-dir <dir> or --no-shim.`);
-  }
+  assertShimBinDirUsable(binDir);
   const inspection = inspectCliShim(binDir, targetDir, env, platform);
   if (inspection.status === 'foreign') {
     throw new Error(
@@ -330,6 +320,92 @@ export function createShimRollbackSteps(
   return steps;
 }
 
+type VerifiedShimRemovalCandidate =
+  | { readonly ok: true; readonly snapshot: EntrySnapshotSync; readonly stat: Stats }
+  | { readonly ok: false; readonly reason: ShimSkipReason };
+
+type UnlinkVerifiedShimResult =
+  | { readonly removed: true; readonly item: RemovedShimFile }
+  | { readonly removed: false; readonly reason: ShimSkipReason };
+
+function readOwnedShimFileForRemoval(
+  filePath: string,
+  kind: 'posix' | 'cmd',
+  expectedTarget: string,
+): VerifiedShimRemovalCandidate {
+  const preStat = lstatIfPresentSync(filePath);
+  if (!preStat) return { ok: false, reason: 'missing' };
+  if (preStat.isSymbolicLink() || !preStat.isFile()) return { ok: false, reason: 'foreign' };
+
+  let flags = fsConstants.O_RDONLY;
+  if (process.platform !== 'win32') {
+    if (typeof fsConstants.O_NOFOLLOW === 'number') flags |= fsConstants.O_NOFOLLOW;
+    if (typeof fsConstants.O_NONBLOCK === 'number') flags |= fsConstants.O_NONBLOCK;
+  }
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, flags);
+    const fdStat = fstatSync(fd);
+    if (!fdStat.isFile() || fdStat.size > MAX_SHIM_FILE_BYTES) return { ok: false, reason: 'foreign' };
+    const content = readFdRange(fd, 0, fdStat.size);
+    const parsed = parseShimHeader(content.subarray(0, MAX_SHIM_HEADER_BYTES), kind, expectedTarget);
+    if (parsed.state !== 'valid') return { ok: false, reason: 'foreign' };
+    if (!parsed.matchesSelf) return { ok: false, reason: 'owned-other' };
+    return {
+      ok: true,
+      stat: fdStat,
+      snapshot: { filePath, kind: 'file', content, mode: fdStat.mode & POSIX_MODE_MASK },
+    };
+  } catch (err) {
+    const code = getErrCode(err);
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: false, reason: 'missing' };
+    if (code === 'ELOOP') return { ok: false, reason: 'foreign' };
+    throw err;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Ignore close failure after verified shim read.
+      }
+    }
+  }
+}
+
+function unlinkVerifiedOwnedShimFile(
+  file: CliShimFileInspection,
+  expectedTarget: string,
+  platform: NodeJS.Platform,
+): UnlinkVerifiedShimResult {
+  const verified = readOwnedShimFileForRemoval(file.filePath, file.kind, expectedTarget);
+  if (!verified.ok) return { removed: false, reason: verified.reason };
+
+  const curStat = lstatIfPresentSync(file.filePath);
+  const unchanged =
+    curStat !== null &&
+    isSameStatIdentity(curStat, verified.stat) &&
+    curStat.size === verified.stat.size &&
+    curStat.mtimeMs === verified.stat.mtimeMs;
+  if (!unchanged) {
+    const rechecked = inspectSingleShimFile(file.filePath, file.kind, expectedTarget, platform);
+    const reason =
+      rechecked.state === 'missing'
+        ? 'missing'
+        : rechecked.state === 'valid' && !rechecked.matchesSelf
+          ? 'owned-other'
+          : 'foreign';
+    return { removed: false, reason };
+  }
+
+  try {
+    unlinkSync(file.filePath);
+  } catch (unlinkErr) {
+    if (getErrCode(unlinkErr) === 'ENOENT') return { removed: false, reason: 'missing' };
+    throw unlinkErr;
+  }
+  return { removed: true, item: { filePath: file.filePath, snapshot: verified.snapshot } };
+}
+
 export function removeOwnedCliShim(
   binDir: string,
   targetDir: string,
@@ -345,25 +421,34 @@ export function removeOwnedCliShim(
   }
 
   const removedFiles: RemovedShimFile[] = [];
+  let lastSkipReason: ShimSkipReason = 'missing';
   try {
     for (const file of ownedFiles) {
-      const snapshot = captureEntrySnapshotSync(file.filePath);
-      rmSync(file.filePath, { force: true });
-      removedFiles.push({ filePath: file.filePath, snapshot });
+      const outcome = unlinkVerifiedOwnedShimFile(file, inspection.expectedTarget, platform);
+      if (outcome.removed) {
+        removedFiles.push(outcome.item);
+      } else {
+        lastSkipReason = outcome.reason;
+      }
     }
   } catch (err) {
-    const rbErrors = runRollbackSteps(
-      createShimRemovalRollbackSteps({
-        binDir,
-        primaryPath: inspection.primaryPath,
-        removed: true,
-        skippedReason: null,
-        removedFiles,
-      }),
-    );
-    throw makeRollbackError(err, rbErrors);
+    const rbResult: RemoveCliShimResult = {
+      binDir,
+      primaryPath: inspection.primaryPath,
+      removed: true,
+      skippedReason: null,
+      removedFiles,
+    };
+    throw makeRollbackError(err, runRollbackSteps(createShimRemovalRollbackSteps(rbResult)));
   }
-  return { binDir, primaryPath: inspection.primaryPath, removed: true, skippedReason: null, removedFiles };
+  const removed = removedFiles.length > 0;
+  return {
+    binDir,
+    primaryPath: inspection.primaryPath,
+    removed,
+    skippedReason: removed ? null : lastSkipReason,
+    removedFiles,
+  };
 }
 
 export function createShimRemovalRollbackSteps(result: RemoveCliShimResult | null): RollbackStep[] {
@@ -374,9 +459,7 @@ export function createShimRemovalRollbackSteps(result: RemoveCliShimResult | nul
     if (!item) continue;
     steps.push([
       `restore removed CLI shim ${path.basename(item.filePath)}`,
-      () => {
-        restoreOwnedEntrySnapshotSync(item.snapshot, null);
-      },
+      () => restoreOwnedEntrySnapshotSync(item.snapshot, null),
     ]);
   }
   return steps;
@@ -388,18 +471,9 @@ export function runCliShimSmoke(
   platform: NodeJS.Platform = process.platform,
 ): CliShimSmokeResult {
   const start = Date.now();
-  const res =
-    platform === 'win32'
-      ? spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', shimPath, '--help'], {
-          encoding: 'utf8',
-          timeout: timeoutMs,
-          windowsHide: true,
-        })
-      : spawnSync(shimPath, ['--help'], {
-          encoding: 'utf8',
-          timeout: timeoutMs,
-          windowsHide: true,
-        });
+  const cmd = platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : shimPath;
+  const args = platform === 'win32' ? ['/d', '/c', shimPath, '--help'] : ['--help'];
+  const res = spawnSync(cmd, args, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true });
   const durationMs = Date.now() - start;
   if (res.error) {
     const isTimeout = 'code' in res.error && res.error.code === 'ETIMEDOUT';

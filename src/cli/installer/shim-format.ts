@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { nonEmptyStr } from '../../core/guards.ts';
 import { realpathExistingPrefixSync, SAFE_POSIX_SHELL_PATH_RE } from '../../core/paths.ts';
+import { isSameCanonicalFilePath } from '../../core/statusline-ownership.ts';
 
 export { SAFE_POSIX_SHELL_PATH_RE };
 
@@ -17,6 +18,35 @@ export interface ShimPaths {
   readonly posixPath: string;
   readonly cmdPath: string | null;
   readonly allPaths: readonly string[];
+}
+
+export interface ParsedShimHeader {
+  readonly state: 'valid' | 'foreign' | 'malformed';
+  readonly target: string | null;
+  readonly matchesSelf: boolean;
+}
+
+export function parseShimHeader(raw: Buffer, kind: 'posix' | 'cmd', expectedTarget: string): ParsedShimHeader {
+  if (raw.includes(0)) {
+    return { state: 'foreign', target: null, matchesSelf: false };
+  }
+  const lines = raw.toString('utf8').split(/\r?\n/);
+  const line1 = lines[0] ?? '';
+  const line2 = lines[1] ?? '';
+  const expectedLine1 = kind === 'cmd' ? '@echo off' : '#!/bin/sh';
+  const headerPrefix = kind === 'cmd' ? `@rem ${SHIM_HEADER_VERSION}` : `# ${SHIM_HEADER_VERSION}`;
+
+  if (line2 !== headerPrefix && !line2.startsWith(`${headerPrefix} `)) {
+    return { state: 'foreign', target: null, matchesSelf: false };
+  }
+  const rest = line2.slice(headerPrefix.length).trim();
+  const match = /^target=(.+)$/.exec(rest);
+  const parsedTarget = match?.[1]?.trim() ?? '';
+  const matchesSelf = parsedTarget.length > 0 && isSameCanonicalFilePath(parsedTarget, expectedTarget);
+  if (line1 !== expectedLine1 || parsedTarget.length === 0) {
+    return { state: 'malformed', target: parsedTarget.length > 0 ? parsedTarget : null, matchesSelf };
+  }
+  return { state: 'valid', target: parsedTarget, matchesSelf };
 }
 
 function isWindowsPathStyle(sample: string): boolean {

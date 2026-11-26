@@ -71,25 +71,22 @@ function resolveKeybindingsPluginRoot(env: NodeJS.ProcessEnv): string {
   return globalDir;
 }
 
-function quoteShellPathForPlatform(value: string, platform: NodeJS.Platform): string {
+function assertSafeKeybindingPath(value: string): void {
   if (hasTerminalControlChars(value)) {
     throw new Error('Invalid keybinding command path: path must not contain control, escape, or bidi characters.');
   }
-  if (platform === 'win32') {
-    if (SAFE_WIN_SHELL_PATH_RE.test(value)) return value;
-    return `"${value.replaceAll('"', '""').replaceAll('%', '%%')}"`;
-  }
-  return SAFE_POSIX_SHELL_PATH_RE.test(value) ? value : quotePosixSh(value);
 }
 
-function quoteNodeFallbackArg(value: string, platform: NodeJS.Platform): string {
-  if (hasTerminalControlChars(value)) {
-    throw new Error('Invalid keybinding command path: path must not contain control, escape, or bidi characters.');
-  }
+function quoteShellArgForPlatform(value: string, platform: NodeJS.Platform, alwaysQuoteSafe = false): string {
+  assertSafeKeybindingPath(value);
   if (platform === 'win32') {
+    if (!alwaysQuoteSafe && SAFE_WIN_SHELL_PATH_RE.test(value)) return value;
     return `"${value.replaceAll('"', '""').replaceAll('%', '%%')}"`;
   }
-  return SAFE_POSIX_SHELL_PATH_RE.test(value) ? `"${value}"` : quotePosixSh(value);
+  if (SAFE_POSIX_SHELL_PATH_RE.test(value)) {
+    return alwaysQuoteSafe ? `"${value}"` : value;
+  }
+  return quotePosixSh(value);
 }
 
 function quoteTmuxCommandString(shellCommand: string): string {
@@ -110,9 +107,7 @@ export function resolveKeybindingCommand(options: ResolveKeybindingCommandOption
   const binDir = resolveShimBinDir(options.binDir, env, platform);
   const paths = resolveShimPaths(binDir, platform);
   const cliMjsPath = expectedCliMjsPath(pluginRoot, platform);
-  if (hasTerminalControlChars(cliMjsPath)) {
-    throw new Error('Invalid keybinding command path: path must not contain control, escape, or bidi characters.');
-  }
+  assertSafeKeybindingPath(cliMjsPath);
   const inspection = inspectCliShim(binDir, pluginRoot, env, platform);
 
   if (inspection.status === 'owned-self' || inspection.status === 'owned-other') {
@@ -122,7 +117,7 @@ export function resolveKeybindingCommand(options: ResolveKeybindingCommandOption
       shimPath,
       cliMjsPath,
       popupArgs: [shimPath, '-p'],
-      shellCommand: `${quoteShellPathForPlatform(shimPath, platform)} -p`,
+      shellCommand: `${quoteShellArgForPlatform(shimPath, platform)} -p`,
     };
   }
 
@@ -131,7 +126,7 @@ export function resolveKeybindingCommand(options: ResolveKeybindingCommandOption
     shimPath: null,
     cliMjsPath,
     popupArgs: ['node', cliMjsPath, '-p'],
-    shellCommand: `node ${quoteNodeFallbackArg(cliMjsPath, platform)} -p`,
+    shellCommand: `node ${quoteShellArgForPlatform(cliMjsPath, platform, true)} -p`,
   };
 }
 
@@ -185,7 +180,7 @@ function formatHostSnippet(
       `  ${d}Caution: Ghostty text: types directly into the focused pane; trigger only inside the agy prompt.${r}`,
     ];
     if (cmd.source === 'node-fallback') {
-      const ghosttyArg = quoteNodeFallbackArg(cmd.cliMjsPath, platform).replaceAll('\\', '\\\\');
+      const ghosttyArg = quoteShellArgForPlatform(cmd.cliMjsPath, platform, true).replaceAll('\\', '\\\\');
       lines.push(`  ${d}Without CLI Shim on PATH: keybind = super+shift+h=text:!node ${ghosttyArg}\\n${r}`);
     }
     return lines;

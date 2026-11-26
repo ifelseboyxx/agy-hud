@@ -8,6 +8,7 @@ import { realpathExistingPrefixSync, toComparePath } from './paths.ts';
 
 const CLI_LOCK_NAME = '.agy-hud-settings.lock';
 const MCP_LOCK_NAME = '.agy-hud-mcp.lock';
+const SHIM_LOCK_NAME = '.agy-hud-shim.lock';
 const LOCK_POLL_MIN_MS = 25;
 const LOCK_POLL_JITTER_MS = 35;
 const SHORT_LOCK_TIMEOUT_THRESHOLD_MS = 100;
@@ -54,6 +55,10 @@ export function getCliHomeLockPath(cliHome: string): string {
 
 export function getMcpConfigLockPath(geminiRoot: string): string {
   return path.join(realpathExistingPrefixSync(geminiRoot), MCP_LOCK_NAME);
+}
+
+export function getShimBinLockPath(binDir: string): string {
+  return path.join(realpathExistingPrefixSync(binDir), SHIM_LOCK_NAME);
 }
 
 export function isPidAlive(pid: number): boolean {
