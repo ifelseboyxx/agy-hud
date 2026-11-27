@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
 
 import { isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
 import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
+import { readRegularJsonObjectSync } from '../fs-utils.ts';
 import type {
   ActivityAgentEntry,
   AgentEntry,
@@ -12,6 +14,7 @@ import type {
   SubagentStdinItem,
 } from '../types.ts';
 import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
+import { computeFileContentHash } from './transcript-fingerprint.ts';
 
 const TAIL_READ_BYTES = 16384;
 const MAX_AGENT_LABEL_LEN = 28;
@@ -214,6 +217,38 @@ function loadSwarmEntries(cliHome: string, data: StatusLineData): AgentEntry[] |
     });
   }
   return entries;
+}
+
+export function computeSwarmStateDigest(dataRoot: string, safeId: string): string {
+  const rosterPath = resolveCliSubdirFile(dataRoot, 'brain', safeId, '.system_generated', 'swarm', 'members.json');
+  if (rosterPath === null) return '';
+  const rosterHash = computeFileContentHash(rosterPath);
+  if (rosterHash.length === 0) return '';
+
+  const parts: string[] = [rosterHash];
+  const roster = readRegularJsonObjectSync(rosterPath);
+  if (roster !== null && isPlainObject(roster.members)) {
+    const memberNames = Object.keys(roster.members).sort();
+    for (const name of memberNames) {
+      const member = roster.members[name];
+      if (!isPlainObject(member)) continue;
+      const role = typeof member.role === 'string' ? member.role.trim().toLowerCase() : '';
+      if (name === 'coordinator' || role === 'coordinator' || member.killed === true) continue;
+      const memberConvId = sanitizeSessionId(nonEmptyStr(member.conversation_id));
+      if (memberConvId === null) continue;
+      const workerTranscript = resolveCliSubdirFile(
+        dataRoot,
+        'brain',
+        memberConvId,
+        '.system_generated',
+        'logs',
+        'transcript.jsonl',
+      );
+      const workerHash = workerTranscript !== null ? computeFileContentHash(workerTranscript) : '';
+      parts.push(`${name}:${memberConvId}:${workerHash}`);
+    }
+  }
+  return createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 24);
 }
 
 export function parseStdinSubagents(stdinSubagents: readonly SubagentStdinItem[] | undefined): ParsedStdinSubagent[] {

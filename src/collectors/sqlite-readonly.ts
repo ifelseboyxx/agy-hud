@@ -1,3 +1,8 @@
+/* @host-contract
+ * Zero-mutation SQLite reader across CLI and Antigravity App/IDE roots (docs/host-contracts.md §2):
+ * - Opens with `?immutable=1` when no active `-wal` exists; otherwise copies `<db>` + `<db>-wal` into `os.tmpdir()`
+ *   (`0o600`) with pre/post header+tail version verification so host directories never gain `-wal`/`-shm` mutations.
+ */
 import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, copyFileSync, fstatSync, lstatSync, mkdtempSync, openSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';

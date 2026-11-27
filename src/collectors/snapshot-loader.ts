@@ -73,6 +73,7 @@ export function loadActivitySnapshot(session: SessionRecord, options: LoadActivi
     siblingCandidates: siblings,
     siblingHint: formatSiblingHintLine(siblings),
     telemetry,
+    cost: session.envelope?.cost ?? null,
     runningTools: aggregatedTools.runningTools,
     completedTools: aggregatedTools.completedTools,
     totalToolCalls: aggregatedTools.totalToolCalls,

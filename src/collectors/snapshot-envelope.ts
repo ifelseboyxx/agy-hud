@@ -1,7 +1,13 @@
+/* @host-contract
+ * CLI session envelope persistence and live-PID ownership markers (docs/host-contracts.md §4):
+ * - Envelopes (`agy_hud_snapshot_<id>.json`, <= 512 KiB, 0o600) bridge CLI-only metadata (PID, title, cost) across surfaces.
+ * - Monotonic `pidSwitchSeq` + `ActivePidMarker` disambiguate `/resume` switches within one `agy` PID and clock rollbacks.
+ */
 import { isDeepStrictEqual } from 'node:util';
 
+import { parseSnapshotCostRecord, resolveSessionCost } from '../core/cost-utils.ts';
 import { withFileLocksSync } from '../core/file-lock.ts';
-import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
+import { formatRelativeAge, formatSurfaceBadge, isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import {
   DEFAULT_MAX_REGULAR_JSON_BYTES,
@@ -85,21 +91,7 @@ export interface WriteSnapshotEnvelopeOptions {
   rejectSuperseded?: boolean;
 }
 
-export function formatRelativeAge(deltaMs: number): string {
-  const sec = Math.max(0, Math.floor(deltaMs / 1000));
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
-}
-
-export function formatSurfaceBadge(surface: SessionSurface): string {
-  if (surface === 'cli') return 'CLI';
-  if (surface === 'ide') return 'IDE';
-  return 'APP';
-}
+export { formatRelativeAge, formatSurfaceBadge };
 
 export function isExitedCliProcess(surface: SessionSurface, envPid: number | null, livePid: number | null): boolean {
   return surface === 'cli' && envPid !== null && livePid === null;
@@ -165,6 +157,7 @@ export function parseEnvelopeRecord(raw: Record<string, unknown>): SnapshotEnvel
         ? raw.taskCount
         : null;
   const mdDigest = typeof raw.mdDigest === 'string' ? raw.mdDigest : null;
+  const cost = parseSnapshotCostRecord(raw.cost);
   const updatedAtMs =
     typeof raw.updatedAtMs === 'number' && Number.isSafeInteger(raw.updatedAtMs) && raw.updatedAtMs >= 0
       ? raw.updatedAtMs
@@ -185,6 +178,7 @@ export function parseEnvelopeRecord(raw: Record<string, unknown>): SnapshotEnvel
     workspaceProjectDir: typeof raw.workspaceProjectDir === 'string' ? raw.workspaceProjectDir : '',
     subagents: parseEnvelopeSubagents(raw.subagents),
     taskCount,
+    ...(cost !== null ? { cost } : {}),
     mdDigest,
     updatedAtMs,
     heartbeatAtMs,
@@ -210,6 +204,7 @@ export function isEnvelopeSemanticEqual(a: SnapshotEnvelope, b: SnapshotEnvelope
     a.workspaceCurrentDir === b.workspaceCurrentDir &&
     a.workspaceProjectDir === b.workspaceProjectDir &&
     a.taskCount === b.taskCount &&
+    isDeepStrictEqual(a.cost ?? null, b.cost ?? null) &&
     a.mdDigest === b.mdDigest &&
     isDeepStrictEqual(a.subagents, b.subagents)
   );
@@ -275,7 +270,7 @@ export function isVerifiedClockRollbackWrite(
   );
 }
 
-function isEnvelopeWriteSuperseded(
+export function isEnvelopeWriteSuperseded(
   current: SnapshotEnvelope | null,
   currentMarker: ActivePidMarker | null,
   convId: string,
@@ -320,6 +315,7 @@ export function writeSnapshotEnvelope(
       ? data.task_count
       : null;
 
+  const cost = resolveSessionCost(data.cost);
   const preLockSeq = existing?.pidSwitchSeq ?? (normalizedPid !== null ? 1 : 0);
   const rawCandidate: SnapshotEnvelope = {
     v: ENVELOPE_VERSION,
@@ -331,6 +327,7 @@ export function writeSnapshotEnvelope(
     workspaceProjectDir: nonEmptyStr(data.workspace?.project_dir) ?? '',
     subagents: parseEnvelopeSubagents(data.subagents),
     taskCount,
+    ...(cost !== null ? { cost } : {}),
     mdDigest: options.mdDigest !== undefined ? options.mdDigest : (existing?.mdDigest ?? null),
     updatedAtMs: nowMs,
     heartbeatAtMs: nowMs,

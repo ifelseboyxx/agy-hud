@@ -1,16 +1,20 @@
+/* @host-contract
+ * Cross-surface session discovery across CLI, Antigravity App, and IDE roots (docs/host-contracts.md §2):
+ * - Resolves physical session ownership (`brain/<id>` / `conversations/<id>.db`) because App mirrors CLI summary rows.
+ * - Excludes subagents (`nesting_depth > 0`), `killed != 0`, and exited CLI PIDs.
+ */
 import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { isPidAlive } from '../core/file-lock.ts';
-import { isFiniteNum, isPlainObject } from '../core/guards.ts';
+import { isPlainObject } from '../core/guards.ts';
 import { realpathExistingPrefixSync, resolveProfileRoots, toComparePath } from '../core/paths.ts';
-import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import { lstatIfPresentSync, readRegularJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
 import type { SessionRecord, SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
 import { RUNNING_STEP_STATUSES } from './activity-parse.ts';
 import { readTailLines } from './agents.ts';
 import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
+import { loadSummaryDbSnapshot } from './session-summary-db.ts';
 import {
   formatRelativeAge,
   formatSurfaceBadge,
@@ -18,9 +22,7 @@ import {
   parseEnvelopeRecord,
   resolveLivePidOwners,
 } from './snapshot-envelope.ts';
-import { withReadonlyDb } from './sqlite-readonly.ts';
 
-const SUMMARY_QUERY_LIMIT = 100;
 const ENVELOPE_FILE_RE = /^agy_hud_snapshot_(.+)\.json$/;
 const ACTIVE_SUBAGENT_STATUSES: ReadonlySet<string> = new Set([
   'running',
@@ -90,41 +92,6 @@ function addWorkspacePath(acc: CandidateAccumulator, rawPath: string): void {
     acc.workspacesSeen.add(key);
     acc.workspaces.push(canon);
   }
-}
-
-function parseWorkspaceUris(raw: unknown): string[] {
-  if (typeof raw !== 'string' || raw.trim().length === 0) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const results: string[] = [];
-    for (const item of parsed) {
-      if (typeof item !== 'string' || item.trim().length === 0) continue;
-      if (item.startsWith('file://')) {
-        try {
-          results.push(fileURLToPath(item));
-        } catch {
-          // Ignore malformed file:// URI.
-        }
-      } else {
-        results.push(item);
-      }
-    }
-    return results;
-  } catch {
-    return [];
-  }
-}
-
-function parseSummaryTimestampMs(raw: unknown): number {
-  if (isFiniteNum(raw) && raw > 0) {
-    return raw < 1e12 ? raw * 1000 : raw;
-  }
-  if (typeof raw === 'string' && raw.trim().length > 0) {
-    const ms = Date.parse(raw);
-    return Number.isFinite(ms) ? ms : 0;
-  }
-  return 0;
 }
 
 function resolvePhysicalOwner(
@@ -210,67 +177,42 @@ function scanSummaryDatabases(
   excludedIds: Set<string>,
 ): void {
   for (const root of roots) {
-    const dbPath = path.join(root.dir, 'conversation_summaries.db');
-    if (!existsSync(dbPath)) continue;
-    withReadonlyDb(dbPath, (db) => {
-      const excludedRows = db
-        .prepare('SELECT conversation_id FROM conversation_summaries WHERE nesting_depth != 0 OR killed != 0')
-        .all();
-      for (const row of excludedRows) {
-        if (!isPlainObject(row) || typeof row.conversation_id !== 'string') continue;
-        const safe = sanitizeSessionId(row.conversation_id);
-        if (safe !== null) {
-          excludedIds.add(safe);
-          candidates.delete(safe);
-        }
+    const snap = loadSummaryDbSnapshot(root.dir);
+    if (snap === null) continue;
+    for (const safe of snap.excludedIds) {
+      excludedIds.add(safe);
+      candidates.delete(safe);
+    }
+    for (const row of snap.rows) {
+      if (excludedIds.has(row.safeId)) continue;
+      const owner = resolvePhysicalOwner(row.safeId, row.source, root, roots);
+      if (owner === null) continue;
+      let acc = candidates.get(row.safeId);
+      if (!acc) {
+        acc = {
+          convId: row.safeId,
+          surface: owner.surface,
+          dataRoot: owner.dir,
+          title: row.title,
+          workspaces: [],
+          workspacesSeen: new Set<string>(),
+          running: row.isRunning,
+          summaryModifiedMs: row.summaryMs,
+          envelope: null,
+        };
+        candidates.set(row.safeId, acc);
+      } else {
+        if (row.title.length > 0 && acc.title.length === 0) acc.title = titleOrExisting(row.title, acc.title);
+        if (row.summaryMs > acc.summaryModifiedMs) acc.summaryModifiedMs = row.summaryMs;
+        if (row.isRunning) acc.running = true;
       }
-
-      const rows = db
-        .prepare(
-          `SELECT conversation_id, title, last_modified_time, workspace_uris, source, not_fully_idle, status
-           FROM conversation_summaries
-           WHERE nesting_depth = 0 AND killed = 0
-           ORDER BY last_modified_time DESC
-           LIMIT ${SUMMARY_QUERY_LIMIT}`,
-        )
-        .all();
-      for (const row of rows) {
-        if (!isPlainObject(row) || typeof row.conversation_id !== 'string') continue;
-        const safeId = sanitizeSessionId(row.conversation_id);
-        if (safeId === null || excludedIds.has(safeId)) continue;
-        const source = typeof row.source === 'string' ? row.source : '';
-        const owner = resolvePhysicalOwner(safeId, source, root, roots);
-        if (owner === null) continue;
-
-        const title = typeof row.title === 'string' ? sanitizeTerminalLabel(row.title) : '';
-        const summaryMs = parseSummaryTimestampMs(row.last_modified_time);
-        const isRunning = row.not_fully_idle === 1 || row.status === 'CASCADE_RUN_STATUS_RUNNING';
-
-        let acc = candidates.get(safeId);
-        if (!acc) {
-          acc = {
-            convId: safeId,
-            surface: owner.surface,
-            dataRoot: owner.dir,
-            title,
-            workspaces: [],
-            workspacesSeen: new Set<string>(),
-            running: isRunning,
-            summaryModifiedMs: summaryMs,
-            envelope: null,
-          };
-          candidates.set(safeId, acc);
-        } else {
-          if (title.length > 0 && acc.title.length === 0) acc.title = title;
-          if (summaryMs > acc.summaryModifiedMs) acc.summaryModifiedMs = summaryMs;
-          if (isRunning) acc.running = true;
-        }
-        for (const ws of parseWorkspaceUris(row.workspace_uris)) {
-          addWorkspacePath(acc, ws);
-        }
-      }
-    });
+      for (const ws of row.workspaces) addWorkspacePath(acc, ws);
+    }
   }
+}
+
+function titleOrExisting(nextTitle: string, currentTitle: string): string {
+  return currentTitle.length > 0 ? currentTitle : nextTitle;
 }
 
 function scanSnapshotEnvelopes(

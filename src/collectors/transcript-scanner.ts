@@ -1,3 +1,8 @@
+/* @host-contract
+ * Incremental transcript JSONL scanner with in-place rewrite detection (docs/host-contracts.md §3):
+ * - Uses full SHA-256 up to 512 KiB and 24 KiB head/mid/tail sampled SHA-256 above 512 KiB for fast `contentHash`,
+ *   while always verifying `stablePrefixHash` via full streaming SHA-256 before reusing cached prefix counts.
+ */
 import type { Hash } from 'node:crypto';
 import { closeSync, fstatSync, openSync } from 'node:fs';
 

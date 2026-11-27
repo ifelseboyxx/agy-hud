@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 import { discoverSessions } from '../session-discovery.ts';
+import { loadSummaryDbSnapshot } from '../session-summary-db.ts';
 
 interface SummaryRowSeed {
   id: string;
@@ -334,5 +335,26 @@ void describe('multi-root session discovery', () => {
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0]?.surface, 'app');
     assert.equal(sessions[0]?.dataRoot, appRoot);
+  });
+
+  void it('reuses cached summary DB snapshot across unchanged reads and invalidates on DB mutation', () => {
+    const appRoot = path.join(geminiRoot, 'antigravity');
+    const ws = path.join(tmpRoot, 'proj-cache');
+    mkdirSync(ws, { recursive: true });
+    writeSummaryDb(appRoot, [
+      { id: 'conv-cache-1', title: 'Initial Title', lastModifiedIso: '2026-11-27T10:00:00Z', workspaces: [ws] },
+    ]);
+
+    const first = loadSummaryDbSnapshot(appRoot);
+    const second = loadSummaryDbSnapshot(appRoot);
+    assert.notEqual(first, null);
+    assert.equal(first, second, 'unchanged summary DB must reuse cached snapshot instance');
+
+    writeSummaryDb(appRoot, [
+      { id: 'conv-cache-1', title: 'Updated Title', lastModifiedIso: '2026-11-27T10:05:00Z', workspaces: [ws] },
+    ]);
+    const third = loadSummaryDbSnapshot(appRoot);
+    assert.notEqual(third, first);
+    assert.equal(third?.rows[0]?.title, 'Updated Title');
   });
 });

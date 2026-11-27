@@ -16,7 +16,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { renderHudLines } from '../../render/lines.ts';
+import { runHudRender as renderHudLines } from '../../hud-runner.ts';
 import type { StatusLineData } from '../../types.ts';
 import { readSnapshotEnvelope, sweepStaleSnapshotFiles, writeSnapshotEnvelope } from '../snapshot-envelope.ts';
 import { loadSessionTelemetryFromRoot } from '../telemetry.ts';

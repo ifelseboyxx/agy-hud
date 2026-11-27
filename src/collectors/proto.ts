@@ -1,3 +1,8 @@
+/* @host-contract
+ * Raw protobuf wire decoder for SQLite `gen_metadata.data` blobs (docs/host-contracts.md §1):
+ * - Decodes ChatModel (field 1) -> Usage (4: in=2, out=3, cw=4, cr=5), ChatStart.CtxWindow (9.10: used=1, max=4),
+ *   TTFT/Stream Duration (11/12), and repeated KeyValue (20: `last_step_index`) without generated protobuf stubs.
+ */
 import type { GenMetadataRow } from '../types.ts';
 
 const UTF8_DECODER = new TextDecoder('utf-8');
