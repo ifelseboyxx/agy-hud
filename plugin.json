@@ -3,7 +3,7 @@
   "name": "agy-hud",
   "displayName": "Agy HUD",
   "version": "0.1.0",
-  "description": "Terminal HUD statusline and App HUD Inspector for Antigravity, with live model, quota, token/TTFT telemetry, tool activity, and swarm chips.",
+  "description": "Native ANSI terminal HUD statusline and snapshot inspector for Antigravity CLI, with live model, quota, token/TTFT telemetry, cost, and swarm chips.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "/hud setup — check status and activate the CLI statusline",
@@ -17,5 +17,5 @@
   "homepage": "https://github.com/ifelseboyxx/agy-hud#readme",
   "repository": "https://github.com/ifelseboyxx/agy-hud",
   "license": "MIT",
-  "keywords": ["hud", "statusline", "telemetry", "quota", "inspector", "mcp-app", "swarm", "cli"]
+  "keywords": ["hud", "statusline", "telemetry", "quota", "snapshot", "swarm", "cli"]
 }
