@@ -46,6 +46,10 @@ _Avoid_: Global root, plugin home
 A development installation (`--link`) that symlinks the plugin target directory to a local repository checkout rather than copying built runtime files.
 _Avoid_: Dev copy, soft mount
 
+**Plugin Install**:
+A user-facing zero-build installation managed by `agy plugin install <source>`, copying the prebuilt plugin into `Gemini Root`'s `config/plugins/<name>/` and tracking it in `import_manifest.json` (in contrast to a contributor `Link Install`).
+_Avoid_: User install, normal install, copy install
+
 **StatusLine Ownership**:
 Exact canonical path matching (`<targetDir>/dist/hud.mjs`) between `settings.json`'s `statusLine.command` and a specific plugin installation, gating whether `off` or `uninstall --restore-statusline` may modify `statusLine`.
 _Avoid_: Fuzzy match, plugin claim
