@@ -129,8 +129,8 @@ Enable **Repository Settings -> General -> Releases -> Enable release immutabili
 Before pushing `v0.1.0`:
 
 - [ ] Merge feature branch (`feat/hud-overflow-inspection`) into `main` with all 5 `ci.yml` checks passing.
-- [ ] Refresh `assets/preview.png` from a live Antigravity CLI terminal session (current image dates from `2026-11-24`, prior to model-aware peak effort platinum sheen styling, Context Budget, `Claude/GPT` quota labels, `Bg Tasks`, and `TTFT 1.6s`).
-- [ ] Review `CHANGELOG.md` `## [v0.1.0]` `### Highlights` and `### Added`, and verify `pnpm release notes v0.1.0 --with-install-header`.
-- [ ] Confirm `README.md` and `README.zh-CN.md` pinned `/tree/v0.1.0` examples match the target tag.
+- [x] Refresh `assets/preview.png` with v0.1.0 HUD visuals (model-aware peak effort platinum sheen styling, enhanced Git status, dual USD/CNY cost, Context Budget, `Gemini` and `Claude/GPT` quota labels, OSC 8 `+N more`, unified `hud` skill, Swarm chips, `Bg Tasks`, and `TTFT 1.6s`).
+- [x] Review `CHANGELOG.md` `## [v0.1.0]` `### Highlights` and `### Added`, and verify `pnpm release notes v0.1.0 --with-install-header`.
+- [x] Confirm `README.md` and `README.zh-CN.md` pinned `/tree/v0.1.0` examples match the target tag.
 - [ ] Enable the `main` and `v*` GitHub Rulesets plus Immutable Releases above.
 - [ ] On synced `main`, run `pnpm release tag` and push with `git push origin v0.1.0`.
