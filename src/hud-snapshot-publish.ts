@@ -1,11 +1,12 @@
 /* @host-contract
  * Two-gate OSC 8 Markdown materialization and CLI session envelope publication (docs/host-contracts.md §4):
  * - Gate 1: skip .md file creation unless the rendered HUD frame emitted >= 1 OSC 8 hyperlink.
- * - Gate 2: rewrite .md only when missing on disk or when rendered digest (transcript stat + agents + fields) changes.
+ * - Gate 2: rewrite .md only when missing on disk or when rendered digest (transcript stat + agents + rendered body) changes.
  * - Acquires sorted snapshot + PID locks with a 30ms non-stalling hot-path timeout and rejects superseded frames.
  */
 import { createHash } from 'node:crypto';
 
+import { aggregateActivityTools, mergeActivityAgents } from './collectors/activity-aggregate.ts';
 import {
   isEnvelopeWriteSuperseded,
   readActivePidMarker,
@@ -17,12 +18,22 @@ import {
   writeSnapshotEnvelope,
   type ActivePidMarker,
 } from './collectors/snapshot-envelope.ts';
+import { attachSubagentTelemetryRollups } from './collectors/subagent-rollup.ts';
 import { withFileLocksSync } from './core/file-lock.ts';
 import { nonEmptyStr } from './core/guards.ts';
-import { lstatIfPresentSync, PRIVATE_FILE_MODE, touchRegularFileTimesSync, writeBufferAtomicSync } from './fs-utils.ts';
-import { formatMarkdownCost, formatMarkdownTelemetry, renderSnapshotMarkdown } from './render/osc8-markdown.ts';
+import {
+  captureEntrySnapshotSync,
+  createWorkspaceRegularFileChecker,
+  lstatIfPresentSync,
+  PRIVATE_FILE_MODE,
+  restoreEntrySnapshotSync,
+  touchRegularFileTimesSync,
+  writeBufferAtomicSync,
+} from './fs-utils.ts';
+import { resolveMarkdownFileTargetLink } from './render/file-link.ts';
+import { renderSnapshotMarkdownWithDigest } from './render/osc8-markdown.ts';
 import type { SnapshotMarkdownTarget } from './render/osc8.ts';
-import type { SessionSurface, SnapshotEnvelope } from './snapshot-types.ts';
+import type { SnapshotAgent, SnapshotEnvelope, SubagentAggregateRollup } from './snapshot-types.ts';
 import type { AgentsSummary, HudCostCurrency, SessionTelemetry, StatusLineData, TranscriptActivity } from './types.ts';
 
 export interface TranscriptStatFingerprint {
@@ -33,12 +44,15 @@ export interface TranscriptStatFingerprint {
 
 export interface MarkdownDigestContext {
   convId?: string;
-  surface?: SessionSurface;
   data?: StatusLineData;
   activity?: TranscriptActivity | null;
   telemetry?: SessionTelemetry | null;
+  snapshotAgents?: readonly SnapshotAgent[];
+  subagentRollup?: SubagentAggregateRollup | null;
+  resolvedFileLinks?: ReadonlyMap<string, string>;
   costCurrency?: HudCostCurrency;
   usdToCnyRate?: number;
+  nowMs?: number;
 }
 
 export interface MaterializeSnapshotMarkdownOptions {
@@ -56,7 +70,6 @@ export interface MaterializeSnapshotMarkdownOptions {
   telemetry?: SessionTelemetry | null;
   costCurrency?: HudCostCurrency;
   usdToCnyRate?: number;
-  surface?: SessionSurface;
   nowMs?: number;
 }
 
@@ -80,36 +93,53 @@ function computeAgentsDigest(agentsSummary: AgentsSummary | null | undefined): s
   return createHash('sha256').update(payload).digest('hex').slice(0, 16);
 }
 
-function computeRenderedFieldsDigest(context: MarkdownDigestContext): string {
-  const data = context.data;
-  const title = nonEmptyStr(data?.conversation_title) ?? '';
+function formatBaseDigest(
+  transcriptStat: TranscriptStatFingerprint | null | undefined,
+  agentsSummary: AgentsSummary | null | undefined,
+): string {
+  const ino = transcriptStat ? transcriptStat.ino : 0;
+  const mtimeMs = transcriptStat ? transcriptStat.mtimeMs : 0;
+  const size = transcriptStat ? transcriptStat.size : 0;
+  return `${ino}:${mtimeMs}:${size}:${computeAgentsDigest(agentsSummary)}`;
+}
+
+function resolveSnapshotFileLinks(
+  activity: TranscriptActivity | null | undefined,
+  data: StatusLineData | undefined,
+): ReadonlyMap<string, string> {
+  const links = new Map<string, string>();
   const workspace =
-    nonEmptyStr(data?.workspace?.current_dir) ??
-    nonEmptyStr(data?.workspace?.project_dir) ??
-    nonEmptyStr(data?.cwd) ??
-    '';
-  const model = nonEmptyStr(data?.model?.display_name) ?? nonEmptyStr(data?.model?.id) ?? '';
-  const telLine = formatMarkdownTelemetry(context.telemetry);
-  const costLine = formatMarkdownCost(data, context.costCurrency, context.usdToCnyRate);
-  const act = context.activity;
-  const payload = JSON.stringify({
-    convId: context.convId ?? '',
-    surface: context.surface ?? 'cli',
-    title,
-    workspace,
-    model,
-    telLine,
-    costLine,
-    activity: act
-      ? {
-          tools: act.tools.map((t) => [t.name, t.disp, t.target, t.fullTarget ?? '', t.running, t.isSkillRead]),
-          skills: act.skills,
-          mcps: act.mcps,
-          agents: act.agents.map((a) => [a.name, a.type, a.model, a.running, a.ts]),
-        }
-      : null,
+    nonEmptyStr(data?.workspace?.current_dir) ?? nonEmptyStr(data?.workspace?.project_dir) ?? nonEmptyStr(data?.cwd);
+  if (workspace === undefined || !activity || activity.tools.length === 0) {
+    return links;
+  }
+  const aggregated = aggregateActivityTools(activity.tools, {
+    knownMcpServers: activity.mcps,
+    hideSkillReads: activity.skills.length > 0,
   });
-  return createHash('sha256').update(payload).digest('hex').slice(0, 16);
+  const candidates = new Set<string>();
+  for (const rt of aggregated.runningTools) {
+    if (rt.targetLinkable === false) continue;
+    const raw = nonEmptyStr(rt.fullTarget) ?? rt.target;
+    if (raw.length > 0) candidates.add(raw);
+  }
+  for (const ct of aggregated.completedTools) {
+    const latest = ct.fullTarget.length > 0 ? ct.fullTarget : ct.latestTarget;
+    if (latest.length > 0 && ct.unlinkedTargets?.includes(latest) !== true) {
+      candidates.add(latest);
+    }
+  }
+  if (candidates.size === 0) {
+    return links;
+  }
+  const checker = createWorkspaceRegularFileChecker(workspace);
+  for (const rawTarget of candidates) {
+    const uri = resolveMarkdownFileTargetLink(rawTarget, workspace, checker);
+    if (uri !== null) {
+      links.set(rawTarget, uri);
+    }
+  }
+  return links;
 }
 
 export function computeMarkdownDigest(
@@ -117,14 +147,24 @@ export function computeMarkdownDigest(
   agentsSummary: AgentsSummary | null | undefined,
   context?: MarkdownDigestContext,
 ): string {
-  const ino = transcriptStat ? transcriptStat.ino : 0;
-  const mtimeMs = transcriptStat ? transcriptStat.mtimeMs : 0;
-  const size = transcriptStat ? transcriptStat.size : 0;
-  const base = `${ino}:${mtimeMs}:${size}:${computeAgentsDigest(agentsSummary)}`;
+  const base = formatBaseDigest(transcriptStat, agentsSummary);
   if (context === undefined) {
     return base;
   }
-  return `${base}:${computeRenderedFieldsDigest(context)}`;
+  const { contentDigest } = renderSnapshotMarkdownWithDigest({
+    convId: context.convId ?? '',
+    data: context.data ?? {},
+    activity: context.activity ?? null,
+    agentsSummary: agentsSummary ?? null,
+    telemetry: context.telemetry,
+    snapshotAgents: context.snapshotAgents,
+    subagentRollup: context.subagentRollup,
+    resolvedFileLinks: context.resolvedFileLinks ?? resolveSnapshotFileLinks(context.activity, context.data),
+    costCurrency: context.costCurrency,
+    usdToCnyRate: context.usdToCnyRate,
+    nowMs: context.nowMs,
+  });
+  return `${base}:${contentDigest}`;
 }
 
 function lstatQuietSync(filePath: string): ReturnType<typeof lstatIfPresentSync> {
@@ -152,15 +192,40 @@ export function materializeSnapshotMarkdownIfNeeded(
     return { written: false, mdDigest: prevDigest, sweptCount: 0, envelope };
   }
 
-  const mdDigest = computeMarkdownDigest(options.transcriptStat, options.agentsSummary, {
+  // Cache-only subagent rollup on statusLine hot path (maxColdDbReads: 0 -> strictly 0 child SQLite DB opens).
+  let snapshotAgents: SnapshotAgent[] | undefined;
+  let subagentRollup: SubagentAggregateRollup | null = null;
+  const mergedForRollup = mergeActivityAgents(options.agentsSummary, options.activity?.agents ?? [], nowMs);
+  if (mergedForRollup.entries.length > 0) {
+    const cachedRollup = attachSubagentTelemetryRollups({
+      parentConvId: options.convId,
+      dataRoot: options.cliHome,
+      cacheCliHome: options.cliHome,
+      agents: mergedForRollup.entries,
+      maxColdDbReads: 0,
+    });
+    if (cachedRollup.rollup !== null) {
+      snapshotAgents = cachedRollup.agents;
+      subagentRollup = cachedRollup.rollup;
+    }
+  }
+
+  const resolvedFileLinks = resolveSnapshotFileLinks(options.activity, options.data);
+  const { markdown, contentDigest } = renderSnapshotMarkdownWithDigest({
     convId: options.convId,
-    surface: options.surface,
     data: options.data,
     activity: options.activity,
+    agentsSummary: options.agentsSummary,
     telemetry: options.telemetry,
+    snapshotAgents,
+    subagentRollup,
+    resolvedFileLinks,
     costCurrency: options.costCurrency,
     usdToCnyRate: options.usdToCnyRate,
+    nowMs,
   });
+  const mdDigest = `${formatBaseDigest(options.transcriptStat, options.agentsSummary)}:${contentDigest}`;
+
   const existingMdStat = lstatQuietSync(target.absPath);
   if (
     existingMdStat !== null &&
@@ -185,18 +250,6 @@ export function materializeSnapshotMarkdownIfNeeded(
     return { written: false, mdDigest: prevDigest, sweptCount: 0, envelope: options.existingEnvelope };
   }
 
-  const markdown = renderSnapshotMarkdown({
-    convId: options.convId,
-    data: options.data,
-    activity: options.activity,
-    agentsSummary: options.agentsSummary,
-    telemetry: options.telemetry,
-    costCurrency: options.costCurrency,
-    usdToCnyRate: options.usdToCnyRate,
-    surface: options.surface,
-    nowMs,
-  });
-
   const { lockPaths, holdsPidLock } = lockPlan;
   const supersedeOpts = {
     rejectSuperseded: true,
@@ -216,6 +269,7 @@ export function materializeSnapshotMarkdownIfNeeded(
     }
 
     const sweptCount = sweepStaleSnapshotFiles(options.cliHome, nowMs, options.convId);
+    const origMdSnap = captureEntrySnapshotSync(target.absPath);
     try {
       writeBufferAtomicSync(target.absPath, markdown, PRIVATE_FILE_MODE);
     } catch {
@@ -228,14 +282,28 @@ export function materializeSnapshotMarkdownIfNeeded(
       return { written: false, mdDigest: prevDigest, sweptCount, envelope };
     }
 
-    const envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, {
-      nowMs,
-      mdDigest,
-      skipPidLock: holdsPidLock,
-      skipSnapshotLock: true,
-      ...supersedeOpts,
-    });
-    return { written: envelope !== null, mdDigest: envelope?.mdDigest ?? prevDigest, sweptCount, envelope };
+    let envelope: SnapshotEnvelope | null = null;
+    try {
+      envelope = writeSnapshotEnvelope(options.cliHome, options.data, options.agyPid, {
+        nowMs,
+        mdDigest,
+        skipPidLock: holdsPidLock,
+        skipSnapshotLock: true,
+        ...supersedeOpts,
+      });
+    } catch {
+      envelope = null;
+    }
+    if (envelope === null) {
+      // Keep on-disk .md synchronized with envelope.mdDigest if envelope persistence failed.
+      try {
+        restoreEntrySnapshotSync(origMdSnap);
+      } catch {
+        // Best-effort rollback on hot path.
+      }
+      return { written: false, mdDigest: prevDigest, sweptCount, envelope: null };
+    }
+    return { written: true, mdDigest: envelope.mdDigest, sweptCount, envelope };
   };
 
   try {

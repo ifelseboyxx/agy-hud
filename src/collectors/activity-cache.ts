@@ -1,6 +1,6 @@
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { PRIVATE_FILE_MODE, readRegularJsonObjectSync, writeBufferAtomicSync } from '../fs-utils.ts';
+import { readRegularJsonObjectSync } from '../fs-utils.ts';
 import type { ActivityAgentEntry, CompletedToolAggregate, TranscriptActivity, TranscriptToolEntry } from '../types.ts';
 import { parseTranscriptCacheMeta, type TranscriptCacheMeta } from './transcript-scanner.ts';
 
@@ -50,7 +50,7 @@ function isCompletedToolAggregate(value: unknown): value is CompletedToolAggrega
   return Array.isArray(value.recentTargets) && value.recentTargets.every((item) => typeof item === 'string');
 }
 
-export function isActivityAgentEntry(value: unknown): value is ActivityAgentEntry {
+function isActivityAgentEntry(value: unknown): value is ActivityAgentEntry {
   return (
     isPlainObject(value) &&
     typeof value.name === 'string' &&
@@ -133,27 +133,4 @@ export function readActivityCache(cacheFile: string): ActivityCacheRecord | null
     ...meta,
     data,
   };
-}
-
-export function writeBoundedPrivateJsonCache(
-  cacheFile: string,
-  record: unknown,
-  maxBytes: number = MAX_ACTIVITY_CACHE_BYTES,
-): boolean {
-  try {
-    const serialized = Buffer.from(JSON.stringify(record), 'utf8');
-    if (serialized.byteLength > maxBytes) return false;
-    writeBufferAtomicSync(cacheFile, serialized, PRIVATE_FILE_MODE);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function writeActivityCache(
-  cacheFile: string,
-  record: ActivityCacheRecord,
-  maxBytes: number = MAX_ACTIVITY_CACHE_BYTES,
-): void {
-  writeBoundedPrivateJsonCache(cacheFile, record, maxBytes);
 }

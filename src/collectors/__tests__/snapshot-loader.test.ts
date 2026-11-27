@@ -54,22 +54,20 @@ function buildGenBlob(opts: {
   return new Uint8Array(encodeFieldBytes(1, chatModel));
 }
 
-void describe('loadActivitySnapshot cross-surface loader', () => {
+void describe('loadActivitySnapshot CLI loader', () => {
   let tmpRoot = '';
-  let geminiRoot = '';
   let cliHome = '';
-  let appRoot = '';
+  let roCliHome = '';
   let wsDir = '';
   const chmodRestore: string[] = [];
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-snap-loader-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
-    appRoot = path.join(geminiRoot, 'antigravity');
+    cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
+    roCliHome = path.join(tmpRoot, 'ro-cli-home');
     wsDir = path.join(tmpRoot, 'project');
     mkdirSync(cliHome, { recursive: true });
-    mkdirSync(appRoot, { recursive: true });
+    mkdirSync(roCliHome, { recursive: true });
     mkdirSync(wsDir, { recursive: true });
   });
 
@@ -87,13 +85,13 @@ void describe('loadActivitySnapshot cross-surface loader', () => {
     }
   });
 
-  void it('builds complete ActivitySnapshot from read-only 0o555 client root with caches only in cliHome', () => {
-    const convId = 'app-full-12345678';
+  void it('builds complete ActivitySnapshot from read-only 0o555 CLI root with caches only in cacheCliHome', () => {
+    const convId = 'cli-full-12345678';
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     const longFileA = path.join(wsDir, 'src', 'very-long-directory-name', 'alpha-component-implementation.ts');
     const longFileB = path.join(wsDir, 'src', 'very-long-directory-name', 'beta-service-controller.ts');
 
-    const logsDir = path.join(appRoot, 'brain', convId, '.system_generated', 'logs');
+    const logsDir = path.join(roCliHome, 'brain', convId, '.system_generated', 'logs');
     mkdirSync(logsDir, { recursive: true });
     const transcriptLines = [
       { type: 'USER_INPUT', content: '/tdd workflow' },
@@ -125,7 +123,7 @@ void describe('loadActivitySnapshot cross-surface loader', () => {
       'utf8',
     );
 
-    const convDir = path.join(appRoot, 'conversations');
+    const convDir = path.join(roCliHome, 'conversations');
     mkdirSync(convDir, { recursive: true });
     const convDb = new DatabaseSync(path.join(convDir, `${convId}.db`));
     convDb.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)');
@@ -134,7 +132,7 @@ void describe('loadActivitySnapshot cross-surface loader', () => {
       .run(0, buildGenBlob({ inTok: 800, outTok: 200, crTok: 3200, ctxUsed: 64_000, ctxMax: 1_000_000 }));
     convDb.close();
 
-    const summaryDb = new DatabaseSync(path.join(appRoot, 'conversation_summaries.db'));
+    const summaryDb = new DatabaseSync(path.join(roCliHome, 'conversation_summaries.db'));
     summaryDb.exec(`
       CREATE TABLE conversation_summaries (
         conversation_id TEXT PRIMARY KEY,
@@ -156,10 +154,10 @@ void describe('loadActivitySnapshot cross-surface loader', () => {
       )
       .run(
         convId,
-        'Desktop Snapshot',
+        'CLI Snapshot',
         '2026-06-01T11:59:50Z',
         JSON.stringify([pathToFileURL(wsDir).href]),
-        'CORTEX_TRAJECTORY_SOURCE_CLIENT',
+        'CORTEX_TRAJECTORY_SOURCE_CLI',
         1,
         'CASCADE_RUN_STATUS_RUNNING',
         0,
@@ -167,15 +165,15 @@ void describe('loadActivitySnapshot cross-surface loader', () => {
       );
     summaryDb.close();
 
-    const beforeAppRoot = readdirSync(appRoot).sort();
+    const beforeRoRoot = readdirSync(roCliHome).sort();
     if (process.platform !== 'win32' && process.getuid?.() !== 0) {
       chmodSync(logsDir, 0o555);
       chmodSync(convDir, 0o555);
-      chmodSync(appRoot, 0o555);
-      chmodRestore.push(appRoot, convDir, logsDir);
+      chmodSync(roCliHome, 0o555);
+      chmodRestore.push(roCliHome, convDir, logsDir);
     }
 
-    const resolved = resolveSession({ cliHome, geminiRoot, cwd: wsDir, source: 'app', nowMs });
+    const resolved = resolveSession({ cliHome: roCliHome, cwd: wsDir, nowMs });
     const snapshot = loadActivitySnapshot(resolved.session, {
       cacheCliHome: cliHome,
       resolutionTier: resolved.tier,
@@ -184,7 +182,7 @@ void describe('loadActivitySnapshot cross-surface loader', () => {
     });
 
     assert.equal(snapshot.convId, convId);
-    assert.equal(snapshot.surface, 'app');
+    assert.equal(snapshot.dataRoot, roCliHome);
     assert.equal(snapshot.model, 'Gemini 4 Carbon');
     assert.equal(snapshot.telemetry.genCount, 1);
     assert.equal(snapshot.telemetry.ctxUsed, 64_000);
@@ -213,8 +211,8 @@ void describe('loadActivitySnapshot cross-surface loader', () => {
     assert.equal(snapshot.agents[0]?.name, 'Researcher');
     assert.equal(snapshot.agents[0]?.state, 'done');
 
-    assert.equal(existsSync(path.join(appRoot, 'cache')), false);
-    assert.deepEqual(readdirSync(appRoot).sort(), beforeAppRoot);
+    assert.equal(existsSync(path.join(roCliHome, 'cache')), false);
+    assert.deepEqual(readdirSync(roCliHome).sort(), beforeRoRoot);
     assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_telemetry_${convId}.json`)), true);
     assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_activity_snapshot_${convId}.json`)), true);
   });
@@ -250,7 +248,7 @@ void describe('loadActivitySnapshot cross-surface loader', () => {
       { nowMs },
     );
 
-    const resolved = resolveSession({ cliHome, geminiRoot, session: convId, nowMs, isAlive: (p) => p === 7777 });
+    const resolved = resolveSession({ cliHome, session: convId, nowMs, isAlive: (p) => p === 7777 });
     const snap1 = loadActivitySnapshot(resolved.session, { cacheCliHome: cliHome, resolutionTier: 'explicit', nowMs });
     assert.equal(snap1.agents.length, 2);
     assert.equal(

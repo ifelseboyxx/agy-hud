@@ -68,16 +68,21 @@ void describe('protobuf wire decoding bounds', () => {
     assert.equal(parseGenMetadataBlob(outer), null);
   });
 
-  void it('rejects protobuf blobs exceeding the maximum byte cap', () => {
+  void it('decodes unpruned >1MiB blobs up to 16MiB while rejecting blobs exceeding MAX_PROTO_BLOB_BYTES', () => {
     const valid = encodeFieldBytes(1, encodeFieldBytes(4, encodeFieldVarint(2, 42n)));
-    const oversized = new Uint8Array(1024 * 1024 + 1);
+    // Positive control: 1.5 MiB unpruned max_idx blob decodes cleanly now that budget is 16 MiB
+    const largeValid = new Uint8Array(Math.floor(1.5 * 1024 * 1024));
+    largeValid.set(valid, 0);
+    assert.equal(parseGenMetadataBlob(largeValid)?.in, 42);
+
+    const oversized = new Uint8Array(MAX_PROTO_BLOB_BYTES + 1);
     oversized.set(valid, 0);
     assert.equal(parseGenMetadataBlob(oversized), null);
 
     const kvKey = [...Buffer.from('last_step_index', 'utf8')];
     const kvVal = [...Buffer.from('7', 'utf8')];
     const validKv = [...encodeFieldBytes(1, kvKey), ...encodeFieldBytes(2, kvVal)];
-    const oversizedKv = new Uint8Array(1024 * 1024 + 1);
+    const oversizedKv = new Uint8Array(MAX_PROTO_BLOB_BYTES + 1);
     oversizedKv.set(validKv, 0);
     assert.equal(parseKvStepIdx(oversizedKv), null);
   });

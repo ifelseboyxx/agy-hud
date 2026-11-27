@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import { formatAgentsSection } from '../../render/agents-render.ts';
 import { GRAY, RESET, stripAnsi, visibleLen } from '../../render/ansi.ts';
 import { type AgentEntry, type AgentsSummary, DEFAULT_HUD_CONFIG } from '../../types.ts';
+import { collectAgentsSummary } from '../agents.ts';
 
 const ESC = String.fromCharCode(0x1b);
 
@@ -173,5 +177,47 @@ void describe('formatAgentsSection width-aware packing and done window', () => {
     const doneLine = formatAgentsSection(doneSummary, 2, 1000, 120, { formatOverflow });
     assert.ok(doneLine.includes(`, ${GRAY}${ESC}]8;;${uri}${ESC}\\+1 more${ESC}]8;;${ESC}\\${RESET}`));
     assert.equal(stripAnsi(doneLine), '  ✓ Agents (3 done): d2, d3, +1 more');
+  });
+
+  void it('reads regular swarm members.json while refusing symlinked and oversized (>1 MiB) rosters', () => {
+    const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-swarm-roster-'));
+    try {
+      const cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
+      const convId = 'swarm-roster-guard-1';
+      const swarmDir = path.join(cliHome, 'brain', convId, '.system_generated', 'swarm');
+      mkdirSync(swarmDir, { recursive: true });
+      const rosterPath = path.join(swarmDir, 'members.json');
+      const validPayload = JSON.stringify({
+        members: {
+          coordinator: { role: 'coordinator' },
+          alpha: { role: 'worker', wake_mode: 'mentions' },
+        },
+      });
+
+      // Positive control: valid regular members.json loads swarm
+      writeFileSync(rosterPath, validPayload, 'utf8');
+      const ok = collectAgentsSummary(cliHome, { conversation_id: convId });
+      assert.equal(ok.kind, 'swarm');
+      assert.equal(ok.entries[0]?.name, 'alpha');
+
+      // Oversized (>1 MiB) roster is rejected safely
+      writeFileSync(rosterPath, JSON.stringify({ members: { pad: 'x'.repeat(1024 * 1024 + 64) } }), 'utf8');
+      const oversized = collectAgentsSummary(cliHome, { conversation_id: convId });
+      assert.equal(oversized.kind, 'agents');
+      assert.equal(oversized.entries.length, 0);
+
+      // Symlinked roster is rejected safely on POSIX
+      if (process.platform !== 'win32') {
+        const outside = path.join(tmpRoot, 'outside-members.json');
+        writeFileSync(outside, validPayload, 'utf8');
+        rmSync(rosterPath, { force: true });
+        symlinkSync(outside, rosterPath);
+        const sym = collectAgentsSummary(cliHome, { conversation_id: convId });
+        assert.equal(sym.kind, 'agents');
+        assert.equal(sym.entries.length, 0);
+      }
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

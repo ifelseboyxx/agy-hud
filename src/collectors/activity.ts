@@ -2,13 +2,14 @@ import { existsSync, readFileSync } from 'node:fs';
 
 import { nonEmptyStr } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import { writeBoundedPrivateJsonCache } from '../fs-utils.ts';
 import type { StatusLineData, TodoSummary, TranscriptActivity, TranscriptToolEntry } from '../types.ts';
 import { aggregateCompletedTools } from './activity-aggregate.ts';
 import {
   ACTIVITY_CACHE_SCHEMA_VERSION,
   type ActivityCacheRecord,
+  MAX_ACTIVITY_CACHE_BYTES,
   readActivityCache,
-  writeActivityCache,
 } from './activity-cache.ts';
 import { listMcpServers, shortenTarget } from './activity-parse.ts';
 import { resolveCliSubdirFile, resolveConversationId, resolveSafeTranscriptFile } from './safe-path.ts';
@@ -91,7 +92,7 @@ export function loadTranscriptActivity(cliHome: string, data: StatusLineData): T
       ...scanned.meta,
       data: activity,
     };
-    writeActivityCache(cacheFile, nextRecord);
+    writeBoundedPrivateJsonCache(cacheFile, nextRecord, MAX_ACTIVITY_CACHE_BYTES);
   }
 
   return activity;

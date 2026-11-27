@@ -67,18 +67,16 @@ function buildGenBlob(opts: {
 
 void describe('session-index envelopes and read-only telemetry', () => {
   let tmpRoot = '';
-  let geminiRoot = '';
   let cliHome = '';
-  let appRoot = '';
+  let roCliRoot = '';
   const chmodRestore: string[] = [];
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-session-index-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
-    appRoot = path.join(geminiRoot, 'antigravity');
+    cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
+    roCliRoot = path.join(tmpRoot, 'ro-cli-root');
     mkdirSync(cliHome, { recursive: true });
-    mkdirSync(appRoot, { recursive: true });
+    mkdirSync(roCliRoot, { recursive: true });
   });
 
   afterEach(() => {
@@ -95,7 +93,7 @@ void describe('session-index envelopes and read-only telemetry', () => {
     }
   });
 
-  void it('writes and reads v1 metadata envelope atomically while preserving prior mdDigest', () => {
+  void it('writes and reads v2 metadata envelope atomically while preserving prior mdDigest', () => {
     const data: StatusLineData = {
       conversation_id: 'aaaa1111-bbbb-2222-cccc-333344445555',
       conversation_title: 'Test Session Title',
@@ -110,7 +108,7 @@ void describe('session-index envelopes and read-only telemetry', () => {
       nowMs: 1_700_000_000_000,
     });
     assert.ok(written1 !== null);
-    assert.equal(written1.v, 1);
+    assert.equal(written1.v, 2);
     assert.equal(written1.convId, 'aaaa1111-bbbb-2222-cccc-333344445555');
     assert.equal(written1.conversationTitle, 'Test Session Title');
     assert.equal(written1.agyPid, 4242);
@@ -234,9 +232,9 @@ void describe('session-index envelopes and read-only telemetry', () => {
     assert.equal(env.taskCount, 2);
   });
 
-  void it('loads client telemetry strictly read-only from 0o555 client root and caches only in cliHome', () => {
-    const convId = 'client-tel-1111';
-    const convDir = path.join(appRoot, 'conversations');
+  void it('loads telemetry strictly read-only from 0o555 root and caches only in cacheCliHome', () => {
+    const convId = 'cli-tel-1111';
+    const convDir = path.join(roCliRoot, 'conversations');
     mkdirSync(convDir, { recursive: true });
     const dbPath = path.join(convDir, `${convId}.db`);
     const db = new DatabaseSync(dbPath);
@@ -247,22 +245,22 @@ void describe('session-index envelopes and read-only telemetry', () => {
     );
     db.close();
 
-    const beforeAppEntries = readdirSync(appRoot).sort();
+    const beforeRoEntries = readdirSync(roCliRoot).sort();
     const beforeConvEntries = readdirSync(convDir).sort();
     if (process.platform !== 'win32' && process.getuid?.() !== 0) {
       chmodSync(convDir, 0o555);
-      chmodSync(appRoot, 0o555);
-      chmodRestore.push(appRoot, convDir);
+      chmodSync(roCliRoot, 0o555);
+      chmodRestore.push(roCliRoot, convDir);
     }
 
-    const tel = loadSessionTelemetryFromRoot(appRoot, cliHome, convId);
+    const tel = loadSessionTelemetryFromRoot(roCliRoot, cliHome, convId);
     assert.equal(tel.genCount, 1);
     assert.equal(tel.ctxUsed, 40_000);
     assert.equal(tel.ctxMax, 1_000_000);
     assert.equal(tel.tps, 100);
     assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_telemetry_${convId}.json`)), true);
-    assert.equal(existsSync(path.join(appRoot, 'cache')), false);
-    assert.deepEqual(readdirSync(appRoot).sort(), beforeAppEntries);
+    assert.equal(existsSync(path.join(roCliRoot, 'cache')), false);
+    assert.deepEqual(readdirSync(roCliRoot).sort(), beforeRoEntries);
     assert.deepEqual(readdirSync(convDir).sort(), beforeConvEntries);
   });
 });

@@ -206,7 +206,6 @@ void describe('transcript activity v4 cache and target persistence', () => {
     const session: SessionRecord = {
       convId,
       shortId: convId.slice(0, 8),
-      surface: 'cli',
       title: 'Rewrite Test',
       workspace: '/workspace',
       workspaces: ['/workspace'],
@@ -274,7 +273,6 @@ void describe('transcript activity v4 cache and target persistence', () => {
     const session: SessionRecord = {
       convId,
       shortId: convId.slice(0, 8),
-      surface: 'cli',
       title: 'Running Suffix',
       workspace: '/workspace',
       workspaces: ['/workspace'],

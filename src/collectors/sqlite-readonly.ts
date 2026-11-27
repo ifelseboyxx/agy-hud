@@ -1,5 +1,5 @@
 /* @host-contract
- * Zero-mutation SQLite reader across CLI and Antigravity App/IDE roots (docs/host-contracts.md §2):
+ * Zero-mutation SQLite reader for Antigravity CLI databases (docs/host-contracts.md §2):
  * - Opens with `?immutable=1` when no active `-wal` exists; otherwise copies `<db>` + `<db>-wal` into `os.tmpdir()`
  *   (`0o600`) with pre/post header+tail version verification so host directories never gain `-wal`/`-shm` mutations.
  */
@@ -23,6 +23,9 @@ const WAL_TAIL_BYTES = 32;
 export interface ReadonlyDbOptions {
   maxAttempts?: number;
   onAfterMainCopy?: (attempt: number) => void;
+  deadlineMs?: number;
+  nowMs?: () => number;
+  maxCopyBytes?: number;
 }
 
 interface FileVersionSnapshot {
@@ -199,6 +202,12 @@ function hasActiveWalFile(dbPath: string): boolean {
   }
 }
 
+function isDeadlineExceeded(options?: ReadonlyDbOptions): boolean {
+  if (options?.deadlineMs === undefined) return false;
+  const now = options.nowMs ?? Date.now;
+  return now() >= options.deadlineMs;
+}
+
 function readViaTempWalSnapshot<T>(
   dbPath: string,
   reader: (db: DatabaseSync) => T,
@@ -210,11 +219,16 @@ function readViaTempWalSnapshot<T>(
   const maxAttempts = Math.max(1, options?.maxAttempts ?? WAL_COPY_MAX_ATTEMPTS);
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (isDeadlineExceeded(options)) return { status: 'failed' };
     const before = captureWalPairSnapshot(dbPath, walPath);
     if (before.db === null) return { status: 'failed' };
     if (before.wal === null || before.wal.size === 0n) {
       return { status: 'no-wal' };
     }
+    if (options?.maxCopyBytes !== undefined && before.db.size + before.wal.size > BigInt(options.maxCopyBytes)) {
+      return { status: 'failed' };
+    }
+    if (isDeadlineExceeded(options)) return { status: 'failed' };
 
     let tmpDir = '';
     let db: DatabaseSync | null = null;
@@ -225,6 +239,7 @@ function readViaTempWalSnapshot<T>(
       copyFileSync(dbPath, tmpDbPath);
       makeTempWritable(tmpDbPath);
       options?.onAfterMainCopy?.(attempt);
+      if (isDeadlineExceeded(options)) return { status: 'failed' };
       copyFileSync(walPath, tmpWalPath);
       makeTempWritable(tmpWalPath);
 
@@ -242,6 +257,7 @@ function readViaTempWalSnapshot<T>(
       ) {
         continue;
       }
+      if (isDeadlineExceeded(options)) return { status: 'failed' };
 
       db = new sqlite.DatabaseSync(tmpDbPath, { timeout: SQLITE_TIMEOUT_MS });
       db.prepare('PRAGMA schema_version').get();
@@ -268,16 +284,18 @@ export function withReadonlyDb<T>(
   reader: (db: DatabaseSync) => T,
   options?: ReadonlyDbOptions,
 ): T | null {
+  if (isDeadlineExceeded(options)) return null;
   if (!isRegularNonSymlinkFile(dbPath) || hasUnsafeSqliteSidecar(dbPath)) return null;
   if (hasActiveWalFile(dbPath)) {
     const snap = readViaTempWalSnapshot(dbPath, reader, options);
     if (snap.status === 'ok') {
       return snap.value;
     }
-    if (snap.status === 'failed' && hasActiveWalFile(dbPath)) {
+    if (snap.status === 'failed' && (isDeadlineExceeded(options) || hasActiveWalFile(dbPath))) {
       return null;
     }
   }
+  if (isDeadlineExceeded(options)) return null;
   const db = openImmutableDb(dbPath);
   if (db === null) {
     return null;

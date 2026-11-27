@@ -1,5 +1,5 @@
 import { createHash, type Hash } from 'node:crypto';
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { readSync } from 'node:fs';
 
 import { readFdRange } from '../fs-utils.ts';
 
@@ -91,24 +91,4 @@ export function computeParsedRangeFingerprint(
     return hashSampledSlices(endOffset, (off, len) => readCombinedRange(fd, startOffset, chunkBuf, off, len));
   }
   return computeFullParsedRangeHash(fd, startOffset, chunkBuf, endOffset, prefixHash);
-}
-
-export function computeFileContentHash(filePath: string): string {
-  let fd: number;
-  try {
-    fd = openSync(filePath, 'r');
-  } catch {
-    return '';
-  }
-  try {
-    const st = fstatSync(fd, { bigint: true });
-    if (!st.isFile()) return '';
-    const size = Number(st.size);
-    const { digest } = computeFdRangeFingerprint(fd, size);
-    return size <= FULL_HASH_MAX_BYTES ? digest : `${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}:${digest}`;
-  } catch {
-    return '';
-  } finally {
-    closeSync(fd);
-  }
 }

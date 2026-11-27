@@ -20,15 +20,13 @@ import {
 
 void describe('snapshot envelope ownership and bounds', () => {
   let tmpRoot = '';
-  let geminiRoot = '';
   let cliHome = '';
   let wsDir = '';
   let otherDir = '';
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-env-edge-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
+    cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
     wsDir = path.join(tmpRoot, 'ws');
     otherDir = path.join(tmpRoot, 'other');
     mkdirSync(cliHome, { recursive: true });
@@ -63,7 +61,6 @@ void describe('snapshot envelope ownership and bounds', () => {
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 + 33_000,
@@ -97,7 +94,6 @@ void describe('snapshot envelope ownership and bounds', () => {
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 + 4_000,
@@ -126,7 +122,6 @@ void describe('snapshot envelope ownership and bounds', () => {
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 + 2_500,
@@ -161,8 +156,18 @@ void describe('snapshot envelope ownership and bounds', () => {
   });
 
   void it('rejects non-integer agyPid in parseEnvelopeRecord instead of truncating to PID 1', () => {
+    assert.equal(
+      parseEnvelopeRecord({
+        v: 1,
+        convId: 'conv-legacy-v1',
+        agyPid: null,
+        updatedAtMs: 1_000,
+        heartbeatAtMs: 1_000,
+      }),
+      null,
+    );
     const parsed = parseEnvelopeRecord({
-      v: 1,
+      v: 2,
       convId: 'conv-float-pid',
       agyPid: 1.9,
       updatedAtMs: 1_000,
@@ -185,7 +190,7 @@ void describe('snapshot envelope ownership and bounds', () => {
     rmSync(path.join(cliHome, 'cache', `agy_hud_pid_${sharedPid}.json`), { force: true });
 
     const spoofed = parseEnvelopeRecord({
-      v: 1,
+      v: 2,
       convId: 'conv-spoof-2222',
       agyPid: sharedPid,
       updatedAtMs: Number.MAX_SAFE_INTEGER,
@@ -197,8 +202,8 @@ void describe('snapshot envelope ownership and bounds', () => {
     const owners = resolveLivePidOwners(
       cliHome,
       [
-        { convId: 'conv-legit-1111', surface: 'cli', envelope: legit },
-        { convId: 'conv-spoof-2222', surface: 'cli', envelope: spoofed },
+        { convId: 'conv-legit-1111', envelope: legit },
+        { convId: 'conv-spoof-2222', envelope: spoofed },
       ],
       t0 + 1_000,
       (pid) => pid === sharedPid,
@@ -220,7 +225,7 @@ void describe('snapshot envelope ownership and bounds', () => {
     writeFileSync(
       outsideJson,
       JSON.stringify({
-        v: 1,
+        v: 2,
         convId: 'sym-trap',
         agyPid: sharedPid,
         updatedAtMs: t0,
@@ -322,7 +327,6 @@ void describe('snapshot envelope ownership and bounds', () => {
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 + 1_100,
@@ -459,7 +463,6 @@ void describe('snapshot envelope ownership and bounds', () => {
     assert.equal(marker?.switchSeq, 2);
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: (baseSec + 3) * 1000,

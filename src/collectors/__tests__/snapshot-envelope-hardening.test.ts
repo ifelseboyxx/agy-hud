@@ -16,6 +16,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { DEFAULT_MAX_REGULAR_JSON_BYTES } from '../../fs-utils.ts';
+import { materializeSnapshotMarkdownIfNeeded } from '../../hud-snapshot-publish.ts';
+import { resolveSnapshotMarkdownUri } from '../../render/osc8.ts';
 import {
   readActivePidMarker,
   readSnapshotEnvelope,
@@ -165,5 +167,35 @@ void describe('snapshot-envelope temp cleanup, rollback exemption, and size budg
     assert.ok(reloaded !== null);
     assert.equal(reloaded.conversationTitle, 'Big Subagents');
     assert.ok(reloaded.subagents.length > 0 && reloaded.subagents.length < largeSubagents.length);
+  });
+
+  void it('keeps .md synchronized with committed envelope mdDigest even if auxiliary PID marker write fails', () => {
+    const convId = 'cli-pid-marker-fail-1111';
+    const pid = 8304;
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    // Pre-create a directory at the PID marker path so marker persistence fails after the envelope is committed
+    mkdirSync(path.join(cliHome, 'cache', `agy_hud_pid_${pid}.json`), { recursive: true });
+
+    const data = { conversation_id: convId, conversation_title: 'Marker Failure Sync', cwd: wsDir };
+    const result = materializeSnapshotMarkdownIfNeeded({
+      cliHome,
+      convId,
+      target: resolveSnapshotMarkdownUri(cliHome, convId),
+      emittedOsc8Count: 1,
+      data,
+      activity: null,
+      agentsSummary: null,
+      agyPid: pid,
+      transcriptStat: null,
+      existingEnvelope: null,
+      baselinePidMarker: null,
+      nowMs,
+    });
+    assert.equal(result.written, true);
+    assert.ok(result.envelope !== null);
+    assert.equal(result.envelope?.mdDigest, result.mdDigest);
+    const mdPath = path.join(cliHome, 'cache', `agy_hud_snapshot_${convId}.md`);
+    assert.equal(existsSync(mdPath), true);
+    assert.ok(readFileSync(mdPath, 'utf8').includes('Marker Failure Sync'));
   });
 });

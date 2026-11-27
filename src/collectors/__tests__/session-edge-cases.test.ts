@@ -17,7 +17,6 @@ function writeSummaryRow(
     title: string;
     lastModifiedIso: string;
     workspaces: string[];
-    source: string;
     notFullyIdle?: number;
     status?: string;
   },
@@ -46,7 +45,7 @@ function writeSummaryRow(
     row.title,
     row.lastModifiedIso,
     JSON.stringify(row.workspaces.map((w) => pathToFileURL(w).href)),
-    row.source,
+    'CORTEX_TRAJECTORY_SOURCE_CLI',
     row.notFullyIdle ?? 0,
     row.status ?? 'CASCADE_RUN_STATUS_IDLE',
   );
@@ -55,21 +54,16 @@ function writeSummaryRow(
 
 void describe('session discovery sorting, global fallback, and DB-only lookup', () => {
   let tmpRoot = '';
-  let geminiRoot = '';
   let cliHome = '';
-  let appRoot = '';
   let wsDir = '';
   let otherDir = '';
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-sess-edge-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
-    appRoot = path.join(geminiRoot, 'antigravity');
+    cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
     wsDir = path.join(tmpRoot, 'ws');
     otherDir = path.join(tmpRoot, 'other');
     mkdirSync(cliHome, { recursive: true });
-    mkdirSync(appRoot, { recursive: true });
     mkdirSync(wsDir, { recursive: true });
     mkdirSync(otherDir, { recursive: true });
   });
@@ -80,10 +74,10 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
     }
   });
 
-  void it('sorts newer App session ahead of exited CLI session marked RUNNING', () => {
+  void it('sorts newer unbound CLI session ahead of exited CLI session marked RUNNING', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     const deadCliId = 'cli-exited-running-1111';
-    const appId = 'app-newer-idle-2222';
+    const freshCliId = 'cli-newer-idle-2222';
 
     const cliLogs = path.join(cliHome, 'brain', deadCliId, '.system_generated', 'logs');
     mkdirSync(cliLogs, { recursive: true });
@@ -101,34 +95,32 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
       title: 'Exited CLI',
       lastModifiedIso: '2026-06-01T11:59:00Z',
       workspaces: [wsDir],
-      source: 'CORTEX_TRAJECTORY_SOURCE_CLI',
       notFullyIdle: 1,
       status: 'CASCADE_RUN_STATUS_RUNNING',
     });
 
-    const appLogs = path.join(appRoot, 'brain', appId, '.system_generated', 'logs');
-    mkdirSync(appLogs, { recursive: true });
-    const appTranscript = path.join(appLogs, 'transcript.jsonl');
-    writeFileSync(appTranscript, `${JSON.stringify({ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] })}\n`);
-    utimesSync(appTranscript, new Date(nowMs - 5_000), new Date(nowMs - 5_000));
-    writeSummaryRow(appRoot, {
-      id: appId,
-      title: 'Newer App Session',
+    const freshLogs = path.join(cliHome, 'brain', freshCliId, '.system_generated', 'logs');
+    mkdirSync(freshLogs, { recursive: true });
+    const freshTranscript = path.join(freshLogs, 'transcript.jsonl');
+    writeFileSync(freshTranscript, `${JSON.stringify({ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] })}\n`);
+    utimesSync(freshTranscript, new Date(nowMs - 5_000), new Date(nowMs - 5_000));
+    writeSummaryRow(cliHome, {
+      id: freshCliId,
+      title: 'Newer CLI Session',
       lastModifiedIso: '2026-06-01T11:59:55Z',
       workspaces: [wsDir],
-      source: 'CORTEX_TRAJECTORY_SOURCE_CLIENT',
     });
 
-    const listed = discoverSessions({ cliHome, geminiRoot, nowMs, isAlive: () => false });
-    assert.equal(listed[0]?.convId, appId);
+    const listed = discoverSessions({ cliHome, nowMs, isAlive: () => false });
+    assert.equal(listed[0]?.convId, freshCliId);
     assert.equal(listed[1]?.convId, deadCliId);
     assert.equal(listed[1]?.running, false);
   });
 
-  void it('selects newer App session over exited RUNNING CLI session in Tier 3 global fallback', () => {
+  void it('selects newer unbound CLI session over exited RUNNING CLI session in Tier 3 global fallback', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     const deadCliId = 'cli-dead-run-3333';
-    const appId = 'app-fresh-4444';
+    const freshCliId = 'cli-fresh-4444';
 
     const cliLogs = path.join(cliHome, 'brain', deadCliId, '.system_generated', 'logs');
     mkdirSync(cliLogs, { recursive: true });
@@ -140,35 +132,33 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
       nowMs: nowMs - 30_000,
     });
 
-    const appLogs = path.join(appRoot, 'brain', appId, '.system_generated', 'logs');
-    mkdirSync(appLogs, { recursive: true });
+    const freshLogs = path.join(cliHome, 'brain', freshCliId, '.system_generated', 'logs');
+    mkdirSync(freshLogs, { recursive: true });
     writeFileSync(
-      path.join(appLogs, 'transcript.jsonl'),
+      path.join(freshLogs, 'transcript.jsonl'),
       `${JSON.stringify({ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] })}\n`,
     );
-    writeSummaryRow(appRoot, {
-      id: appId,
-      title: 'Fresh App Session',
+    writeSummaryRow(cliHome, {
+      id: freshCliId,
+      title: 'Fresh CLI Session',
       lastModifiedIso: '2026-06-01T11:59:55Z',
       workspaces: [wsDir],
-      source: 'CORTEX_TRAJECTORY_SOURCE_CLIENT',
     });
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: null,
       nowMs,
       isAlive: () => false,
     });
     assert.equal(resolved.tier, 'fallback');
-    assert.equal(resolved.session.convId, appId);
+    assert.equal(resolved.session.convId, freshCliId);
   });
 
-  void it('resolves DB-only session without brain or summary records by explicit full ID', () => {
+  void it('resolves DB-only CLI session without brain or summary records by explicit full ID', () => {
     const dbOnlyId = 'dbonly-7777-8888-9999';
-    const convDir = path.join(appRoot, 'conversations');
+    const convDir = path.join(cliHome, 'conversations');
     mkdirSync(convDir, { recursive: true });
     const db = new DatabaseSync(path.join(convDir, `${dbOnlyId}.db`));
     db.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)');
@@ -176,13 +166,12 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       session: dbOnlyId,
       nowMs: Date.parse('2026-06-01T12:00:00Z'),
     });
     assert.equal(resolved.tier, 'explicit');
     assert.equal(resolved.session.convId, dbOnlyId);
-    assert.equal(resolved.session.surface, 'app');
+    assert.equal(resolved.session.dataRoot, cliHome);
   });
 
   void it('rebinds Tier 1 active session when switching A to B and back to A within 30s', () => {
@@ -199,7 +188,6 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 + 11_000,
@@ -225,7 +213,6 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0,
@@ -245,7 +232,7 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
     writeFileSync(
       path.join(cliHome, 'cache', `agy_hud_snapshot_${convA}.json`),
       JSON.stringify({
-        v: 1,
+        v: 2,
         convId: convA,
         conversationTitle: 'Session A',
         agyPid: sharedPid,
@@ -263,7 +250,7 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
     writeFileSync(
       path.join(cliHome, 'cache', `agy_hud_snapshot_${convB}.json`),
       JSON.stringify({
-        v: 1,
+        v: 2,
         convId: convB,
         conversationTitle: 'Session B',
         agyPid: sharedPid,
@@ -286,7 +273,6 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 + 1_000,
@@ -331,7 +317,6 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 - 9_500,
@@ -378,7 +363,6 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 - 4_000,
@@ -408,7 +392,6 @@ void describe('session discovery sorting, global fallback, and DB-only lookup', 
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: otherDir,
       callerAgyPid: sharedPid,
       nowMs: t0 + 2_000,

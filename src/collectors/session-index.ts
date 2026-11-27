@@ -3,16 +3,10 @@ import path from 'node:path';
 import { isPidAlive } from '../core/file-lock.ts';
 import { toComparePath } from '../core/paths.ts';
 import { sanitizeTerminalText } from '../core/terminal-text.ts';
-import type {
-  SessionRecord,
-  SessionSourceFilter,
-  SessionSurface,
-  SiblingSessionHint,
-  SnapshotResolutionTier,
-} from '../snapshot-types.ts';
+import type { SessionRecord, SiblingSessionHint, SnapshotResolutionTier } from '../snapshot-types.ts';
 import { findAncestorAgyPid } from './proc.ts';
 import { canonicalizeWorkspacePath, discoverSessions, type DiscoverSessionsOptions } from './session-discovery.ts';
-import { formatSurfaceBadge, isExitedCliSession } from './snapshot-envelope.ts';
+import { isExitedCliSession } from './snapshot-envelope.ts';
 
 const MIN_PREFIX_LEN = 4;
 const SIBLING_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -34,7 +28,6 @@ export class SessionResolutionError extends Error {
 
 export interface ResolveSessionOptions extends DiscoverSessionsOptions {
   session?: string;
-  source?: SessionSourceFilter;
   cwd?: string;
   callerAgyPid?: number | null;
 }
@@ -44,12 +37,6 @@ export interface ResolvedSessionResult {
   tier: SnapshotResolutionTier;
   siblings: SiblingSessionHint[];
   sessions: SessionRecord[];
-}
-
-export function matchesSourceFilter(surface: SessionSurface, source: SessionSourceFilter): boolean {
-  if (source === 'cli') return surface === 'cli';
-  if (source === 'app') return surface === 'app' || surface === 'ide';
-  return true;
 }
 
 function isPathWithin(rootCompare: string, targetCompare: string): boolean {
@@ -63,7 +50,6 @@ function toSiblingHint(session: SessionRecord): SiblingSessionHint {
   return {
     convId: session.convId,
     shortId: session.shortId,
-    surface: session.surface,
     title: session.title,
     livePid: session.livePid,
     running: session.running,
@@ -71,14 +57,10 @@ function toSiblingHint(session: SessionRecord): SiblingSessionHint {
   };
 }
 
-function resolveTier0Explicit(
-  query: string,
-  filtered: readonly SessionRecord[],
-  source: SessionSourceFilter,
-): SessionRecord {
+function resolveTier0Explicit(query: string, sessions: readonly SessionRecord[]): SessionRecord {
   const trimmed = query.trim();
   const lower = trimmed.toLowerCase();
-  const exact = filtered.find((s) => s.convId === trimmed || s.convId.toLowerCase() === lower);
+  const exact = sessions.find((s) => s.convId === trimmed || s.convId.toLowerCase() === lower);
   if (exact) return exact;
 
   const safeQuery = sanitizeTerminalText(trimmed);
@@ -88,16 +70,12 @@ function resolveTier0Explicit(
       `Session prefix "${safeQuery}" must be at least ${MIN_PREFIX_LEN} characters (or pass a full conversation ID).`,
     );
   }
-  const matches = filtered.filter((s) => s.convId.toLowerCase().startsWith(lower));
+  const matches = sessions.filter((s) => s.convId.toLowerCase().startsWith(lower));
   if (matches.length === 1 && matches[0]) {
     return matches[0];
   }
   if (matches.length > 1) {
-    const listed = matches
-      .map(
-        (s) => `  - [${formatSurfaceBadge(s.surface)}] ${s.convId} (${s.ageLabel}) "${sanitizeTerminalText(s.title)}"`,
-      )
-      .join('\n');
+    const listed = matches.map((s) => `  - ${s.convId} (${s.ageLabel}) "${sanitizeTerminalText(s.title)}"`).join('\n');
     throw new SessionResolutionError(
       'ambiguous',
       `Ambiguous session prefix "${safeQuery}" matched ${matches.length} sessions:\n${listed}`,
@@ -106,12 +84,12 @@ function resolveTier0Explicit(
   }
   throw new SessionResolutionError(
     'not-found',
-    `No session matching "${safeQuery}" found (source: ${source}). Run "agy-hud snapshot --sessions" to list sessions.`,
+    `No session matching "${safeQuery}" found. Run "agy-hud snapshot --sessions" to list sessions.`,
   );
 }
 
 function resolveTier2Workspace(
-  filtered: readonly SessionRecord[],
+  sessions: readonly SessionRecord[],
   callerCwd: string,
   nowMs: number,
 ): { session: SessionRecord; siblings: SiblingSessionHint[] } | null {
@@ -121,7 +99,7 @@ function resolveTier2Workspace(
   let deepestLen = 0;
   const matched: Array<{ session: SessionRecord; depth: number }> = [];
 
-  for (const session of filtered) {
+  for (const session of sessions) {
     if (isExitedCliSession(session)) continue;
     let best = 0;
     for (const ws of session.workspaces) {
@@ -160,9 +138,9 @@ function resolveTier2Workspace(
   return { session: winner, siblings };
 }
 
-function pickNewestFallbackSession(filtered: readonly SessionRecord[]): SessionRecord | undefined {
-  const eligible = filtered.filter((s) => !isExitedCliSession(s));
-  const pool = eligible.length > 0 ? eligible : filtered;
+function pickNewestFallbackSession(sessions: readonly SessionRecord[]): SessionRecord | undefined {
+  const eligible = sessions.filter((s) => !isExitedCliSession(s));
+  const pool = eligible.length > 0 ? eligible : sessions;
   let best: SessionRecord | undefined;
   for (const candidate of pool) {
     if (
@@ -178,41 +156,37 @@ function pickNewestFallbackSession(filtered: readonly SessionRecord[]): SessionR
 }
 
 export function resolveSession(options: ResolveSessionOptions = {}): ResolvedSessionResult {
-  const source = options.source ?? 'auto';
   const nowMs = options.nowMs ?? Date.now();
   const checkAlive = options.isAlive ?? isPidAlive;
-  const allSessions = discoverSessions(options);
-  const filtered = allSessions.filter((s) => matchesSourceFilter(s.surface, source));
+  const sessions = discoverSessions(options);
 
   if (options.session !== undefined) {
-    const matched = resolveTier0Explicit(options.session, filtered, source);
-    return { session: matched, tier: 'explicit', siblings: [], sessions: filtered };
+    const matched = resolveTier0Explicit(options.session, sessions);
+    return { session: matched, tier: 'explicit', siblings: [], sessions };
   }
 
-  if (filtered.length === 0) {
-    throw new SessionResolutionError('no-sessions', `No Antigravity sessions found (source: ${source}).`);
+  if (sessions.length === 0) {
+    throw new SessionResolutionError('no-sessions', 'No Antigravity sessions found.');
   }
 
-  if (source === 'auto' || source === 'cli') {
-    const callerPid =
-      options.callerAgyPid !== undefined ? options.callerAgyPid : findAncestorAgyPid({ isAlive: checkAlive });
-    if (callerPid !== null && checkAlive(callerPid)) {
-      const byLivePid = filtered.find((s) => s.surface === 'cli' && s.livePid === callerPid);
-      if (byLivePid) {
-        return { session: byLivePid, tier: 'pid', siblings: [], sessions: filtered };
-      }
+  const callerPid =
+    options.callerAgyPid !== undefined ? options.callerAgyPid : findAncestorAgyPid({ isAlive: checkAlive });
+  if (callerPid !== null && checkAlive(callerPid)) {
+    const byLivePid = sessions.find((s) => s.livePid === callerPid);
+    if (byLivePid) {
+      return { session: byLivePid, tier: 'pid', siblings: [], sessions };
     }
   }
 
   const cwd = options.cwd ?? process.cwd();
-  const tier2 = resolveTier2Workspace(filtered, cwd, nowMs);
+  const tier2 = resolveTier2Workspace(sessions, cwd, nowMs);
   if (tier2 !== null) {
-    return { session: tier2.session, tier: 'workspace', siblings: tier2.siblings, sessions: filtered };
+    return { session: tier2.session, tier: 'workspace', siblings: tier2.siblings, sessions };
   }
 
-  const fallback = pickNewestFallbackSession(filtered);
+  const fallback = pickNewestFallbackSession(sessions);
   if (!fallback) {
-    throw new SessionResolutionError('no-sessions', `No Antigravity sessions found (source: ${source}).`);
+    throw new SessionResolutionError('no-sessions', 'No Antigravity sessions found.');
   }
-  return { session: fallback, tier: 'fallback', siblings: [], sessions: filtered };
+  return { session: fallback, tier: 'fallback', siblings: [], sessions };
 }

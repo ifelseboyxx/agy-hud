@@ -5,15 +5,16 @@ import { lstatIfPresentSync } from '../fs-utils.ts';
 import { resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
 
 export const SNAPSHOT_TTL_MS: number = 7 * 24 * 60 * 60 * 1000;
-export const SNAPSHOT_TEMP_GRACE_MS: number = 60 * 60 * 1000;
+const SNAPSHOT_TEMP_GRACE_MS: number = 60 * 60 * 1000;
 
-const SNAPSHOT_CACHE_FILE_RE = /^agy_hud_(?:snapshot|activity|activity_snapshot|telemetry|pid|git)_.+\.(?:json|md)$/;
+const SNAPSHOT_CACHE_FILE_RE =
+  /^agy_hud_(?:snapshot|activity|activity_snapshot|telemetry|subagents|pid|git)_.+\.(?:json|md)$/;
 export const TRANSIENT_HUD_CACHE_RE: RegExp =
-  /^(?:agy_hud_(?:proc|sessions)\.json|agy_hud_(?:snapshot|activity|activity_snapshot|telemetry|pid|git)_.+\.(?:json|md))$/;
+  /^(?:agy_hud_(?:proc|sessions)\.json|agy_hud_(?:snapshot|activity|activity_snapshot|telemetry|subagents|pid|git)_.+\.(?:json|md))$/;
 export const TRANSIENT_HUD_TMP_RE: RegExp =
-  /^agy_hud_(?:(?:snapshot|activity|activity_snapshot|telemetry|pid|git)_.+\.(?:json|md)|(?:proc|sessions)\.json)\.tmp\.\d+\.\d+\.[0-9a-f]{16}$/;
+  /^agy_hud_(?:(?:snapshot|activity|activity_snapshot|telemetry|subagents|pid|git)_.+\.(?:json|md)|(?:proc|sessions)\.json)\.tmp\.\d+\.\d+\.[0-9a-f]{16}$/;
 const SNAPSHOT_TEMP_FILE_RE =
-  /^(?:agy_hud_(?:(?:snapshot|activity|activity_snapshot|telemetry|pid|git)_.+\.(?:json|md)|(?:proc|sessions)\.json)|agy-hud-statusline-backup\.json)\.tmp\.\d+\.\d+\.[0-9a-f]{16}$/;
+  /^(?:agy_hud_(?:(?:snapshot|activity|activity_snapshot|telemetry|subagents|pid|git)_.+\.(?:json|md)|(?:proc|sessions)\.json)|agy-hud-statusline-backup\.json)\.tmp\.\d+\.\d+\.[0-9a-f]{16}$/;
 
 function buildExcludedConvCacheNames(excludeConvId: string | undefined): ReadonlySet<string> | null {
   const safeId = excludeConvId !== undefined ? sanitizeSessionId(excludeConvId) : null;
@@ -24,6 +25,7 @@ function buildExcludedConvCacheNames(excludeConvId: string | undefined): Readonl
     `agy_hud_activity_${safeId}.json`,
     `agy_hud_activity_snapshot_${safeId}.json`,
     `agy_hud_telemetry_${safeId}.json`,
+    `agy_hud_subagents_${safeId}.json`,
   ]);
 }
 

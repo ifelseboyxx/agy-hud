@@ -1,6 +1,6 @@
 /* @host-contract
- * Read-only `conversation_summaries.db` scanner with WAL version-tag in-memory caching (docs/host-contracts.md §2):
- * - Caches parsed summary rows per `(dbPath, readSqliteVersionTag)` so 2s idle MCP polls avoid `/tmp` WAL file copies.
+ * Read-only CLI `conversation_summaries.db` scanner with WAL version-tag in-memory caching (docs/host-contracts.md §2):
+ * - Caches parsed summary rows per `(dbPath, readSqliteVersionTag)` to avoid redundant `/tmp` WAL file copies.
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -16,7 +16,6 @@ const MAX_SUMMARY_DB_CACHE_ENTRIES = 8;
 
 export interface CachedSummaryRow {
   readonly safeId: string;
-  readonly source: string;
   readonly title: string;
   readonly summaryMs: number;
   readonly isRunning: boolean;
@@ -90,7 +89,7 @@ export function loadSummaryDbSnapshot(rootDir: string): SummaryDbSnapshot | null
     const parsedRows: CachedSummaryRow[] = [];
     const rows = db
       .prepare(
-        `SELECT conversation_id, title, last_modified_time, workspace_uris, source, not_fully_idle, status
+        `SELECT conversation_id, title, last_modified_time, workspace_uris, not_fully_idle, status
          FROM conversation_summaries
          WHERE nesting_depth = 0 AND killed = 0
          ORDER BY last_modified_time DESC
@@ -103,7 +102,6 @@ export function loadSummaryDbSnapshot(rootDir: string): SummaryDbSnapshot | null
       if (safeId === null) continue;
       parsedRows.push({
         safeId,
-        source: typeof row.source === 'string' ? row.source : '',
         title: typeof row.title === 'string' ? sanitizeTerminalLabel(row.title) : '',
         summaryMs: parseSummaryTimestampMs(row.last_modified_time),
         isRunning: row.not_fully_idle === 1 || row.status === 'CASCADE_RUN_STATUS_RUNNING',

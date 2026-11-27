@@ -7,8 +7,9 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { formatContextCapacity } from '../../render/ansi.ts';
 import type { StatusLineData } from '../../types.ts';
-import { computeCompactedUsed, isCompactionActive, parseKvStepIdx } from '../compaction.ts';
-import { loadSessionTelemetry, parseGenMetadataBlob } from '../telemetry.ts';
+import { computeCompactedUsed, estimateCjkAwareTokens, isCompactionActive, parseKvStepIdx } from '../compaction.ts';
+import { parseGenMetadataBlob } from '../proto.ts';
+import { loadSessionTelemetry } from '../telemetry.ts';
 
 function encodeVarint(value: number): number[] {
   const bytes: number[] = [];
@@ -124,7 +125,7 @@ void describe('post-compact telemetry detection', () => {
     assert.ok(formatContextCapacity(staleStdin.context_window, compactedTel).includes('(~25k/512k)'));
 
     const cachedJson = JSON.parse(readFileSync(cacheFile, 'utf8')) as { v?: number; ckpt?: { idx?: number } };
-    assert.equal(cachedJson.v, 2);
+    assert.equal(cachedJson.v, 3);
     assert.equal(cachedJson.ckpt?.idx, 156);
 
     // Next user turn adds gen_metadata row with stepIdx=157 > ckpt.idx=156.
@@ -157,18 +158,31 @@ void describe('post-compact telemetry detection', () => {
     assert.equal(
       isCompactionActive(
         [{ in: 100, out: 10, cw: 0, cr: 0, ttft: 1, stream: 1, ctxUsed: 80, ctxMax: 512_000, stepIdx: -1 }],
-        { idx: 12, payloadLen: 800, hasPostPlanner: false },
+        { idx: 12, compactionCount: 1, msgTokensEstimate: 200, hasPostPlanner: false },
       ),
       true,
     );
     assert.equal(
       isCompactionActive(
         [{ in: 100, out: 10, cw: 0, cr: 0, ttft: 1, stream: 1, ctxUsed: 80, ctxMax: 512_000, stepIdx: -1 }],
-        { idx: 12, payloadLen: 800, hasPostPlanner: true },
+        { idx: 12, compactionCount: 1, msgTokensEstimate: 200, hasPostPlanner: true },
       ),
       false,
     );
-    assert.equal(computeCompactedUsed([], { idx: 1, payloadLen: 0, hasPostPlanner: false }), 1);
+    assert.equal(
+      computeCompactedUsed([], { idx: 1, compactionCount: 1, msgTokensEstimate: 0, hasPostPlanner: false }),
+      1,
+    );
+
+    // CJK-aware estimation uses fixed non-message overhead + ceil(cjk * 1.15 + other / 3.8)
+    const cjkEstimate = estimateCjkAwareTokens(['中文摘要十个字测试完成', 'English summary text']);
+    assert.equal(cjkEstimate, Math.ceil(11 * 1.15 + 20 / 3.8));
+    const withBreakdown = computeCompactedUsed(
+      [],
+      { idx: 12, compactionCount: 1, msgTokensEstimate: 3_000, hasPostPlanner: false },
+      { system: 4_000, rules: 5_000, skills: 2_000, tools: 8_000, mcp: 1_000, messages: 200_000 },
+    );
+    assert.equal(withBreakdown, 23_000);
 
     const convId = 'no-steps-conv';
     const dbPath = path.join(cliHome, 'conversations', `${convId}.db`);
@@ -185,5 +199,12 @@ void describe('post-compact telemetry detection', () => {
     const tel = loadSessionTelemetry(cliHome, { conversation_id: convId });
     assert.equal(tel.compacted, false);
     assert.equal(tel.ctxUsed, 2000);
+
+    // Locked SQLite ctxMax (e.g. Orchestrator 256k budget) must NOT revert to stdin 1M window when ctxUsed is null
+    const lockedCap = formatContextCapacity(
+      { context_window_size: 1_048_576, used_percentage: 50 },
+      { ...tel, genCount: 2, ctxUsed: null, ctxMax: 256_000, compacted: false },
+    );
+    assert.ok(lockedCap.includes('(128k/256k)'), lockedCap);
   });
 });

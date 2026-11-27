@@ -4,8 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
+import { writeBoundedPrivateJsonCache } from '../../fs-utils.ts';
 import type { SessionRecord } from '../../snapshot-types.ts';
-import { ACTIVITY_CACHE_SCHEMA_VERSION, writeActivityCache, writeBoundedPrivateJsonCache } from '../activity-cache.ts';
+import { ACTIVITY_CACHE_SCHEMA_VERSION } from '../activity-cache.ts';
 import { loadTranscriptActivity } from '../activity.ts';
 import { loadActivitySnapshot } from '../snapshot-loader.ts';
 
@@ -65,7 +66,6 @@ void describe('large (> 512 KiB) transcript with running suffix in-place rewrite
     const session: SessionRecord = {
       convId,
       shortId: convId.slice(0, 8),
-      surface: 'cli',
       title: 'Large Running Rewrite',
       workspace: '/workspace',
       workspaces: ['/workspace'],
@@ -98,7 +98,7 @@ void describe('large (> 512 KiB) transcript with running suffix in-place rewrite
 
   void it('skips persisting activity cache when serialized payload exceeds the byte budget', () => {
     const cachePath = path.join(cliHome, 'cache', 'agy_hud_activity_overbudget.json');
-    writeActivityCache(
+    writeBoundedPrivateJsonCache(
       cachePath,
       {
         v: ACTIVITY_CACHE_SCHEMA_VERSION,
@@ -135,7 +135,6 @@ void describe('large (> 512 KiB) transcript with running suffix in-place rewrite
     const session: SessionRecord = {
       convId,
       shortId: convId.slice(0, 8),
-      surface: 'cli',
       title: 'Compact Cache',
       workspace: '/workspace',
       workspaces: ['/workspace'],

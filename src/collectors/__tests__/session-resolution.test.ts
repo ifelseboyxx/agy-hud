@@ -14,7 +14,6 @@ interface SummaryRowSeed {
   title: string;
   lastModifiedIso: string;
   workspaces: string[];
-  source?: string;
   notFullyIdle?: number;
 }
 
@@ -42,7 +41,7 @@ function writeSummaryDb(rootDir: string, rows: readonly SummaryRowSeed[]): void 
       r.title,
       r.lastModifiedIso,
       JSON.stringify(r.workspaces.map((ws) => pathToFileURL(ws).href)),
-      r.source ?? 'CORTEX_TRAJECTORY_SOURCE_CLIENT',
+      'CORTEX_TRAJECTORY_SOURCE_CLI',
       r.notFullyIdle ?? 0,
       'CASCADE_RUN_STATUS_IDLE',
     );
@@ -61,25 +60,20 @@ function writeTranscript(rootDir: string, convId: string, lines: readonly unknow
   }
 }
 
-void describe('4-tier session resolution', () => {
+void describe('4-tier CLI session resolution', () => {
   let tmpRoot = '';
-  let geminiRoot = '';
   let cliHome = '';
-  let appRoot = '';
   let wsRoot = '';
   let wsNested = '';
   let wsOther = '';
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-resolve-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
-    appRoot = path.join(geminiRoot, 'antigravity');
+    cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
     wsRoot = path.join(tmpRoot, 'repo');
     wsNested = path.join(wsRoot, 'packages', 'sub');
     wsOther = path.join(tmpRoot, 'other-proj');
     mkdirSync(cliHome, { recursive: true });
-    mkdirSync(appRoot, { recursive: true });
     mkdirSync(wsNested, { recursive: true });
     mkdirSync(wsOther, { recursive: true });
   });
@@ -91,60 +85,41 @@ void describe('4-tier session resolution', () => {
   void it('resolves Tier 0 exact ID or unique prefix', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeTranscript(cliHome, 'abcd1111-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
-    writeTranscript(appRoot, 'abcd2222-app', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
+    writeTranscript(cliHome, 'abcd2222-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
     writeSummaryDb(cliHome, [
-      {
-        id: 'abcd1111-cli',
-        title: 'First',
-        lastModifiedIso: '2026-06-01T12:00:00Z',
-        workspaces: [wsRoot],
-        source: 'CORTEX_TRAJECTORY_SOURCE_CLI',
-      },
-    ]);
-    writeSummaryDb(appRoot, [
-      { id: 'abcd2222-app', title: 'Second', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
+      { id: 'abcd1111-cli', title: 'First', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
+      { id: 'abcd2222-cli', title: 'Second', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
     ]);
 
-    const exact = resolveSession({ cliHome, geminiRoot, session: 'abcd2222-app', nowMs });
+    const exact = resolveSession({ cliHome, session: 'abcd2222-cli', nowMs });
     assert.equal(exact.tier, 'explicit');
-    assert.equal(exact.session.convId, 'abcd2222-app');
+    assert.equal(exact.session.convId, 'abcd2222-cli');
 
-    const uniquePrefix = resolveSession({ cliHome, geminiRoot, session: 'abcd1', nowMs });
+    const uniquePrefix = resolveSession({ cliHome, session: 'abcd1', nowMs });
     assert.equal(uniquePrefix.tier, 'explicit');
     assert.equal(uniquePrefix.session.convId, 'abcd1111-cli');
-
-    const scopedPrefix = resolveSession({ cliHome, geminiRoot, session: 'abcd', source: 'app', nowMs });
-    assert.equal(scopedPrefix.session.convId, 'abcd2222-app');
   });
 
   void it('throws SessionResolutionError listing candidates on ambiguous or short prefixes', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeTranscript(cliHome, 'abcd1111-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
-    writeTranscript(appRoot, 'abcd2222-app', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
+    writeTranscript(cliHome, 'abcd2222-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
     writeSummaryDb(cliHome, [
-      {
-        id: 'abcd1111-cli',
-        title: 'First',
-        lastModifiedIso: '2026-06-01T12:00:00Z',
-        workspaces: [wsRoot],
-        source: 'CORTEX_TRAJECTORY_SOURCE_CLI',
-      },
-    ]);
-    writeSummaryDb(appRoot, [
-      { id: 'abcd2222-app', title: 'Second', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
+      { id: 'abcd1111-cli', title: 'First', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
+      { id: 'abcd2222-cli', title: 'Second', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
     ]);
 
     assert.throws(
-      () => resolveSession({ cliHome, geminiRoot, session: 'abcd', source: 'auto', nowMs }),
+      () => resolveSession({ cliHome, session: 'abcd', nowMs }),
       (err: unknown) =>
         err instanceof SessionResolutionError &&
         err.message.includes('abcd1111-cli') &&
-        err.message.includes('abcd2222-app'),
+        err.message.includes('abcd2222-cli'),
     );
-    assert.throws(() => resolveSession({ cliHome, geminiRoot, session: 'abc', nowMs }), SessionResolutionError);
+    assert.throws(() => resolveSession({ cliHome, session: 'abc', nowMs }), SessionResolutionError);
   });
 
-  void it('resolves Tier 1 by live ancestor agyPid for auto source', () => {
+  void it('resolves Tier 1 by live ancestor agyPid', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeSnapshotEnvelope(
       cliHome,
@@ -166,40 +141,15 @@ void describe('4-tier session resolution', () => {
     );
 
     const alive = new Set([2000, 3000]);
-    const hitAuto = resolveSession({
+    const hit = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: wsRoot,
-      source: 'auto',
       callerAgyPid: 2000,
       nowMs,
       isAlive: (p) => alive.has(p),
     });
-    assert.equal(hitAuto.tier, 'pid');
-    assert.equal(hitAuto.session.convId, 'cli-new-same-pid');
-  });
-
-  void it('skips Tier 1 PID matching when --source app is requested', () => {
-    const nowMs = Date.parse('2026-06-01T12:00:00Z');
-    writeSnapshotEnvelope(cliHome, { conversation_id: 'cli-same-pid', cwd: wsRoot, conversation_title: 'CLI' }, 2000, {
-      nowMs: nowMs - 5_000,
-    });
-    writeTranscript(appRoot, 'app-sibling-1111', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
-    writeSummaryDb(appRoot, [
-      { id: 'app-sibling-1111', title: 'App Sibling', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
-    ]);
-
-    const res = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsRoot,
-      source: 'app',
-      callerAgyPid: 2000,
-      nowMs,
-      isAlive: (p) => p === 2000,
-    });
-    assert.equal(res.tier, 'workspace');
-    assert.equal(res.session.convId, 'app-sibling-1111');
+    assert.equal(hit.tier, 'pid');
+    assert.equal(hit.session.convId, 'cli-new-same-pid');
   });
 
   void it('excludes dead CLI PIDs while reporting live workspace siblings in Tier 2', () => {
@@ -214,25 +164,24 @@ void describe('4-tier session resolution', () => {
       { nowMs: nowMs - 60_000 },
     );
     writeTranscript(
-      appRoot,
-      'app-newer-idle',
+      cliHome,
+      'cli-newer-idle',
       [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
       nowMs - 10_000,
     );
-    writeSummaryDb(appRoot, [
-      { id: 'app-newer-idle', title: 'Newer App', lastModifiedIso: '2026-06-01T11:59:50Z', workspaces: [wsRoot] },
+    writeSummaryDb(cliHome, [
+      { id: 'cli-newer-idle', title: 'Newer CLI', lastModifiedIso: '2026-06-01T11:59:50Z', workspaces: [wsRoot] },
     ]);
 
     const atRoot = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: wsRoot,
       callerAgyPid: null,
       nowMs,
       isAlive: (p) => p === 4001,
     });
     assert.equal(atRoot.tier, 'workspace');
-    assert.equal(atRoot.session.convId, 'app-newer-idle');
+    assert.equal(atRoot.session.convId, 'cli-newer-idle');
     assert.ok(atRoot.siblings.some((s) => s.convId === 'cli-live-idle'));
     assert.equal(
       atRoot.siblings.some((s) => s.convId === 'cli-dead-pid'),
@@ -243,32 +192,31 @@ void describe('4-tier session resolution', () => {
   void it('prefers deepest matching workspace root in Tier 2', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeTranscript(
-      appRoot,
-      'app-parent-ws',
+      cliHome,
+      'cli-parent-ws',
       [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
       nowMs - 10_000,
     );
     writeTranscript(
-      appRoot,
-      'app-nested-ws',
+      cliHome,
+      'cli-nested-ws',
       [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
       nowMs - 600_000,
     );
-    writeSummaryDb(appRoot, [
-      { id: 'app-parent-ws', title: 'Parent', lastModifiedIso: '2026-06-01T11:59:50Z', workspaces: [wsRoot] },
-      { id: 'app-nested-ws', title: 'Nested', lastModifiedIso: '2026-06-01T11:50:00Z', workspaces: [wsNested] },
+    writeSummaryDb(cliHome, [
+      { id: 'cli-parent-ws', title: 'Parent', lastModifiedIso: '2026-06-01T11:59:50Z', workspaces: [wsRoot] },
+      { id: 'cli-nested-ws', title: 'Nested', lastModifiedIso: '2026-06-01T11:50:00Z', workspaces: [wsNested] },
     ]);
 
     const atNested = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: wsNested,
       callerAgyPid: null,
       nowMs,
       isAlive: () => false,
     });
     assert.equal(atNested.tier, 'workspace');
-    assert.equal(atNested.session.convId, 'app-nested-ws');
+    assert.equal(atNested.session.convId, 'cli-nested-ws');
   });
 
   void it('prefers actively running execution over newer idle sessions in Tier 2', () => {
@@ -286,18 +234,17 @@ void describe('4-tier session resolution', () => {
       nowMs - 30_000,
     );
     writeTranscript(
-      appRoot,
-      'app-newer-idle',
+      cliHome,
+      'cli-newer-idle',
       [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
       nowMs - 5_000,
     );
-    writeSummaryDb(appRoot, [
-      { id: 'app-newer-idle', title: 'Newer App', lastModifiedIso: '2026-06-01T11:59:55Z', workspaces: [wsRoot] },
+    writeSummaryDb(cliHome, [
+      { id: 'cli-newer-idle', title: 'Newer Idle', lastModifiedIso: '2026-06-01T11:59:55Z', workspaces: [wsRoot] },
     ]);
 
     const activeWins = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: wsRoot,
       callerAgyPid: null,
       nowMs,
@@ -307,15 +254,13 @@ void describe('4-tier session resolution', () => {
     assert.equal(activeWins.session.convId, 'cli-active');
   });
 
-  void it('falls back to Tier 3 newest live or recent session when cwd matches no workspace', () => {
+  void it('falls back to Tier 3 newest non-exited session when cwd matches no workspace', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeSnapshotEnvelope(
       cliHome,
       { conversation_id: 'cli-dead-1111', cwd: wsRoot, conversation_title: 'Dead' },
       9991,
-      {
-        nowMs,
-      },
+      { nowMs },
     );
     writeSnapshotEnvelope(
       cliHome,
@@ -324,65 +269,50 @@ void describe('4-tier session resolution', () => {
       { nowMs: nowMs - 30_000 },
     );
     writeTranscript(
-      appRoot,
-      'app-recent-3333',
+      cliHome,
+      'cli-recent-3333',
       [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
       nowMs - 5_000,
     );
-    writeSummaryDb(appRoot, [
-      { id: 'app-recent-3333', title: 'Recent App', lastModifiedIso: '2026-06-01T11:59:55Z', workspaces: [wsRoot] },
+    writeSummaryDb(cliHome, [
+      { id: 'cli-recent-3333', title: 'Recent CLI', lastModifiedIso: '2026-06-01T11:59:55Z', workspaces: [wsRoot] },
     ]);
 
-    const alive = new Set([5001]);
-    const fallbackAuto = resolveSession({
+    const fallback = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: wsOther,
-      source: 'auto',
       callerAgyPid: null,
       nowMs,
-      isAlive: (p) => alive.has(p),
+      isAlive: (p) => p === 5001,
     });
-    assert.equal(fallbackAuto.tier, 'fallback');
-    assert.equal(fallbackAuto.session.convId, 'app-recent-3333');
-
-    const fallbackCli = resolveSession({
-      cliHome,
-      geminiRoot,
-      cwd: wsOther,
-      source: 'cli',
-      callerAgyPid: null,
-      nowMs,
-      isAlive: (p) => alive.has(p),
-    });
-    assert.equal(fallbackCli.tier, 'fallback');
-    assert.equal(fallbackCli.session.convId, 'cli-live-2222');
+    assert.equal(fallback.tier, 'fallback');
+    assert.equal(fallback.session.convId, 'cli-recent-3333');
   });
 
   void it('picks newer idle session over older running session in Tier 3 fallback', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeTranscript(
-      appRoot,
-      'app-older-running',
+      cliHome,
+      'cli-older-running',
       [{ type: 'PLANNER_RESPONSE', status: 'RUNNING', tool_calls: [] }],
       nowMs - 60_000,
     );
     writeTranscript(
-      appRoot,
-      'app-newer-idle',
+      cliHome,
+      'cli-newer-idle',
       [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
       nowMs - 5_000,
     );
-    writeSummaryDb(appRoot, [
+    writeSummaryDb(cliHome, [
       {
-        id: 'app-older-running',
+        id: 'cli-older-running',
         title: 'Older Running',
         lastModifiedIso: '2026-06-01T11:59:00Z',
         workspaces: [wsRoot],
         notFullyIdle: 1,
       },
       {
-        id: 'app-newer-idle',
+        id: 'cli-newer-idle',
         title: 'Newer Idle',
         lastModifiedIso: '2026-06-01T11:59:55Z',
         workspaces: [wsRoot],
@@ -392,14 +322,12 @@ void describe('4-tier session resolution', () => {
 
     const resolved = resolveSession({
       cliHome,
-      geminiRoot,
       cwd: wsOther,
-      source: 'app',
       callerAgyPid: null,
       nowMs,
       isAlive: () => false,
     });
     assert.equal(resolved.tier, 'fallback');
-    assert.equal(resolved.session.convId, 'app-newer-idle');
+    assert.equal(resolved.session.convId, 'cli-newer-idle');
   });
 });

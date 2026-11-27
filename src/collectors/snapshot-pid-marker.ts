@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { isFiniteNum } from '../core/guards.ts';
 import { readRegularJsonObjectSync } from '../fs-utils.ts';
-import type { SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
+import type { SnapshotEnvelope } from '../snapshot-types.ts';
 import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
 
 export const MAX_MARKER_FUTURE_SKEW_MS: number = 5 * 60 * 1000;
@@ -18,7 +18,6 @@ export interface ActivePidMarker {
 
 export interface LivePidCandidate {
   convId: string;
-  surface: SessionSurface;
   envelope: SnapshotEnvelope | null;
 }
 
@@ -148,7 +147,7 @@ export function resolveLivePidOwners(
   >();
   for (const acc of candidates) {
     byConvId.set(acc.convId, acc);
-    if (acc.surface !== 'cli' || acc.envelope === null || acc.envelope.agyPid === null) continue;
+    if (acc.envelope === null || acc.envelope.agyPid === null) continue;
     if (acc.envelope.heartbeatAtMs > maxAllowedHeartbeatMs) continue;
     const pid = acc.envelope.agyPid;
     if (!checkAlive(pid)) continue;
@@ -179,7 +178,6 @@ export function resolveLivePidOwners(
       (marker.switchSeq === cur.pidSwitchSeq && marker.heartbeatAtMs >= cur.heartbeatAtMs);
     if (
       marked &&
-      marked.surface === 'cli' &&
       marked.envelope?.agyPid === pid &&
       marked.envelope.heartbeatAtMs <= maxAllowedHeartbeatMs &&
       markerWins

@@ -3,9 +3,13 @@ import path from 'node:path';
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
 import { mergeHudConfig } from '../core/hud-config.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { DEFAULT_MAX_REGULAR_JSON_BYTES, readBoundedJsonObjectSync, readRegularJsonObjectSync } from '../fs-utils.ts';
+import {
+  DEFAULT_MAX_REGULAR_JSON_BYTES,
+  readBoundedJsonObjectSync,
+  readRegularJsonObjectSync,
+  writeBoundedPrivateJsonCache,
+} from '../fs-utils.ts';
 import type { CliSettings, GitBranchInfo, HudConfig, StatusLineData, StatusLineVcs } from '../types.ts';
-import { writeBoundedPrivateJsonCache } from './activity-cache.ts';
 import { readGitRepoHeadBranch } from './git.ts';
 import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
 

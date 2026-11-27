@@ -5,9 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
-import { DEFAULT_MAX_REGULAR_JSON_BYTES, readRegularJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
+import {
+  DEFAULT_MAX_REGULAR_JSON_BYTES,
+  readRegularJsonObjectSync,
+  statIfPresentSync,
+  writeBoundedPrivateJsonCache,
+} from '../fs-utils.ts';
 import type { GitStatusInfo, StatusLineVcs } from '../types.ts';
-import { writeBoundedPrivateJsonCache } from './activity-cache.ts';
 import { resolveCliSubdirFile } from './safe-path.ts';
 
 export const GIT_CACHE_TTL_MS: number = 2_000;
@@ -159,7 +163,7 @@ export function readGitRepoHeadBranch(cwd: string | undefined): string {
   return parseBranchFromHeadContent(readRawHeadContent(loc.gitDir));
 }
 
-export function parseBranchFromHeadContent(headContent: string): string {
+function parseBranchFromHeadContent(headContent: string): string {
   if (headContent.length === 0) return '';
   if (headContent.startsWith('ref: refs/heads/')) {
     return headContent.slice('ref: refs/heads/'.length);

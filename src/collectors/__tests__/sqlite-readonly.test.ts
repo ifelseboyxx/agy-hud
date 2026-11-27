@@ -83,21 +83,19 @@ function createSummarySchema(db: DatabaseSync): void {
   `);
 }
 
-void describe('strict read-only SQLite WAL isolation on App root', () => {
+void describe('strict read-only SQLite WAL isolation on CLI roots', () => {
   let tmpRoot = '';
-  let geminiRoot = '';
-  let cliHome = '';
-  let appRoot = '';
+  let cacheCliHome = '';
+  let roCliHome = '';
   let wsDir = '';
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-wal-ro-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
-    appRoot = path.join(geminiRoot, 'antigravity');
+    cacheCliHome = path.join(tmpRoot, 'cache-cli-home');
+    roCliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
     wsDir = path.join(tmpRoot, 'ws');
-    mkdirSync(cliHome, { recursive: true });
-    mkdirSync(appRoot, { recursive: true });
+    mkdirSync(cacheCliHome, { recursive: true });
+    mkdirSync(roCliHome, { recursive: true });
     mkdirSync(wsDir, { recursive: true });
   });
 
@@ -107,9 +105,9 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
     }
   });
 
-  void it('leaves App directory entries and file contents unchanged for closed-writer WAL databases', () => {
+  void it('leaves CLI database directory entries and file contents unchanged for closed-writer WAL databases', () => {
     const convId = 'wal-closed-1234';
-    const logsDir = path.join(appRoot, 'brain', convId, '.system_generated', 'logs');
+    const logsDir = path.join(roCliHome, 'brain', convId, '.system_generated', 'logs');
     mkdirSync(logsDir, { recursive: true });
     writeFileSync(
       path.join(logsDir, 'transcript.jsonl'),
@@ -117,14 +115,14 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
       'utf8',
     );
 
-    const convDir = path.join(appRoot, 'conversations');
+    const convDir = path.join(roCliHome, 'conversations');
     mkdirSync(convDir, { recursive: true });
     const convDb = new DatabaseSync(path.join(convDir, `${convId}.db`));
     convDb.exec('PRAGMA journal_mode = WAL; CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB);');
     convDb.prepare('INSERT INTO gen_metadata (idx, data) VALUES (?, ?)').run(0, buildGenBlob(42_000, 1_000_000));
     convDb.close();
 
-    const summaryDb = new DatabaseSync(path.join(appRoot, 'conversation_summaries.db'));
+    const summaryDb = new DatabaseSync(path.join(roCliHome, 'conversation_summaries.db'));
     createSummarySchema(summaryDb);
     summaryDb
       .prepare(
@@ -137,7 +135,7 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
         'Closed Writer WAL Session',
         '2026-06-01T12:00:00Z',
         JSON.stringify([pathToFileURL(wsDir).href]),
-        'CORTEX_TRAJECTORY_SOURCE_CLIENT',
+        'CORTEX_TRAJECTORY_SOURCE_CLI',
         0,
         'CASCADE_RUN_STATUS_IDLE',
         0,
@@ -145,23 +143,23 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
       );
     summaryDb.close();
 
-    const before = snapshotTree(appRoot);
+    const before = snapshotTree(roCliHome);
     assert.equal('conversation_summaries.db-wal' in before, false);
     assert.equal('conversation_summaries.db-shm' in before, false);
 
-    const sessions = discoverSessions({ cliHome, geminiRoot, nowMs: Date.parse('2026-06-01T12:01:00Z') });
+    const sessions = discoverSessions({ cliHome: roCliHome, nowMs: Date.parse('2026-06-01T12:01:00Z') });
     assert.equal(sessions.length, 1);
     assert.equal(sessions[0]?.title, 'Closed Writer WAL Session');
 
-    const snapshot = loadActivitySnapshot(sessions[0]!, { cacheCliHome: cliHome });
+    const snapshot = loadActivitySnapshot(sessions[0]!, { cacheCliHome });
     assert.equal(snapshot.telemetry.ctxUsed, 42_000);
 
-    assert.deepEqual(snapshotTree(appRoot), before);
+    assert.deepEqual(snapshotTree(roCliHome), before);
   });
 
-  void it('reads live uncheckpointed WAL rows without modifying App directory entries or files', () => {
+  void it('reads live uncheckpointed WAL rows without modifying CLI directory entries or files', () => {
     const convId = 'wal-active-5678';
-    const logsDir = path.join(appRoot, 'brain', convId, '.system_generated', 'logs');
+    const logsDir = path.join(roCliHome, 'brain', convId, '.system_generated', 'logs');
     mkdirSync(logsDir, { recursive: true });
     writeFileSync(
       path.join(logsDir, 'transcript.jsonl'),
@@ -169,10 +167,10 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
       'utf8',
     );
 
-    const convDir = path.join(appRoot, 'conversations');
+    const convDir = path.join(roCliHome, 'conversations');
     mkdirSync(convDir, { recursive: true });
     const convDb = new DatabaseSync(path.join(convDir, `${convId}.db`));
-    const summaryDb = new DatabaseSync(path.join(appRoot, 'conversation_summaries.db'));
+    const summaryDb = new DatabaseSync(path.join(roCliHome, 'conversation_summaries.db'));
 
     try {
       convDb.exec('PRAGMA journal_mode = WAL; CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB);');
@@ -195,24 +193,24 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
           'Live Uncheckpointed WAL Title',
           '2026-06-01T12:00:00Z',
           JSON.stringify([pathToFileURL(wsDir).href]),
-          'CORTEX_TRAJECTORY_SOURCE_CLIENT',
+          'CORTEX_TRAJECTORY_SOURCE_CLI',
           1,
           'CASCADE_RUN_STATUS_RUNNING',
           0,
           0,
         );
 
-      const before = snapshotTree(appRoot);
+      const before = snapshotTree(roCliHome);
       assert.equal('conversation_summaries.db-wal' in before, true);
 
-      const sessions = discoverSessions({ cliHome, geminiRoot, nowMs: Date.parse('2026-06-01T12:01:00Z') });
+      const sessions = discoverSessions({ cliHome: roCliHome, nowMs: Date.parse('2026-06-01T12:01:00Z') });
       assert.equal(sessions.length, 1);
       assert.equal(sessions[0]?.title, 'Live Uncheckpointed WAL Title');
 
-      const snapshot = loadActivitySnapshot(sessions[0]!, { cacheCliHome: cliHome });
+      const snapshot = loadActivitySnapshot(sessions[0]!, { cacheCliHome });
       assert.equal(snapshot.telemetry.ctxUsed, 88_000);
 
-      assert.deepEqual(snapshotTree(appRoot), before);
+      assert.deepEqual(snapshotTree(roCliHome), before);
     } finally {
       summaryDb.close();
       convDb.close();
@@ -220,7 +218,7 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
   });
 
   void it('retries WAL snapshot when live writer completes TRUNCATE checkpoint mid-copy', () => {
-    const dbPath = path.join(appRoot, 'race-truncate.db');
+    const dbPath = path.join(roCliHome, 'race-truncate.db');
     const writer = new DatabaseSync(dbPath);
     try {
       writer.exec('PRAGMA journal_mode = WAL; CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT);');
@@ -252,7 +250,7 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
   });
 
   void it('retries WAL snapshot when live writer rotates WAL via RESTART checkpoint mid-copy', () => {
-    const dbPath = path.join(appRoot, 'race-restart.db');
+    const dbPath = path.join(roCliHome, 'race-restart.db');
     const writer = new DatabaseSync(dbPath);
     try {
       writer.exec('PRAGMA journal_mode = WAL; CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT);');
@@ -289,7 +287,7 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
   void it('recovers telemetry after a transient WAL temp-dir read failure without caching empty rows', () => {
     if (process.platform === 'win32') return;
     const convId = 'wal-transient-fail-9999';
-    const convDir = path.join(appRoot, 'conversations');
+    const convDir = path.join(roCliHome, 'conversations');
     mkdirSync(convDir, { recursive: true });
     const dbPath = path.join(convDir, `${convId}.db`);
     const writer = new DatabaseSync(dbPath);
@@ -301,14 +299,14 @@ void describe('strict read-only SQLite WAL isolation on App root', () => {
 
       // Force temp-dir creation failure while WAL is active.
       process.env.TMPDIR = path.join(tmpRoot, 'missing-parent', 'uncreatable');
-      const failedTel = loadSessionTelemetryFromRoot(appRoot, cliHome, convId, {});
+      const failedTel = loadSessionTelemetryFromRoot(roCliHome, cacheCliHome, convId, {});
       assert.equal(failedTel.genCount, 0);
 
       // Restore TMPDIR; next load must NOT hit a poisoned empty cache and must read the committed WAL row.
       if (prevTmpDir === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = prevTmpDir;
 
-      const recoveredTel = loadSessionTelemetryFromRoot(appRoot, cliHome, convId, {});
+      const recoveredTel = loadSessionTelemetryFromRoot(roCliHome, cacheCliHome, convId, {});
       assert.equal(recoveredTel.genCount, 1);
       assert.equal(recoveredTel.ctxUsed, 73_000);
     } finally {

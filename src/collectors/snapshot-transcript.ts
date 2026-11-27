@@ -2,15 +2,10 @@ import { existsSync } from 'node:fs';
 
 import { isPlainObject } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { readRegularJsonObjectSync } from '../fs-utils.ts';
+import { readRegularJsonObjectSync, writeBoundedPrivateJsonCache } from '../fs-utils.ts';
 import type { SessionRecord } from '../snapshot-types.ts';
 import type { ActivityAgentEntry } from '../types.ts';
-import {
-  MAX_ACTIVITY_CACHE_BYTES,
-  parseActivityAgents,
-  parseSanitizedStringList,
-  writeBoundedPrivateJsonCache,
-} from './activity-cache.ts';
+import { MAX_ACTIVITY_CACHE_BYTES, parseActivityAgents, parseSanitizedStringList } from './activity-cache.ts';
 import { listMcpServers, shortenTarget } from './activity-parse.ts';
 import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
 import {

@@ -5,7 +5,9 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
+import { parseModelAndEffort, resolveOrchestratorDisplay } from '../../core/model-names.ts';
 import { resolveCliHome } from '../../core/paths.ts';
+import { resolveQuotaReset } from '../../core/quota-pace.ts';
 import { formatAgentsBadge, formatRuntimeBadges } from '../../render/agents-render.ts';
 import { formatContextCapacity, stripAnsi } from '../../render/ansi.ts';
 import type { StatusLineData } from '../../types.ts';
@@ -13,14 +15,9 @@ import { DEFAULT_HUD_CONFIG } from '../../types.ts';
 import { BUILTIN_SLASH_CMDS } from '../activity-parse.ts';
 import { loadTodos, loadTranscriptActivity } from '../activity.ts';
 import { cleanAgentLabel, collectAgentsSummary, syncSwarmFromStdin, transcriptTurnEnded } from '../agents.ts';
+import { parseGenMetadataBlob } from '../proto.ts';
 import { detectGitBranch, getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../settings.ts';
-import {
-  loadSessionTelemetry,
-  parseGenMetadataBlob,
-  parseModelAndEffort,
-  resolveOrchestratorDisplay,
-  resolveQuotaReset,
-} from '../telemetry.ts';
+import { loadSessionTelemetry } from '../telemetry.ts';
 
 function encodeVarint(value: number): number[] {
   const bytes: number[] = [];
@@ -159,7 +156,7 @@ void describe('collectors', () => {
     const single = resolveOrchestratorDisplay('Orchestrator (Neon)', '', {
       orchestrator: { planner: 'Gemini 4 Carbon (High)' },
     });
-    assert.deepEqual(single, { name: 'Orchestrator (Carbon)', effort: 'high' });
+    assert.deepEqual(single, { name: 'Orchestrator (Carbon)', effort: 'high', peakFlags: [true] });
 
     const dual = resolveOrchestratorDisplay('Orchestrator (Neon)', '', {
       orchestrator: {
@@ -167,13 +164,13 @@ void describe('collectors', () => {
         executor: 'Gemini 4 Hydrogen (XHigh)',
       },
     });
-    assert.deepEqual(dual, { name: 'Orchestrator (Carbon/Hydrogen)', effort: 'high/xhigh' });
+    assert.deepEqual(dual, { name: 'Orchestrator (Carbon/Hydrogen)', effort: 'high/xhigh', peakFlags: [true, true] });
 
     const parsed = parseModelAndEffort(
       { model: { display_name: 'Claude Opus 4.1 (Max)' } },
       { orchestrator: { planner: 'Gemini 4 Carbon (High)' } },
     );
-    assert.deepEqual(parsed, { name: 'Opus 4.1', effort: 'max' });
+    assert.deepEqual(parsed, { name: 'Opus 4.1', effort: 'max', peakFlags: [true] });
   });
 
   void it('decodes protobuf generator_metadata_blob and reads SQLite incrementally with cache', () => {
@@ -225,7 +222,7 @@ void describe('collectors', () => {
     assert.equal(tel1.ttft, 2.5);
     assert.equal(tel1.cachePct, 80);
     assert.equal(tel1.ctxMax, 1_048_576);
-    assert.ok(formatContextCapacity(data.context_window, tel1).includes('262k/1M'));
+    assert.ok(formatContextCapacity(data.context_window, tel1).includes('32k/1M'));
 
     const cacheFile = path.join(cliHome, 'cache', `agy_hud_telemetry_${convId}.json`);
     assert.equal(JSON.parse(readFileSync(cacheFile, 'utf8')).rows['0'].out, 300);
@@ -354,16 +351,16 @@ void describe('collectors', () => {
 
     const badgesWithTodos = formatRuntimeBadges(data, { hasTodosLine: true }).map(stripAnsi);
     assert.equal(
-      badgesWithTodos.some((b) => b.includes('BG 2')),
+      badgesWithTodos.some((b) => b.includes('Bg Tasks 2')),
       false,
     );
     assert.ok(badgesWithTodos.some((b) => b.includes('@hud-core')));
     assert.ok(badgesWithTodos.some((b) => b.includes('Battle left')));
     assert.ok(badgesWithTodos.some((b) => b.includes('! Approval')));
-    assert.ok(badgesWithTodos.some((b) => b.includes('Q:4')));
+    assert.ok(badgesWithTodos.some((b) => b.includes('Queued 4')));
 
     const badgesNoTodos = formatRuntimeBadges(data, { hasTodosLine: false }).map(stripAnsi);
-    assert.ok(badgesNoTodos.some((b) => b.includes('BG 2')));
+    assert.ok(badgesNoTodos.some((b) => b.includes('Bg Tasks 2')));
   });
 
   void it('scans transcript.jsonl incrementally for tools, non-builtin skills, MCPs, and task.md todos', () => {

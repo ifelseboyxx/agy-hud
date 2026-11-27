@@ -1,6 +1,6 @@
 /* @host-contract
- * Cross-surface session discovery across CLI, Antigravity App, and IDE roots (docs/host-contracts.md §2):
- * - Resolves physical session ownership (`brain/<id>` / `conversations/<id>.db`) because App mirrors CLI summary rows.
+ * CLI session discovery under `cliHome` (docs/host-contracts.md §2):
+ * - Scans `conversation_summaries.db` (strictly read-only), `brain/<id>`, `conversations/<id>.db`, and snapshot envelopes.
  * - Excludes subagents (`nesting_depth > 0`), `killed != 0`, and exited CLI PIDs.
  */
 import { existsSync, readdirSync } from 'node:fs';
@@ -8,22 +8,26 @@ import path from 'node:path';
 
 import { isPidAlive } from '../core/file-lock.ts';
 import { isPlainObject } from '../core/guards.ts';
-import { realpathExistingPrefixSync, resolveProfileRoots, toComparePath } from '../core/paths.ts';
+import { realpathExistingPrefixSync, resolveCliHome, toComparePath } from '../core/paths.ts';
+import { normalizeHostAgentState } from '../core/quota-pace.ts';
+import { resolveTurnPhase } from '../core/telemetry-error.ts';
 import { lstatIfPresentSync, readRegularJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
-import type { SessionRecord, SessionSurface, SnapshotEnvelope } from '../snapshot-types.ts';
+import type { SessionRecord, SnapshotEnvelope } from '../snapshot-types.ts';
 import { RUNNING_STEP_STATUSES } from './activity-parse.ts';
 import { readTailLines } from './agents.ts';
 import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
 import { loadSummaryDbSnapshot } from './session-summary-db.ts';
 import {
   formatRelativeAge,
-  formatSurfaceBadge,
   isExitedCliProcess,
+  isExitedCliSession,
   parseEnvelopeRecord,
   resolveLivePidOwners,
 } from './snapshot-envelope.ts';
+import { readSessionTailPhaseFallback } from './step-timing.ts';
 
 const ENVELOPE_FILE_RE = /^agy_hud_snapshot_(.+)\.json$/;
+const MAX_LIST_SQLITE_PHASE_PROBES = 8;
 const ACTIVE_SUBAGENT_STATUSES: ReadonlySet<string> = new Set([
   'running',
   'working',
@@ -36,20 +40,13 @@ const ACTIVE_SUBAGENT_STATUSES: ReadonlySet<string> = new Set([
 
 export interface DiscoverSessionsOptions {
   cliHome?: string;
-  geminiRoot?: string;
   env?: NodeJS.ProcessEnv;
   nowMs?: number;
   isAlive?: (pid: number) => boolean;
 }
 
-interface DataRootEntry {
-  dir: string;
-  surface: SessionSurface;
-}
-
 interface CandidateAccumulator {
   convId: string;
-  surface: SessionSurface;
   dataRoot: string;
   title: string;
   workspaces: string[];
@@ -59,17 +56,17 @@ interface CandidateAccumulator {
   envelope: SnapshotEnvelope | null;
 }
 
-function buildDataRoots(cliHome: string, geminiRoot: string): DataRootEntry[] {
-  const roots: DataRootEntry[] = [{ dir: cliHome, surface: 'cli' }];
-  const appDir = path.join(geminiRoot, 'antigravity');
-  if (existsSync(appDir)) {
-    roots.push({ dir: appDir, surface: 'app' });
-  }
-  const ideDir = path.join(geminiRoot, 'antigravity-ide');
-  if (existsSync(path.join(ideDir, 'brain'))) {
-    roots.push({ dir: ideDir, surface: 'ide' });
-  }
-  return roots;
+function createEmptyCandidate(convId: string, cliHome: string): CandidateAccumulator {
+  return {
+    convId,
+    dataRoot: cliHome,
+    title: '',
+    workspaces: [],
+    workspacesSeen: new Set<string>(),
+    running: false,
+    summaryModifiedMs: 0,
+    envelope: null,
+  };
 }
 
 function hasPhysicalSessionFiles(rootDir: string, convId: string): boolean {
@@ -92,44 +89,6 @@ function addWorkspacePath(acc: CandidateAccumulator, rawPath: string): void {
     acc.workspacesSeen.add(key);
     acc.workspaces.push(canon);
   }
-}
-
-function resolvePhysicalOwner(
-  convId: string,
-  source: string,
-  originRoot: DataRootEntry,
-  roots: readonly DataRootEntry[],
-): DataRootEntry | null {
-  const cliRoot = roots.find((r) => r.surface === 'cli');
-  const appRoot = roots.find((r) => r.surface === 'app');
-  const ideRoot = roots.find((r) => r.surface === 'ide');
-  const ordered: DataRootEntry[] = [];
-  const seen = new Set<string>();
-  const push = (entry: DataRootEntry | undefined): void => {
-    if (entry && !seen.has(entry.dir)) {
-      seen.add(entry.dir);
-      ordered.push(entry);
-    }
-  };
-
-  if (source === 'CORTEX_TRAJECTORY_SOURCE_CLI') {
-    push(cliRoot);
-    push(originRoot);
-    push(appRoot);
-    push(ideRoot);
-  } else {
-    push(originRoot);
-    push(appRoot);
-    push(cliRoot);
-    push(ideRoot);
-  }
-
-  for (const candidate of ordered) {
-    if (hasPhysicalSessionFiles(candidate.dir, convId)) {
-      return candidate;
-    }
-  }
-  return null;
 }
 
 function probeTranscriptState(rootDir: string, convId: string): { mtimeMs: number; running: boolean } {
@@ -171,48 +130,27 @@ function envelopeHasActiveSubagent(envelope: SnapshotEnvelope | null): boolean {
   });
 }
 
-function scanSummaryDatabases(
-  roots: readonly DataRootEntry[],
+function scanSummaryDatabase(
+  cliHome: string,
   candidates: Map<string, CandidateAccumulator>,
   excludedIds: Set<string>,
 ): void {
-  for (const root of roots) {
-    const snap = loadSummaryDbSnapshot(root.dir);
-    if (snap === null) continue;
-    for (const safe of snap.excludedIds) {
-      excludedIds.add(safe);
-      candidates.delete(safe);
-    }
-    for (const row of snap.rows) {
-      if (excludedIds.has(row.safeId)) continue;
-      const owner = resolvePhysicalOwner(row.safeId, row.source, root, roots);
-      if (owner === null) continue;
-      let acc = candidates.get(row.safeId);
-      if (!acc) {
-        acc = {
-          convId: row.safeId,
-          surface: owner.surface,
-          dataRoot: owner.dir,
-          title: row.title,
-          workspaces: [],
-          workspacesSeen: new Set<string>(),
-          running: row.isRunning,
-          summaryModifiedMs: row.summaryMs,
-          envelope: null,
-        };
-        candidates.set(row.safeId, acc);
-      } else {
-        if (row.title.length > 0 && acc.title.length === 0) acc.title = titleOrExisting(row.title, acc.title);
-        if (row.summaryMs > acc.summaryModifiedMs) acc.summaryModifiedMs = row.summaryMs;
-        if (row.isRunning) acc.running = true;
-      }
-      for (const ws of row.workspaces) addWorkspacePath(acc, ws);
-    }
+  const snap = loadSummaryDbSnapshot(cliHome);
+  if (snap === null) return;
+  for (const safe of snap.excludedIds) {
+    excludedIds.add(safe);
+    candidates.delete(safe);
   }
-}
-
-function titleOrExisting(nextTitle: string, currentTitle: string): string {
-  return currentTitle.length > 0 ? currentTitle : nextTitle;
+  for (const row of snap.rows) {
+    if (excludedIds.has(row.safeId) || !hasPhysicalSessionFiles(cliHome, row.safeId)) continue;
+    if (candidates.has(row.safeId)) continue;
+    const acc = createEmptyCandidate(row.safeId, cliHome);
+    acc.title = row.title;
+    acc.running = row.isRunning;
+    acc.summaryModifiedMs = row.summaryMs;
+    candidates.set(row.safeId, acc);
+    for (const ws of row.workspaces) addWorkspacePath(acc, ws);
+  }
 }
 
 function scanSnapshotEnvelopes(
@@ -238,19 +176,11 @@ function scanSnapshotEnvelopes(
 
     let acc = candidates.get(env.convId);
     if (!acc) {
-      acc = {
-        convId: env.convId,
-        surface: 'cli',
-        dataRoot: cliHome,
-        title: env.conversationTitle,
-        workspaces: [],
-        workspacesSeen: new Set<string>(),
-        running: false,
-        summaryModifiedMs: 0,
-        envelope: env,
-      };
+      acc = createEmptyCandidate(env.convId, cliHome);
+      acc.title = env.conversationTitle;
+      acc.envelope = env;
       candidates.set(env.convId, acc);
-    } else if (acc.surface === 'cli') {
+    } else {
       if (!acc.envelope || env.heartbeatAtMs >= acc.envelope.heartbeatAtMs) {
         acc.envelope = env;
       }
@@ -259,92 +189,61 @@ function scanSnapshotEnvelopes(
       }
     }
 
-    if (acc.surface === 'cli') {
-      addWorkspacePath(acc, env.workspaceCurrentDir);
-      addWorkspacePath(acc, env.workspaceProjectDir);
-      addWorkspacePath(acc, env.cwd);
-    }
+    addWorkspacePath(acc, env.workspaceCurrentDir);
+    addWorkspacePath(acc, env.workspaceProjectDir);
+    addWorkspacePath(acc, env.cwd);
   }
 }
 
 function scanColdBrainDirectories(
-  roots: readonly DataRootEntry[],
+  cliHome: string,
   candidates: Map<string, CandidateAccumulator>,
   excludedIds: ReadonlySet<string>,
 ): void {
-  for (const root of roots) {
-    const brainDir = resolveTrustedCliDir(root.dir, 'brain');
-    if (brainDir === null) continue;
-    let entries: string[];
-    try {
-      entries = readdirSync(brainDir);
-    } catch {
-      continue;
-    }
-    for (const name of entries) {
-      const safeId = sanitizeSessionId(name);
-      if (safeId === null || candidates.has(safeId) || excludedIds.has(safeId)) continue;
-      const hasTranscript = existsSync(path.join(brainDir, safeId, '.system_generated', 'logs', 'transcript.jsonl'));
-      const hasDb = existsSync(path.join(root.dir, 'conversations', `${safeId}.db`));
-      if (!hasTranscript && !hasDb) continue;
-      candidates.set(safeId, {
-        convId: safeId,
-        surface: root.surface,
-        dataRoot: root.dir,
-        title: '',
-        workspaces: [],
-        workspacesSeen: new Set<string>(),
-        running: false,
-        summaryModifiedMs: 0,
-        envelope: null,
-      });
-    }
+  const brainDir = resolveTrustedCliDir(cliHome, 'brain');
+  if (brainDir === null) return;
+  let entries: string[];
+  try {
+    entries = readdirSync(brainDir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    const safeId = sanitizeSessionId(name);
+    if (safeId === null || candidates.has(safeId) || excludedIds.has(safeId)) continue;
+    const hasTranscript = existsSync(path.join(brainDir, safeId, '.system_generated', 'logs', 'transcript.jsonl'));
+    const hasDb = existsSync(path.join(cliHome, 'conversations', `${safeId}.db`));
+    if (!hasTranscript && !hasDb) continue;
+    candidates.set(safeId, createEmptyCandidate(safeId, cliHome));
   }
 }
 
 function scanColdConversationDbs(
-  roots: readonly DataRootEntry[],
+  cliHome: string,
   candidates: Map<string, CandidateAccumulator>,
   excludedIds: ReadonlySet<string>,
 ): void {
-  for (const root of roots) {
-    const convDir = resolveTrustedCliDir(root.dir, 'conversations');
-    if (convDir === null) continue;
-    let entries: string[];
-    try {
-      entries = readdirSync(convDir);
-    } catch {
-      continue;
-    }
-    for (const name of entries) {
-      if (!name.endsWith('.db')) continue;
-      const safeId = sanitizeSessionId(name.slice(0, -3));
-      if (safeId === null || candidates.has(safeId) || excludedIds.has(safeId)) continue;
-      const fullPath = path.join(convDir, name);
-      const st = lstatIfPresentSync(fullPath);
-      if (st === null || st.isSymbolicLink() || !st.isFile()) continue;
-      candidates.set(safeId, {
-        convId: safeId,
-        surface: root.surface,
-        dataRoot: root.dir,
-        title: '',
-        workspaces: [],
-        workspacesSeen: new Set<string>(),
-        running: false,
-        summaryModifiedMs: 0,
-        envelope: null,
-      });
-    }
+  const convDir = resolveTrustedCliDir(cliHome, 'conversations');
+  if (convDir === null) return;
+  let entries: string[];
+  try {
+    entries = readdirSync(convDir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.endsWith('.db')) continue;
+    const safeId = sanitizeSessionId(name.slice(0, -3));
+    if (safeId === null || candidates.has(safeId) || excludedIds.has(safeId)) continue;
+    const fullPath = path.join(convDir, name);
+    const st = lstatIfPresentSync(fullPath);
+    if (st === null || st.isSymbolicLink() || !st.isFile()) continue;
+    candidates.set(safeId, createEmptyCandidate(safeId, cliHome));
   }
 }
 
-function isLiveOrClientSession(s: SessionRecord): boolean {
-  if (s.surface !== 'cli') return true;
-  return s.livePid !== null || s.envelope === null || s.envelope.agyPid === null;
-}
-
 function compareSessionsDefault(a: SessionRecord, b: SessionRecord): number {
-  const liveDiff = (isLiveOrClientSession(b) ? 1 : 0) - (isLiveOrClientSession(a) ? 1 : 0);
+  const liveDiff = (!isExitedCliSession(b) ? 1 : 0) - (!isExitedCliSession(a) ? 1 : 0);
   if (liveDiff !== 0) return liveDiff;
   const runDiff = (b.running ? 1 : 0) - (a.running ? 1 : 0);
   if (runDiff !== 0) return runDiff;
@@ -357,14 +256,13 @@ export function discoverSessions(options: DiscoverSessionsOptions = {}): Session
   const env = options.env ?? process.env;
   const nowMs = options.nowMs ?? Date.now();
   const checkAlive = options.isAlive ?? isPidAlive;
-  const { cliHome, geminiRoot } = resolveProfileRoots(options.cliHome, options.geminiRoot, env);
-  const roots = buildDataRoots(cliHome, geminiRoot);
+  const cliHome = resolveCliHome(options.cliHome, env);
 
   const candidates = new Map<string, CandidateAccumulator>();
   const excludedIds = new Set<string>();
-  scanSummaryDatabases(roots, candidates, excludedIds);
-  scanColdBrainDirectories(roots, candidates, excludedIds);
-  scanColdConversationDbs(roots, candidates, excludedIds);
+  scanSummaryDatabase(cliHome, candidates, excludedIds);
+  scanColdBrainDirectories(cliHome, candidates, excludedIds);
+  scanColdConversationDbs(cliHome, candidates, excludedIds);
   scanSnapshotEnvelopes(cliHome, candidates, excludedIds);
 
   const livePidOwners = resolveLivePidOwners(cliHome, candidates.values(), nowMs, checkAlive);
@@ -374,18 +272,22 @@ export function discoverSessions(options: DiscoverSessionsOptions = {}): Session
     const probe = probeTranscriptState(acc.dataRoot, acc.convId);
     const envPid = acc.envelope?.agyPid ?? null;
     const livePid = envPid !== null && livePidOwners.get(envPid) === acc.convId ? envPid : null;
-    const isExitedCli = isExitedCliProcess(acc.surface, envPid, livePid);
+    const isExitedCli = isExitedCliProcess(envPid, livePid);
     const updatedAtMs = Math.max(acc.envelope?.updatedAtMs ?? 0, probe.mtimeMs, acc.summaryModifiedMs);
     const running = isExitedCli
       ? false
       : acc.running || probe.running || (livePid !== null && envelopeHasActiveSubagent(acc.envelope));
-    const badge = formatSurfaceBadge(acc.surface);
-    const title = acc.title.length > 0 ? acc.title : `${badge} session ${acc.convId.slice(0, 8)}`;
+    const title = acc.title.length > 0 ? acc.title : `Session ${acc.convId.slice(0, 8)}`;
+    const turnPhase = resolveTurnPhase({
+      isExitedCli,
+      hasLiveHostState: livePid !== null && acc.envelope !== null,
+      toolConfirmationPending: acc.envelope?.toolConfirmationPending,
+      agentState: acc.envelope?.agentState,
+    });
 
     sessions.push({
       convId: acc.convId,
       shortId: acc.convId.slice(0, 8),
-      surface: acc.surface,
       title,
       workspace: acc.workspaces[0] ?? '',
       workspaces: acc.workspaces,
@@ -396,8 +298,31 @@ export function discoverSessions(options: DiscoverSessionsOptions = {}): Session
       envelope: acc.envelope,
       updatedAtMs,
       ageLabel: updatedAtMs > 0 ? formatRelativeAge(nowMs - updatedAtMs) : 'unknown',
+      turnPhase,
     });
   }
 
-  return sessions.sort(compareSessionsDefault);
+  sessions.sort(compareSessionsDefault);
+  let sqlitePhaseProbes = 0;
+  for (const session of sessions) {
+    if (sqlitePhaseProbes >= MAX_LIST_SQLITE_PHASE_PROBES) break;
+    if (isExitedCliSession(session)) continue;
+    const hasExplicitHostPhase =
+      session.livePid !== null &&
+      session.envelope !== null &&
+      (session.envelope.toolConfirmationPending === true ||
+        normalizeHostAgentState(session.envelope.agentState) !== null);
+    if (hasExplicitHostPhase) continue;
+    sqlitePhaseProbes += 1;
+    const fallback = readSessionTailPhaseFallback(session.dataRoot, cliHome, session.convId);
+    session.turnPhase = resolveTurnPhase({
+      isExitedCli: false,
+      hasLiveHostState: session.livePid !== null && session.envelope !== null,
+      toolConfirmationPending: session.envelope?.toolConfirmationPending,
+      agentState: session.envelope?.agentState,
+      tailStepPhase: fallback.tailStepPhase,
+      lastErrorCode: fallback.lastErrorCode,
+    });
+  }
+  return sessions;
 }

@@ -21,14 +21,11 @@ import {
 } from './activity-parse.ts';
 import {
   computeFdRangeFingerprint,
-  computeFileContentHash,
   computeFullFdRangeHash,
   computeFullParsedRangeHash,
   computeParsedRangeFingerprint,
   FULL_HASH_MAX_BYTES,
 } from './transcript-fingerprint.ts';
-
-export { computeFileContentHash };
 
 export interface TranscriptCacheMeta {
   path: string;

@@ -128,19 +128,21 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
 
   const hasIdentity = enabledLines.has('identity');
   const hasUsage = enabledLines.has('usage');
-  const needCliSettings = enabledLines.has('mode') || (hasIdentity && config.segments.model);
-  const cliSettings =
-    options?.cliSettings !== undefined ? options.cliSettings : needCliSettings ? readCliSettings(cliHome) : {};
-
   const needTelemetry =
     (hasIdentity && config.segments.perf) ||
     ((hasUsage || hasIdentity) && config.segments.context) ||
     data.exceeds_200k_tokens === true;
+  const needCliSettings = enabledLines.has('mode') || (hasIdentity && config.segments.model) || needTelemetry;
+  const cliSettings =
+    options?.cliSettings !== undefined ? options.cliSettings : needCliSettings ? readCliSettings(cliHome) : {};
+
   const telemetry =
     options?.telemetry !== undefined
       ? options.telemetry
       : needTelemetry
-        ? (collectors?.loadSessionTelemetry ?? loadSessionTelemetry)(cliHome, data)
+        ? collectors?.loadSessionTelemetry !== undefined
+          ? collectors.loadSessionTelemetry(cliHome, data)
+          : loadSessionTelemetry(cliHome, data, cliSettings)
         : null;
 
   const effectiveData = normalizeEffectiveStatusData(data, telemetry);
@@ -220,6 +222,7 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
       todos,
       termWidth,
       nowSec,
+      env,
       modeOptions: { bypass: resolvedBypass, cliMode: resolvedCliMode },
       identityOptions: {
         gitInfo: gitInfo ?? undefined,
@@ -254,10 +257,16 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
       }
     }
     // When an OSC 8 overflow link is actually emitted on narrow layouts that hid identity/usage,
-    // lazily backfill telemetry/agents so the materialized Markdown snapshot stays complete.
+    // lazily backfill telemetry/agents with full cliSettings so Orchestrator budgets stay aligned across widths.
+    const snapshotCliSettings =
+      osc8Target !== null && emittedOsc8Count >= 1 && !needCliSettings && options?.cliSettings === undefined
+        ? readCliSettings(cliHome)
+        : cliSettings;
     const snapshotTelemetry =
       osc8Target !== null && emittedOsc8Count >= 1 && telemetry === null && options?.telemetry === undefined
-        ? (collectors?.loadSessionTelemetry ?? loadSessionTelemetry)(cliHome, effectiveData)
+        ? collectors?.loadSessionTelemetry !== undefined
+          ? collectors.loadSessionTelemetry(cliHome, effectiveData)
+          : loadSessionTelemetry(cliHome, effectiveData, snapshotCliSettings)
         : telemetry;
     const snapshotAgents =
       osc8Target !== null && emittedOsc8Count >= 1 && agentsSummary === null && options?.agentsSummary === undefined

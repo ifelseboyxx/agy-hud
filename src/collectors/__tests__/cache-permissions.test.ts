@@ -72,7 +72,6 @@ void describe('collector cache file permissions', () => {
     const session: SessionRecord = {
       convId,
       shortId: convId.slice(0, 8),
-      surface: 'cli',
       title: 'Snap',
       workspace: wsDir,
       workspaces: [wsDir],
@@ -163,7 +162,6 @@ void describe('collector cache file permissions', () => {
     const session: SessionRecord = {
       convId,
       shortId: convId.slice(0, 8),
-      surface: 'cli',
       title: 'Tighten',
       workspace: wsDir,
       workspaces: [wsDir],
