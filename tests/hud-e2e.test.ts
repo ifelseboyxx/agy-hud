@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
+import { formatStatusLineCommand } from '../src/core/statusline-ownership.ts';
 import {
   createTempDirTracker,
   DIST_CLI,
@@ -185,7 +186,7 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.equal(existsSync(path.join(targetDir, 'mcp_config.json')), false);
     assert.equal(
       (readJson(settingsPath).statusLine as Record<string, unknown>).command,
-      path.join(targetDir, 'dist', 'hud.mjs'),
+      formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs')),
     );
 
     const doctorRes = runNodeScript(INSTALL_SCRIPT, ['doctor', '--target', targetDir], env);

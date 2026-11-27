@@ -412,7 +412,11 @@ void describe('transcript activity v4 cache and target persistence', () => {
     });
     assert.ok(first !== null);
     assert.equal(first.tools[0]?.name, 'read_file');
-    assert.equal(first.cacheable, false);
+    // On POSIX, utimes() advances ctime immediately; on Windows NTFS, ChangeTime shares a ~15.6ms tick so
+    // same-tick spoofed-mtime rewrites are instead caught by the byte-bound stablePrefixHash check below.
+    if (process.platform !== 'win32') {
+      assert.equal(first.cacheable, false);
+    }
 
     // Even if a caller passed first.meta as a seed, stablePrefixHash reflects parsed bytes so next scan catches edit_file.
     const next = scanTranscriptWithCache({

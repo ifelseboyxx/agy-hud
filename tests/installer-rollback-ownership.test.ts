@@ -13,6 +13,7 @@ import {
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
+import { formatStatusLineCommand } from '../src/core/statusline-ownership.ts';
 import {
   createTempDirTracker,
   INSTALL_SCRIPT,
@@ -156,7 +157,7 @@ writeFileSync(${JSON.stringify(backupPath2)}, JSON.stringify(${JSON.stringify(ex
     );
 
     const wiredA = readJson(settingsPath).statusLine as Record<string, unknown>;
-    assert.equal(wiredA.command, path.join(linkA, 'dist', 'hud.mjs'));
+    assert.equal(wiredA.command, formatStatusLineCommand(path.join(linkA, 'dist', 'hud.mjs')));
     const backupRawBefore = readFileSync(backupPath, 'utf8');
 
     // `off --target B` must NOT disable A.

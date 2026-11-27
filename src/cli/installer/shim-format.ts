@@ -59,10 +59,8 @@ function isWindowsPathStyle(sample: string): boolean {
 
 function selectShimPathApi(platform: NodeJS.Platform, ...samples: readonly (string | undefined)[]): path.PlatformPath {
   if (platform === process.platform) return path;
-  if (platform === 'win32') {
-    return samples.some((s) => s !== undefined && isWindowsPathStyle(s)) ? path.win32 : path;
-  }
-  return path.posix;
+  if (samples.some((s) => s !== undefined && isWindowsPathStyle(s))) return path.win32;
+  return platform === 'win32' ? path : path.posix;
 }
 
 function resolvePlatformHome(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
@@ -161,7 +159,7 @@ export function isDirOnPath(
   const rawPath = platform === 'win32' ? (env.PATH ?? env.Path ?? '') : (env.PATH ?? '');
   if (rawPath.trim().length === 0) return false;
   const pathApi = selectShimPathApi(platform, binDir, rawPath);
-  const delimiter = platform === 'win32' ? ';' : ':';
+  const delimiter = platform === 'win32' || pathApi === path.win32 ? ';' : ':';
   const targetNorm = normalizePathEntryForCompare(binDir, env, platform, pathApi);
   for (const part of rawPath.split(delimiter)) {
     const cleaned = platform === 'win32' ? part.trim().replace(/^"(.*)"$/, '$1') : part.trim();

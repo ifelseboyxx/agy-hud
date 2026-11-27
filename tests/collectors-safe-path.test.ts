@@ -199,7 +199,9 @@ void describe('collector path containment', () => {
   void it('expands ~/ transcript_path using process.env.HOME', () => {
     writeDoneTranscript(path.join(cliHome, 'brain', 'tilde-conv', '.system_generated', 'logs', 'transcript.jsonl'));
     const prevHome = process.env.HOME;
+    const prevUserProfile = process.env.USERPROFILE;
     process.env.HOME = tmpRoot;
+    process.env.USERPROFILE = tmpRoot;
     try {
       const tildeAct = loadTranscriptActivity(cliHome, {
         transcript_path: '~/.gemini/antigravity-cli/brain/tilde-conv/.system_generated/logs/transcript.jsonl',
@@ -208,6 +210,8 @@ void describe('collector path containment', () => {
     } finally {
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
+      if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevUserProfile;
     }
   });
 

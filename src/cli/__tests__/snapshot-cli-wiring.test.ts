@@ -163,7 +163,7 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
       platform: 'darwin',
     });
     assert.ok(res.output.includes('display-popup'));
-    assert.ok(res.output.includes(path.join(binDir, 'agy-hud')));
+    assert.ok(res.output.includes(path.join(binDir, 'agy-hud').replaceAll('\\', '\\\\')));
 
     const syncRun = captureSyncRun(() => runCliEntry(['--keybindings', 'ghostty', '--no-color']));
     assert.equal(syncRun.code, 0);

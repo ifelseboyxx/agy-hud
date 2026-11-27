@@ -80,6 +80,7 @@ export function makeIsolatedEnv(root: string, extra: Record<string, string> = {}
   return {
     ...process.env,
     HOME: root,
+    USERPROFILE: root,
     GEMINI_HOME: path.join(root, '.gemini'),
     GEMINI_CLI_HOME: root,
     PATH: stripHostAgyFromPath(process.env.PATH),

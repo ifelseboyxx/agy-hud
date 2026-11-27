@@ -75,9 +75,10 @@ void describe('keybindings host detection and snippet generation', () => {
     const tmuxOut = stripAnsi(
       renderKeybindings({ target: 'auto', env: { ...env, TMUX: '/tmp/tmux' }, pluginRoot, platform: 'darwin' }),
     );
+    const expectedShell = resolveKeybindingCommand({ env, pluginRoot, platform: 'darwin' }).shellCommand;
     assert.ok(tmuxOut.includes('Detected host: tmux'));
     assert.ok(tmuxOut.includes('-d "#{pane_current_path}"'));
-    assert.ok(tmuxOut.includes(`${path.join(binDir, 'agy-hud')} -p`));
+    assert.ok(tmuxOut.includes(expectedShell.replaceAll('\\', '\\\\')));
   });
 
   void it('falls back to node "<pluginRoot>/dist/cli.mjs" when CLI Shim is absent or foreign', () => {
@@ -102,11 +103,11 @@ void describe('keybindings host detection and snippet generation', () => {
     writeFileSync(path.join(binDir, 'agy-hud'), '#!/bin/sh\necho foreign\n', 'utf8');
 
     const env: NodeJS.ProcessEnv = { HOME: homeDir };
-    const expectedCli = path.join(pluginRoot, 'dist', 'cli.mjs');
+    const expectedShell = resolveKeybindingCommand({ env, pluginRoot, platform: 'darwin' }).shellCommand;
     const kittyOut = stripAnsi(
       renderKeybindings({ target: 'kitty', env, pluginRoot, platform: 'darwin', color: false }),
     );
-    assert.ok(kittyOut.includes(`launch --type=overlay --cwd=current node "${expectedCli}" -p`));
+    assert.ok(kittyOut.includes(`launch --type=overlay --cwd=current ${expectedShell}`));
   });
 
   void it('emits cwd-inheriting snippets for all five terminals and leaves user config dirs untouched', () => {
@@ -195,7 +196,8 @@ void describe('keybindings host detection and snippet generation', () => {
       platform: 'darwin',
       color: false,
     });
-    assert.ok(ghosttyOut.includes(`text:!node '${path.join(pluginRoot, 'dist', 'cli.mjs')}'\\n`));
+    const expectedGhosttyCli = path.join(pluginRoot, 'dist', 'cli.mjs').replaceAll('\\', '\\\\');
+    assert.ok(ghosttyOut.includes(`text:!node '${expectedGhosttyCli}'\\n`));
   });
 
   void it('escapes command substitutions inside tmux double-quoted popup snippets', () => {

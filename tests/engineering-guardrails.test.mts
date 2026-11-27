@@ -34,9 +34,9 @@ function writeFixtureFiles(baseDir: string, files: Record<string, string>): void
 }
 
 async function runCommitlintMsg(msg: string): Promise<number> {
-  const bin = path.join(ROOT, 'node_modules/.bin/commitlint');
+  const cliJs = path.join(ROOT, 'node_modules', '@commitlint', 'cli', 'cli.js');
   try {
-    const child = execFileAsync(bin, ['--config', path.join(ROOT, '.commitlintrc.cjs')], {
+    const child = execFileAsync(process.execPath, [cliJs, '--config', path.join(ROOT, '.commitlintrc.cjs')], {
       cwd: ROOT,
       encoding: 'utf8',
     });
@@ -195,7 +195,12 @@ void test('零 Emoji 守卫拦截源码违规字符', (t) => {
 
 void test('husky 钩子文件具备可执行权限', () => {
   for (const hook of ['.husky/pre-commit', '.husky/pre-push', '.husky/commit-msg']) {
-    assert.notEqual(statSync(path.join(ROOT, hook)).mode & 0o111, 0);
+    if (process.platform !== 'win32') {
+      assert.notEqual(statSync(path.join(ROOT, hook)).mode & 0o111, 0);
+    }
+    const staged = spawnSync('git', ['ls-files', '--stage', hook], { cwd: ROOT, encoding: 'utf8' });
+    assert.equal(staged.status, 0, staged.stderr);
+    assert.ok(staged.stdout.startsWith('100755 '), `${hook} must have git executable mode 100755`);
   }
 });
 

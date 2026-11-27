@@ -34,6 +34,8 @@ function gitIn(dir: string, args: readonly string[]): string {
 function createIsolatedGitRepo(version = '0.1.0'): string {
   const dir = tracker.makeTempDir('agy-hud-release-repo-');
   gitIn(dir, ['init', '-b', 'main']);
+  gitIn(dir, ['config', 'user.name', 'Release Test']);
+  gitIn(dir, ['config', 'user.email', 'release-test@example.com']);
   writeJson(path.join(dir, 'package.json'), { name: 'agy-hud', version });
   writeJson(path.join(dir, 'plugin.json'), { name: 'agy-hud', version });
   mkdirSync(path.join(dir, 'dist'), { recursive: true });

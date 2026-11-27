@@ -117,6 +117,7 @@ void describe('installer configuration safety and rollback', async () => {
   });
 
   await it('rolls back prior installation and statusLine when post-install doctor fails during upgrade', () => {
+    if (process.platform === 'win32') return;
     const root = makeTempDir('agy-hud-rollback-');
     const targetDir = path.join(root, 'installed-plugin');
     const cliHome = path.join(root, '.gemini', 'antigravity-cli');

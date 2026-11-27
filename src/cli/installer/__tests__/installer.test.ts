@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -46,7 +47,8 @@ void describe('installer staging identity verification', async () => {
     writeFileSync(path.join(targetDir, 'plugin.json'), JSON.stringify({ name: 'agy-hud' }), 'utf8');
     const precheckedStat = lstatSync(targetDir);
 
-    rmSync(targetDir, { recursive: true, force: true });
+    // Move aside rather than deleting so ext4 cannot immediately recycle the freed inode on recreate.
+    renameSync(targetDir, path.join(root, 'previous-target'));
     mkdirSync(targetDir, { recursive: true });
     writeFileSync(path.join(targetDir, 'important-user-data.txt'), 'keep', 'utf8');
 
