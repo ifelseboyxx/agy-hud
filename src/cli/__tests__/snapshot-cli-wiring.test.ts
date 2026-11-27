@@ -77,14 +77,12 @@ function captureSyncRun(fn: () => number): { code: number; stdout: string; stder
 
 void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structured Inspector)', () => {
   let tmpRoot = '';
-  let geminiRoot = '';
   let cliHome = '';
   let wsDir = '';
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-snap-wire-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
+    cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
     wsDir = path.join(tmpRoot, 'project-a');
     mkdirSync(cliHome, { recursive: true });
     mkdirSync(wsDir, { recursive: true });
@@ -124,7 +122,6 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
     );
     const defaultRes = runSnapshotCommand([], {
       cliHome,
-      geminiRoot,
       cwd: wsDir,
       width: 100,
       env: {},
@@ -135,7 +132,6 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
 
     const noColorRes = runSnapshotCommand(['--no-color'], {
       cliHome,
-      geminiRoot,
       cwd: wsDir,
       width: 100,
       env: {},
@@ -145,7 +141,6 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
 
     const envNoColorRes = runSnapshotCommand([], {
       cliHome,
-      geminiRoot,
       cwd: wsDir,
       width: 100,
       env: { NO_COLOR: '1' },
@@ -188,7 +183,6 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
       stdin: nonTtyIn,
       stdout: nonTtyOut,
       cliHome,
-      geminiRoot,
       cwd: wsDir,
       env: {},
     });
@@ -202,7 +196,6 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
       stdin: ttyIn,
       stdout: ttyOut,
       cliHome,
-      geminiRoot,
       cwd: wsDir,
       env: {},
     });
@@ -227,7 +220,6 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
         },
       },
       cliHome,
-      geminiRoot,
       cwd: wsDir,
       env: {},
     });
@@ -252,7 +244,6 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
     const syncRes = captureSyncRun(() =>
       runCliEntry(['tools', '--no-color'], {
         cliHome,
-        geminiRoot,
         cwd: wsDir,
         env: {},
       }),
@@ -276,7 +267,6 @@ void describe('snapshot CLI wiring (-p/--popup, --keybindings/--keymap, Structur
       stdin: ttyIn,
       stdout: ttyOut,
       cliHome,
-      geminiRoot,
       cwd: wsDir,
       env: {},
     });

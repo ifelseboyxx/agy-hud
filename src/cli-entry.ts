@@ -45,7 +45,6 @@ function writeErr(text: string, options?: CliEntryOptions): void {
 function toSnapshotOptions(options?: CliEntryOptions): SnapshotRunOptions {
   return {
     cliHome: options?.cliHome,
-    geminiRoot: options?.geminiRoot,
     cwd: options?.cwd,
     env: options?.env,
   };
@@ -59,7 +58,7 @@ Usage:
   agy-hud [command] [options]
 
 Commands:
-  snapshot (snap) Inspect full Activity Snapshot across CLI/App/IDE (default)
+  snapshot (snap) Inspect full Activity Snapshot for Antigravity CLI (default)
   preview [width] Preview HUD status bar offline with sample telemetry
   configure       Inspect or update <cliHome>/hud-config.json
   export-profile  Export sanitized Antigravity CLI profile bundle

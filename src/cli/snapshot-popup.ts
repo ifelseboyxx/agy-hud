@@ -18,8 +18,6 @@ import {
   type TtyOutputStream,
 } from './tty-session.ts';
 
-export { ESC_SEQUENCE_TIMEOUT_MS };
-
 const DEFAULT_POPUP_ROWS = 32;
 const MIN_POPUP_ROWS = 4;
 const CLEAR_HOME = `${ESC_CHAR}[H${ESC_CHAR}[2J`;
@@ -63,7 +61,7 @@ export interface RunSnapshotPopupOptions {
   readonly escTimeoutMs?: number;
 }
 
-export function isPopupInteractiveTty(
+function isPopupInteractiveTty(
   stdin: PopupInputStream = process.stdin,
   stdout: PopupOutputStream = process.stdout,
 ): boolean {
@@ -97,6 +95,7 @@ export function applyPopupKey(state: PopupState, seq: string, maxScrollOffset: n
   if (seq === '2') return togglePopupSection(state, 'skills');
   if (seq === '3') return togglePopupSection(state, 'mcps');
   if (seq === '4') return togglePopupSection(state, 'agents');
+  if (seq === '5' || seq === 'c' || seq === 'C') return togglePopupSection(state, 'context');
   if (seq === 'a' || seq === 'A' || seq === '0') {
     state.sections = [];
     state.scrollOffset = 0;
@@ -147,7 +146,7 @@ export function renderPopupFrame(
     maxScrollOffset > 0 ? ` | L${clampedOffset + 1}-${clampedOffset + visibleBody.length}/${bodyLines.length}` : '';
   const noteLabel = state.statusNote.length > 0 ? ` | ${state.statusNote}` : '';
   const barWidth = Math.max(10, cols - 1);
-  const barPlain = ` [1-4/a] ${secLabel} | [j/k] Scroll${scrollLabel} | [r] Reload | [q/Esc/Enter] Close${noteLabel} `;
+  const barPlain = ` [1-5/c/a] ${secLabel} | [j/k] Scroll${scrollLabel} | [r] Reload | [q/Esc/Enter] Close${noteLabel} `;
   const barFitted = padEndVisible(truncateToWidth(barPlain, barWidth), barWidth);
   const bar = options.color ? `${BAR_BG}${barFitted}${RESET}` : barFitted;
 

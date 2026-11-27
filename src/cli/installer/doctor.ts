@@ -9,10 +9,11 @@ import { lstatIfPresentSync, statIfPresentSync } from '../../fs-utils.ts';
 import { PLUGIN_NAME, type InstallerOptions } from './args.ts';
 import { inspectStatusLineState, isSupportedNodeVersion, NODE_RANGE_LABEL } from './settings.ts';
 import { inspectCliShim, runCliShimSmoke } from './shim.ts';
+import { formatCliStorageLine, formatCliStorageNote, inspectCliStorageHealth } from './storage-check.ts';
 
 const HUD_SMOKE_TIMEOUT_MS = 5000;
 const AGY_PROBE_TIMEOUT_MS = 10_000;
-export const AGY_COMMAND_TIMEOUT_MS = 10_000;
+const AGY_COMMAND_TIMEOUT_MS = 10_000;
 
 const requireModule = createRequire(import.meta.url);
 
@@ -119,7 +120,7 @@ export function runAgyPluginValidate(pluginBase: string, _repoRoot: string, time
   return { ok: !res.error && res.status === 0, output: stderr.length > 0 ? stderr : stdout };
 }
 
-export function checkSqliteBuiltin(): boolean {
+function checkSqliteBuiltin(): boolean {
   try {
     const sqlite = requireModule('node:sqlite') as typeof import('node:sqlite');
     const db = new sqlite.DatabaseSync(':memory:');
@@ -248,7 +249,8 @@ export function runDoctor(opts: DoctorRunOptions): { ok: boolean } {
     statIfPresentSync(hudPath)?.isFile() === true
       ? runHudStdinSmoke(hudPath, opts.packageRoot)
       : { ok: false, durationMs: 0, bytes: 0, detail: 'missing dist/hud.mjs' };
-  const slState = inspectStatusLineState(resolveCliHome(), resolvedTarget);
+  const cliHome = resolveCliHome();
+  const slState = inspectStatusLineState(cliHome, resolvedTarget);
   const shimCheck = evaluateCliShimDoctor(
     opts.binDir,
     pluginBase,
@@ -278,6 +280,12 @@ export function runDoctor(opts: DoctorRunOptions): { ok: boolean } {
     writeInstallerLine(`  - dist/hud.mjs : ${smokeDesc}`);
     writeInstallerLine(`  - statusLine   : ${slState.state} (${slState.settingsPath})`);
     writeInstallerLine(`  - CLI shim     : ${shimCheck.label}`);
+    const storageReport = inspectCliStorageHealth(cliHome, { sqliteOk });
+    writeInstallerLine(`  - CLI storage  : ${formatCliStorageLine(storageReport)}`);
+    const storageNote = formatCliStorageNote(storageReport);
+    if (storageNote !== null) {
+      writeInstallerLine(`  - Storage note : ${storageNote}`);
+    }
     if (agyValidate !== null) {
       writeInstallerLine(
         `  - agy validate : ${agyValidate.ok ? 'PASSED (--strict)' : `FAILED (${agyValidate.output})`}`,

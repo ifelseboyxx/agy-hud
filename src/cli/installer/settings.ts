@@ -112,7 +112,7 @@ function rollbackStatusLineField(spec: StatusLineRollbackSpec): void {
   );
 }
 
-export function readStatusLineBackupStrict(backupPath: string): Record<string, unknown> | null {
+function readStatusLineBackupStrict(backupPath: string): Record<string, unknown> | null {
   const parsed = readJsonObjectSync(backupPath, true);
   if (parsed === null) return null;
   if (!isValidBackupRecord(parsed)) {

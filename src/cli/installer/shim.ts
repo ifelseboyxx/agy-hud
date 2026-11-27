@@ -34,7 +34,6 @@ export {
   formatShimScriptCmd,
   formatShimScriptPosix,
   isDirOnPath,
-  resolveInstallNodePath,
   resolveShimBinDir,
   resolveShimPaths,
   SHIM_HEADER_VERSION,

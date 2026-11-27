@@ -6,8 +6,6 @@ import { nonEmptyStr } from '../../core/guards.ts';
 import { realpathExistingPrefixSync, SAFE_POSIX_SHELL_PATH_RE } from '../../core/paths.ts';
 import { isSameCanonicalFilePath } from '../../core/statusline-ownership.ts';
 
-export { SAFE_POSIX_SHELL_PATH_RE };
-
 export const SHIM_HEADER_VERSION = 'agy-hud-shim:v1';
 
 const SHIM_BIN_NAME = 'agy-hud';
@@ -53,10 +51,7 @@ function isWindowsPathStyle(sample: string): boolean {
   return /^[a-zA-Z]:/.test(sample) || sample.includes('\\');
 }
 
-export function selectShimPathApi(
-  platform: NodeJS.Platform,
-  ...samples: readonly (string | undefined)[]
-): path.PlatformPath {
+function selectShimPathApi(platform: NodeJS.Platform, ...samples: readonly (string | undefined)[]): path.PlatformPath {
   if (platform === process.platform) return path;
   if (platform === 'win32') {
     return samples.some((s) => s !== undefined && isWindowsPathStyle(s)) ? path.win32 : path;

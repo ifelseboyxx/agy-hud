@@ -8,9 +8,9 @@ import { renderHudPreviewLines } from '../render/preview-fixture.ts';
 import type { HudPreset } from '../types.ts';
 import { shouldUseSnapshotColor } from './snapshot-render.ts';
 
-export const MIN_PREVIEW_COLS: number = 40;
-export const MAX_PREVIEW_COLS: number = 400;
-export const NARROW_PREVIEW_WIDTH: number = 80;
+const MIN_PREVIEW_COLS: number = 40;
+const MAX_PREVIEW_COLS: number = 400;
+const NARROW_PREVIEW_WIDTH: number = 80;
 
 export interface PreviewCliArgs {
   readonly help: boolean;
@@ -27,7 +27,7 @@ export interface PreviewRunOptions {
   readonly stdoutColumns?: number;
 }
 
-export const PREVIEW_HELP_TEXT: string = `agy-hud preview
+const PREVIEW_HELP_TEXT: string = `agy-hud preview
 
 Usage:
   agy-hud preview [width] [options]

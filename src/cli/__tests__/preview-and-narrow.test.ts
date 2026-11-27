@@ -262,7 +262,7 @@ void describe('agy-hud preview command', () => {
     const narrow = runPreviewCommand(['--narrow', '--no-color'], { cliHome });
     assert.equal(narrow.includes('Cost'), false);
     assert.ok(narrow.includes('git:(main*)'));
-    assert.ok(narrow.includes('Gem 5h: 82% (2h15m)'));
+    assert.ok(narrow.includes('Gemini 5h: 82% (2h15m)'));
 
     const allPresets = runPreviewCommand(['--all-presets', '--no-color'], { cliHome });
     for (const preset of ['zen', 'minimal', 'compact', 'swarm', 'full']) {

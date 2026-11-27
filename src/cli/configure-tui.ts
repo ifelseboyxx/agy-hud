@@ -7,8 +7,6 @@ import {
 } from '../core/hud-config.ts';
 import type { HudConfig } from '../types.ts';
 import {
-  buildConfigurePreviewLines,
-  CONFIGURE_PRESET_DESCRIPTIONS,
   getConfigureTier2Items,
   renderConfigureTuiFrame,
   type ConfigureTier2Item,
@@ -36,10 +34,7 @@ import {
 } from './tty-session.ts';
 
 export {
-  buildConfigurePreviewLines,
-  CONFIGURE_PRESET_DESCRIPTIONS,
   getConfigureTier2Items,
-  renderConfigureTuiFrame,
   type ConfigureTier2Item,
   type ConfigureTuiFrameOptions,
   type ConfigureTuiKeyEffect,

@@ -79,21 +79,14 @@ function captureStdout(fn: () => number): { code: number; stdout: string; stderr
 
 void describe('agy-hud snapshot CLI', () => {
   let tmpRoot = '';
-  let geminiRoot = '';
   let cliHome = '';
-  let appRoot = '';
-  let ideRoot = '';
   let wsDir = '';
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-snap-cli-'));
-    geminiRoot = path.join(tmpRoot, '.gemini');
-    cliHome = path.join(geminiRoot, 'antigravity-cli');
-    appRoot = path.join(geminiRoot, 'antigravity');
-    ideRoot = path.join(geminiRoot, 'antigravity-ide');
+    cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
     wsDir = path.join(tmpRoot, 'my-repo');
     mkdirSync(cliHome, { recursive: true });
-    mkdirSync(appRoot, { recursive: true });
     mkdirSync(wsDir, { recursive: true });
   });
 
@@ -104,116 +97,81 @@ void describe('agy-hud snapshot CLI', () => {
   });
 
   void it('parses repeatable case-insensitive singular/plural/swarm filters and flags', () => {
-    const parsed = parseSnapshotArgs([
-      'Tool',
-      'SKILLS',
-      'mcp',
-      'swarm',
-      '-s',
-      'abcd1234',
-      '--source',
-      'app',
-      '--json',
-      '--no-color',
-    ]);
+    const parsed = parseSnapshotArgs(['Tool', 'SKILLS', 'mcp', 'swarm', '-s', 'abcd1234', '--json', '--no-color']);
     assert.deepEqual(parsed.sections, ['tools', 'skills', 'mcps', 'agents']);
     assert.equal(parsed.session, 'abcd1234');
-    assert.equal(parsed.source, 'app');
     assert.equal(parsed.json, true);
     assert.equal(parsed.noColor, true);
 
-    const allParsed = parseSnapshotArgs(['tools', 'all', '--sessions', '--source=all']);
+    const allParsed = parseSnapshotArgs(['tools', 'all', '--sessions']);
     assert.deepEqual(allParsed.sections, []);
     assert.equal(allParsed.listSessions, true);
-    assert.equal(allParsed.source, 'all');
+  });
 
-    assert.throws(() => parseSnapshotArgs(['--source', 'invalid']), /Invalid --source/);
+  void it('rejects removed --source options as unknown snapshot options', () => {
+    assert.throws(() => parseSnapshotArgs(['--source', 'cli']), /Unknown snapshot option/);
+    assert.throws(() => parseSnapshotArgs(['--source=all']), /Unknown snapshot option/);
+  });
+
+  void it('rejects unknown filters and missing -s option value', () => {
     assert.throws(() => parseSnapshotArgs(['bogus-filter']), /Unknown snapshot filter/);
     assert.throws(() => parseSnapshotArgs(['-s']), /Missing value after -s/);
   });
 
-  void it('prints --sessions table with [CLI], [APP], and [IDE] badges', () => {
+  void it('prints --sessions table for live and recent CLI sessions without surface badges', () => {
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
     writeSnapshotEnvelope(
       cliHome,
-      { conversation_id: 'cli-1111aaaa', conversation_title: 'CLI Task', cwd: wsDir },
+      { conversation_id: 'cli-1111aaaa', conversation_title: 'Live CLI Task', cwd: wsDir },
       process.pid,
       { nowMs },
     );
 
-    const appLogs = path.join(appRoot, 'brain', 'app-2222bbbb', '.system_generated', 'logs');
-    mkdirSync(appLogs, { recursive: true });
+    const recentLogs = path.join(cliHome, 'brain', 'cli-2222bbbb', '.system_generated', 'logs');
+    mkdirSync(recentLogs, { recursive: true });
     writeFileSync(
-      path.join(appLogs, 'transcript.jsonl'),
+      path.join(recentLogs, 'transcript.jsonl'),
       '{"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[]}\n',
       'utf8',
     );
-    const appDb = new DatabaseSync(path.join(appRoot, 'conversation_summaries.db'));
-    appDb.exec(
+    const summaryDb = new DatabaseSync(path.join(cliHome, 'conversation_summaries.db'));
+    summaryDb.exec(
       `CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT, last_modified_time TEXT, workspace_uris TEXT, source TEXT, not_fully_idle INTEGER, status TEXT, nesting_depth INTEGER, killed INTEGER)`,
     );
-    appDb
+    summaryDb
       .prepare('INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(
-        'app-2222bbbb',
-        'App Task',
+        'cli-2222bbbb',
+        'Recent CLI Task',
         '2026-06-01T11:59:00Z',
         JSON.stringify([pathToFileURL(wsDir).href]),
-        'CORTEX_TRAJECTORY_SOURCE_CLIENT',
+        'CORTEX_TRAJECTORY_SOURCE_CLI',
         0,
         'CASCADE_RUN_STATUS_IDLE',
         0,
         0,
       );
-    appDb.close();
+    summaryDb.close();
 
-    const ideLogs = path.join(ideRoot, 'brain', 'ide-3333cccc', '.system_generated', 'logs');
-    mkdirSync(ideLogs, { recursive: true });
-    writeFileSync(
-      path.join(ideLogs, 'transcript.jsonl'),
-      '{"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[]}\n',
-      'utf8',
-    );
-    const ideDb = new DatabaseSync(path.join(ideRoot, 'conversation_summaries.db'));
-    ideDb.exec(
-      `CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT, last_modified_time TEXT, workspace_uris TEXT, source TEXT, not_fully_idle INTEGER, status TEXT, nesting_depth INTEGER, killed INTEGER)`,
-    );
-    ideDb
-      .prepare('INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(
-        'ide-3333cccc',
-        'IDE Task',
-        '2026-06-01T11:58:00Z',
-        JSON.stringify([pathToFileURL(wsDir).href]),
-        'CORTEX_TRAJECTORY_SOURCE_CLIENT',
-        0,
-        'CASCADE_RUN_STATUS_IDLE',
-        0,
-        0,
-      );
-    ideDb.close();
-
-    const res = runSnapshotCommand(['--sessions', '--source', 'all'], {
+    const res = runSnapshotCommand(['--sessions'], {
       cliHome,
-      geminiRoot,
       nowMs,
       isAlive: (p) => p === process.pid,
     });
-    assert.ok(res.output.includes('[CLI]'));
-    assert.ok(res.output.includes('[APP]'));
-    assert.ok(res.output.includes('[IDE]'));
+    assert.equal(res.output.includes('[CLI]'), false);
     assert.ok(res.output.includes(`live:${process.pid}`));
     assert.ok(res.output.includes('cli-1111'));
-    assert.ok(res.output.includes('app-2222'));
-    assert.ok(res.output.includes('ide-3333'));
+    assert.ok(res.output.includes('cli-2222'));
+    assert.ok(res.output.includes('Live CLI Task'));
+    assert.ok(res.output.includes('Recent CLI Task'));
 
-    assert.equal(formatSessionsTable([], 'cli').includes('No Antigravity sessions found'), true);
+    assert.equal(formatSessionsTable([]).includes('No Antigravity sessions found'), true);
   });
 
   void it('emits structured --json ActivitySnapshot including telemetry, latestTarget, MCP subtools, and agents', () => {
-    const convId = 'app-json-99998888';
+    const convId = 'cli-json-99998888';
     const nowMs = Date.parse('2026-06-01T12:00:00Z');
-    const logsDir = path.join(appRoot, 'brain', convId, '.system_generated', 'logs');
+    const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
     mkdirSync(logsDir, { recursive: true });
     writeFileSync(
       path.join(logsDir, 'transcript.jsonl'),
@@ -233,7 +191,7 @@ void describe('agy-hud snapshot CLI', () => {
       ].join('\n') + '\n',
       'utf8',
     );
-    const convDir = path.join(appRoot, 'conversations');
+    const convDir = path.join(cliHome, 'conversations');
     mkdirSync(convDir, { recursive: true });
     const cdb = new DatabaseSync(path.join(convDir, `${convId}.db`));
     cdb.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)');
@@ -242,10 +200,9 @@ void describe('agy-hud snapshot CLI', () => {
       .run(0, buildGenBlob({ inTok: 500, outTok: 100, crTok: 1500, ctxUsed: 25_000, ctxMax: 512_000 }));
     cdb.close();
 
-    const res = runSnapshotCommand(['--source', 'app', '--json'], { cliHome, geminiRoot, cwd: wsDir, nowMs });
+    const res = runSnapshotCommand(['--json'], { cliHome, cwd: wsDir, nowMs });
     const parsed = JSON.parse(res.output) as ActivitySnapshot;
     assert.equal(parsed.convId, convId);
-    assert.equal(parsed.surface, 'app');
     assert.equal(parsed.telemetry.genCount, 1);
     assert.equal(parsed.telemetry.ctxUsed, 25_000);
     assert.equal(parsed.completedTools.find((t) => t.disp === 'read_file')?.latestTarget, 'snapshot.ts');
@@ -255,7 +212,8 @@ void describe('agy-hud snapshot CLI', () => {
     assert.equal(parsed.agents[0]?.state, 'done');
 
     const textToolsOnly = formatSnapshotText(parsed, ['tools']);
-    assert.ok(textToolsOnly.includes('[APP] Activity Snapshot'));
+    assert.ok(textToolsOnly.includes('Activity Snapshot'));
+    assert.equal(textToolsOnly.includes('[CLI]'), false);
     assert.ok(textToolsOnly.includes('read_file'));
     assert.equal(textToolsOnly.includes('Skills ('), false);
   });

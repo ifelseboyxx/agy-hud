@@ -27,10 +27,8 @@ import { purgeOrphanedStatusLineBackup, restoreCliStatusLine, wireCliStatusLine 
 function seedMockPlugin(dir: string, options: { executable?: boolean; includeSrc?: boolean } = {}): void {
   mkdirSync(path.join(dir, 'dist'), { recursive: true });
   writeFileSync(path.join(dir, 'plugin.json'), '{"name":"agy-hud","version":"0.1.0"}\n', 'utf8');
-  writeFileSync(path.join(dir, 'mcp_config.json'), '{"mcpServers":{}}\n', 'utf8');
   writeFileSync(path.join(dir, 'dist', 'hud.mjs'), '#!/usr/bin/env node\nprocess.stdout.write("hud-ok\\n");\n', 'utf8');
   writeFileSync(path.join(dir, 'dist', 'cli.mjs'), '#!/usr/bin/env node\nprocess.stdout.write("cli-ok\\n");\n', 'utf8');
-  writeFileSync(path.join(dir, 'dist', 'mcp-hud.mjs'), '#!/usr/bin/env node\nprocess.exit(0);\n', 'utf8');
   if (options.includeSrc) {
     mkdirSync(path.join(dir, 'src'), { recursive: true });
   }
@@ -38,7 +36,6 @@ function seedMockPlugin(dir: string, options: { executable?: boolean; includeSrc
     const mode = options.executable === false ? 0o644 : 0o755;
     chmodSync(path.join(dir, 'dist', 'hud.mjs'), mode);
     chmodSync(path.join(dir, 'dist', 'cli.mjs'), mode);
-    chmodSync(path.join(dir, 'dist', 'mcp-hud.mjs'), mode);
   }
 }
 

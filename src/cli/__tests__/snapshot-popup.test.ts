@@ -26,7 +26,6 @@ function makePopupSnapshot(toolCount = 12, title = 'Popup Session'): ActivitySna
   return {
     convId: 'popup-12345678',
     shortId: 'popup-12',
-    surface: 'cli',
     title,
     model: 'Gemini 4 Carbon',
     workspace: '/repo/agy-hud',
@@ -125,6 +124,12 @@ void describe('snapshot interactive popup overlay', () => {
     assert.deepEqual(state.sections, ['mcps']);
     assert.equal(applyPopupKey(state, '4', 10), 'redraw');
     assert.deepEqual(state.sections, ['agents']);
+    assert.equal(applyPopupKey(state, '5', 10), 'redraw');
+    assert.deepEqual(state.sections, ['context']);
+    assert.equal(applyPopupKey(state, 'c', 10), 'redraw');
+    assert.deepEqual(state.sections, []);
+    assert.equal(applyPopupKey(state, 'C', 10), 'redraw');
+    assert.deepEqual(state.sections, ['context']);
     assert.equal(applyPopupKey(state, 'a', 10), 'redraw');
     assert.deepEqual(state.sections, []);
 
@@ -159,7 +164,8 @@ void describe('snapshot interactive popup overlay', () => {
     assert.equal(stdin.resumed, false);
     const text = stdout.joined();
     assert.equal(text.includes('\x1b[?1049h'), false);
-    assert.ok(text.includes('[CLI] Activity Snapshot'));
+    assert.ok(text.includes('Activity Snapshot'));
+    assert.equal(text.includes('[CLI]'), false);
     assert.ok(text.includes('tool_01'));
   });
 
@@ -238,7 +244,7 @@ void describe('snapshot interactive popup overlay', () => {
     const state = createPopupState([]);
     const frame0 = renderPopupFrame(snap, state, { cols: 88, rows: 10, color: false });
     assert.ok(frame0.maxScrollOffset > 0);
-    assert.ok(stripAnsi(frame0.output).includes('[1-4/a] all'));
+    assert.ok(stripAnsi(frame0.output).includes('[1-5/c/a] all'));
     assert.ok(stripAnsi(frame0.output).includes('[q/Esc/Enter] Close'));
     assert.ok(stripAnsi(frame0.output).includes('L1-8/'));
 

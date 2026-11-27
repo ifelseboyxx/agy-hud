@@ -2,7 +2,7 @@ import { isPlainObject, UNSAFE_OBJECT_KEYS as UNSAFE_KEYS } from '../core/guards
 import { hydrateHudConfig, isHudLineId, isHudSegmentId } from '../core/hud-config.ts';
 import { DEFAULT_HUD_CONFIG } from '../types.ts';
 
-export const REDACTED_PLACEHOLDER = '<SET_IN_ENV>';
+const REDACTED_PLACEHOLDER = '<SET_IN_ENV>';
 export { UNSAFE_KEYS };
 
 const SECRET_KEY_RE = /token|key|secret|pass|pwd|auth|cred|cookie|session|bearer|private|cert|pat|sig|dsn|webhook/i;
@@ -98,7 +98,7 @@ function redactSensitiveQueryParams(parsed: URL): void {
   }
 }
 
-export function sanitizeUrlString(raw: string, stripAllQuery = false): string {
+function sanitizeUrlString(raw: string, stripAllQuery = false): string {
   const trimmed = raw.trim();
   const hasGitPrefix = trimmed.toLowerCase().startsWith(GIT_SCHEME_PREFIX);
   const candidate = hasGitPrefix ? trimmed.slice(GIT_SCHEME_PREFIX.length) : trimmed;

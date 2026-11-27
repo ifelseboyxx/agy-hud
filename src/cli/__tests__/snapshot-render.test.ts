@@ -16,7 +16,6 @@ function makeSnapshot(overrides: Partial<ActivitySnapshot> = {}): ActivitySnapsh
   return {
     convId: 'conv-abcdef123456',
     shortId: 'conv-abc',
-    surface: 'cli',
     title: 'Inspect overflow layout',
     model: 'Gemini 4 Carbon',
     workspace: '/Users/dev/work/agy-hud',
@@ -107,13 +106,12 @@ void describe('Structured Inspector terminal renderer', () => {
 
   void it('renders banner, workspace/tier/counts, telemetry strip, and optional sibling hint', () => {
     const snap = makeSnapshot({
-      surface: 'app',
-      siblingHint: '1 other active/recent session in this workspace: --session cli-9999 ([CLI])',
+      siblingHint: '1 other active/recent session in this workspace: --session cli-9999',
     });
     const lines = renderStructuredInspectorLines(snap, { color: false, width: 110 });
-    assert.equal(lines[0], '[APP] Activity Snapshot  conv-abc  "Inspect overflow layout"');
+    assert.equal(lines[0], 'Activity Snapshot  conv-abc  "Inspect overflow layout"');
     assert.equal(lines[1], 'Workspace: agy-hud · Matched via pid · 22 calls, 3 skills, 1 MCPs, 3 agents');
-    assert.ok(lines[2]?.includes('Gemini 4 Carbon · Ctx 42k/200k (21%) · 92.4 token/s · TTFT 1.45s · Cache 86%'));
+    assert.ok(lines[2]?.includes('Gemini 4 Carbon · Ctx 42k/200k (21%) · 92.4 token/s · TTFT 1.4s · Cache 86%'));
     assert.ok(lines[3]?.startsWith('Note: 1 other active/recent session in this workspace:'));
   });
 
@@ -380,5 +378,63 @@ void describe('Structured Inspector terminal renderer', () => {
     assert.equal(out.includes('\x07'), false, 'output must not contain raw BEL characters from session data');
     const lines = renderStructuredInspectorLines(snap, { color: false, width: 100 });
     assert.ok(lines[0]?.includes('"safe injected"'));
+  });
+
+  void it('renders Context Breakdown above Tools with 0.1% precision, hidden zero optional rows, and multi-model roles', () => {
+    const snap = makeSnapshot({
+      nominalContextWindowSize: 1_048_576,
+      telemetry: {
+        genCount: 4,
+        tps: 88.5,
+        avgTps: 81.2,
+        peakTps: 110,
+        ttft: 1.4,
+        cachePct: 90,
+        ctxUsed: 50_500,
+        ctxMax: 512_000,
+        totalOutputTokens: 12_000,
+        totalThinkingTokens: 8_000,
+        totalResponseTokens: 4_000,
+        providerInputTokens: 52_000,
+        truncationReason: 'max-token-limit',
+        compaction: { count: 2, active: false, preUsed: 320_000, postUsed: 34_000 },
+        contextBreakdown: {
+          system: 4_000,
+          rules: 0,
+          skills: 2_000,
+          tools: 10_000,
+          mcp: 500,
+          messages: 34_000,
+          free: 461_500,
+          budget: 512_000,
+          used: 50_500,
+          compacted: false,
+          estimatedMessages: false,
+        },
+        modelRoles: [
+          { model: 'Gemini 4 Carbon (High)', role: 'planner', genCount: 2, lastCtxUsed: 40_000, lastCtxMax: 512_000 },
+          {
+            model: 'Gemini 4 Hydrogen (XHigh)',
+            role: 'executor',
+            genCount: 2,
+            lastCtxUsed: 50_500,
+            lastCtxMax: 512_000,
+          },
+        ],
+      },
+    });
+    const out = renderStructuredInspector(snap, { color: false, width: 100 });
+    const ctxIdx = out.indexOf('── Context');
+    const toolsIdx = out.indexOf('── Tools');
+    assert.ok(ctxIdx > 0 && toolsIdx > ctxIdx, 'Context section must appear before Tools');
+    assert.ok(out.includes('Nominal 1M'));
+    assert.ok(out.includes('Provider in: 52k'));
+    assert.ok(out.includes('Truncation: max-token-limit'));
+    assert.ok(out.includes('Compacted ×2 (320k -> 34k)'));
+    assert.ok(out.includes('MCP        500      0.1%'), out);
+    assert.equal(out.includes('Rules      0'), false, '0-token optional category Rules must be hidden');
+    assert.ok(out.includes('[planner]') && out.includes('[executor]'));
+    assert.ok(out.includes('Out 12k (think 8k · 67% / reply 4k)'));
+    assert.ok(out.includes('avg 81.2 · peak 110'));
   });
 });

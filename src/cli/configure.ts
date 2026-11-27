@@ -4,12 +4,8 @@ import { DEFAULT_CLI_LOCK_TIMEOUT_MS, withCliHomeLockSync } from '../core/file-l
 import {
   buildPresetConfig,
   cloneHudConfig,
-  HUD_LINE_IDS,
-  HUD_SEGMENT_IDS,
   hydrateHudConfig,
   isHudPreset,
-  MAX_AGENT_CHIPS_LIMIT,
-  PRESET_TEMPLATES,
   VALID_HUD_PRESETS,
 } from '../core/hud-config.ts';
 import { resolveCliHome } from '../core/paths.ts';
@@ -28,17 +24,7 @@ import {
 } from '../types.ts';
 import { applyConfigureMutations } from './configure-mutations.ts';
 
-export {
-  HUD_LINE_IDS,
-  HUD_SEGMENT_IDS,
-  hydrateHudConfig,
-  isHudPreset,
-  MAX_AGENT_CHIPS_LIMIT,
-  PRESET_TEMPLATES,
-  VALID_HUD_PRESETS,
-  type ConfigureHudOptions,
-  type ConfigureHudResult,
-};
+export { type ConfigureHudOptions, type ConfigureHudResult };
 
 export interface ConfigureCliArgs {
   help: boolean;
@@ -47,7 +33,7 @@ export interface ConfigureCliArgs {
   options: ConfigureHudOptions;
 }
 
-export const MISSING_HUD_CONFIG_VERSION = 'missing';
+const MISSING_HUD_CONFIG_VERSION = 'missing';
 
 export class HudConfigConflictError extends Error {
   readonly configPath: string;

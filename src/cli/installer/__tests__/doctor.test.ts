@@ -36,10 +36,8 @@ function captureDoctorStdout(run: () => { ok: boolean }): { ok: boolean; stdout:
 function seedMockPlugin(dir: string): void {
   mkdirSync(path.join(dir, 'dist'), { recursive: true });
   writeFileSync(path.join(dir, 'plugin.json'), '{"name":"agy-hud"}\n', 'utf8');
-  writeFileSync(path.join(dir, 'mcp_config.json'), '{"mcpServers":{}}\n', 'utf8');
   writeFileSync(path.join(dir, 'dist', 'hud.mjs'), "process.stdout.write('ok\\n');\n", 'utf8');
   writeFileSync(path.join(dir, 'dist', 'cli.mjs'), "process.stdout.write('help\\n');\n", 'utf8');
-  writeFileSync(path.join(dir, 'dist', 'mcp-hud.mjs'), 'process.exit(0);\n', 'utf8');
 }
 
 void describe('doctor malformed CLI shim handling', () => {
@@ -122,25 +120,49 @@ void describe('doctor malformed CLI shim handling', () => {
     );
   });
 
-  void it('fails wire preflight when mcp_config.json is missing', () => {
-    const targetDir = path.join(tmpRoot, 'plugin-no-mcp-cfg');
+  function assertWirePreflightAcceptsBaseline(targetDir: string, tag: string, withShim: boolean): void {
+    const baselineHome = path.join(tmpRoot, `baseline-home-${tag}`);
+    const baselineBin = path.join(tmpRoot, `baseline-bin-${tag}`);
+    const prevHome = process.env.GEMINI_CLI_HOME;
+    process.env.GEMINI_CLI_HOME = baselineHome;
+    try {
+      const args = ['wire', '--target', targetDir, '--no-enable', '--quiet'];
+      if (withShim) {
+        args.push('--bin-dir', baselineBin);
+      } else {
+        args.push('--no-shim');
+      }
+      assert.equal(runInstallerCli(args), 0);
+      if (withShim) {
+        assert.equal(existsSync(path.join(baselineBin, 'agy-hud')), true);
+      }
+    } finally {
+      if (prevHome === undefined) delete process.env.GEMINI_CLI_HOME;
+      else process.env.GEMINI_CLI_HOME = prevHome;
+    }
+  }
+
+  void it('fails wire preflight when plugin.json is missing', () => {
+    const targetDir = path.join(tmpRoot, 'plugin-no-manifest');
     seedMockPlugin(targetDir);
-    rmSync(path.join(targetDir, 'mcp_config.json'));
+    assertWirePreflightAcceptsBaseline(targetDir, 'no-manifest', false);
+    rmSync(path.join(targetDir, 'plugin.json'));
 
     assert.throws(
       () => runInstallerCli(['wire', '--target', targetDir, '--no-shim', '--no-enable', '--quiet']),
-      /Missing required file.*mcp_config\.json/,
+      /Missing required file.*plugin\.json/,
     );
   });
 
-  void it('fails wire preflight when dist/mcp-hud.mjs is missing', () => {
-    const targetDir = path.join(tmpRoot, 'plugin-no-mcp-bin');
+  void it('fails wire preflight when dist/cli.mjs is missing', () => {
+    const targetDir = path.join(tmpRoot, 'plugin-no-cli-bin');
     seedMockPlugin(targetDir);
-    rmSync(path.join(targetDir, 'dist', 'mcp-hud.mjs'));
+    assertWirePreflightAcceptsBaseline(targetDir, 'no-cli-bin', false);
+    rmSync(path.join(targetDir, 'dist', 'cli.mjs'));
 
     assert.throws(
       () => runInstallerCli(['wire', '--target', targetDir, '--no-shim', '--no-enable', '--quiet']),
-      /Missing required file.*dist\/mcp-hud\.mjs/,
+      /Missing required file.*dist\/cli\.mjs/,
     );
   });
 
@@ -156,10 +178,11 @@ void describe('doctor malformed CLI shim handling', () => {
     const backupPath = path.join(cliHome, 'cache', 'agy-hud-statusline-backup.json');
     const originalSettings = '{"statusLine":{"type":"command","command":"/prior/hud.sh","enabled":true}}\n';
     seedMockPlugin(targetDir);
+    process.env.PATH = path.dirname(process.execPath);
+    assertWirePreflightAcceptsBaseline(targetDir, tag, true);
     mutatePlugin(targetDir);
     mkdirSync(cliHome, { recursive: true });
     writeFileSync(settingsPath, originalSettings, 'utf8');
-    process.env.PATH = path.dirname(process.execPath);
 
     assert.throws(
       () => runInstallerCli(['wire', '--target', targetDir, '--bin-dir', binDir, '--no-enable', '--quiet']),
@@ -170,51 +193,51 @@ void describe('doctor malformed CLI shim handling', () => {
     assert.equal(existsSync(path.join(binDir, 'agy-hud')), false);
   }
 
-  void it('fails wire preflight without mutating host files when mcp_config.json is a directory', () => {
+  void it('fails wire preflight without mutating host files when plugin.json is a directory', () => {
     if (process.platform === 'win32') return;
     assertWirePreflightRejectsWithoutMutation(
-      'dir-mcp-cfg',
+      'dir-manifest',
       (targetDir) => {
-        rmSync(path.join(targetDir, 'mcp_config.json'));
-        mkdirSync(path.join(targetDir, 'mcp_config.json'));
+        rmSync(path.join(targetDir, 'plugin.json'));
+        mkdirSync(path.join(targetDir, 'plugin.json'));
       },
-      /Missing required file.*mcp_config\.json/,
+      /Missing required file.*plugin\.json/,
     );
   });
 
-  void it('fails wire preflight without mutating host files when mcp_config.json is a dangling symlink', () => {
+  void it('fails wire preflight without mutating host files when plugin.json is a dangling symlink', () => {
     if (process.platform === 'win32') return;
     assertWirePreflightRejectsWithoutMutation(
-      'dangling-mcp-cfg',
+      'dangling-manifest',
       (targetDir) => {
-        rmSync(path.join(targetDir, 'mcp_config.json'));
-        symlinkSync(path.join(tmpRoot, 'nonexistent-mcp-config.json'), path.join(targetDir, 'mcp_config.json'));
+        rmSync(path.join(targetDir, 'plugin.json'));
+        symlinkSync(path.join(tmpRoot, 'nonexistent-plugin.json'), path.join(targetDir, 'plugin.json'));
       },
-      /Missing required file.*mcp_config\.json/,
+      /Missing required file.*plugin\.json/,
     );
   });
 
-  void it('fails wire preflight without mutating host files when dist/mcp-hud.mjs is a directory', () => {
+  void it('fails wire preflight without mutating host files when dist/cli.mjs is a directory', () => {
     if (process.platform === 'win32') return;
     assertWirePreflightRejectsWithoutMutation(
-      'dir-mcp-bin',
+      'dir-cli-bin',
       (targetDir) => {
-        rmSync(path.join(targetDir, 'dist', 'mcp-hud.mjs'));
-        mkdirSync(path.join(targetDir, 'dist', 'mcp-hud.mjs'));
+        rmSync(path.join(targetDir, 'dist', 'cli.mjs'));
+        mkdirSync(path.join(targetDir, 'dist', 'cli.mjs'));
       },
-      /Missing required file.*dist\/mcp-hud\.mjs/,
+      /Missing required file.*dist\/cli\.mjs/,
     );
   });
 
-  void it('fails wire preflight without mutating host files when dist/mcp-hud.mjs is a dangling symlink', () => {
+  void it('fails wire preflight without mutating host files when dist/cli.mjs is a dangling symlink', () => {
     if (process.platform === 'win32') return;
     assertWirePreflightRejectsWithoutMutation(
-      'dangling-mcp-bin',
+      'dangling-cli-bin',
       (targetDir) => {
-        rmSync(path.join(targetDir, 'dist', 'mcp-hud.mjs'));
-        symlinkSync(path.join(tmpRoot, 'nonexistent-mcp-hud.mjs'), path.join(targetDir, 'dist', 'mcp-hud.mjs'));
+        rmSync(path.join(targetDir, 'dist', 'cli.mjs'));
+        symlinkSync(path.join(tmpRoot, 'nonexistent-cli.mjs'), path.join(targetDir, 'dist', 'cli.mjs'));
       },
-      /Missing required file.*dist\/mcp-hud\.mjs/,
+      /Missing required file.*dist\/cli\.mjs/,
     );
   });
 
@@ -425,5 +448,30 @@ void describe('doctor symlink-following artifact checks', () => {
     rmSync(path.join(pluginInstallDir, 'AGENTS.md'));
     const failRes = runAgyPluginValidate(pluginInstallDir, separateRepoRoot, 5_000);
     assert.equal(failRes.ok, false);
+  });
+
+  void it('prints read-only CLI storage summary in non-quiet doctor while preserving exit ok', () => {
+    const targetDir = path.join(tmpRoot, 'plugin-storage-doc');
+    const binDir = path.join(tmpRoot, 'bin-storage-doc');
+    seedMockPlugin(targetDir);
+    const convDir = path.join(tmpRoot, '.gemini', 'antigravity-cli', 'conversations');
+    mkdirSync(convDir, { recursive: true });
+    writeFileSync(path.join(convDir, 'conv-1.db'), Buffer.alloc(1024));
+
+    const res = captureDoctorStdout(() =>
+      runDoctor({
+        targetDir,
+        quiet: false,
+        packageRoot: targetDir,
+        binDir,
+        requireShim: false,
+        noShim: true,
+        checkMalformedShim: false,
+        agyAvailable: false,
+      }),
+    );
+    assert.equal(res.ok, true);
+    assert.ok(res.stdout.includes('CLI storage  :'), res.stdout);
+    assert.ok(res.stdout.includes('1 DB'), res.stdout);
   });
 });

@@ -177,7 +177,7 @@ export function copyRuntimeFiles(srcRoot: string, dstRoot: string, runtimeFiles:
   if (lstatIfPresentSync(srcSkillsDir) !== null) {
     cpSync(srcSkillsDir, path.join(dstRoot, 'skills'), { recursive: true });
   }
-  for (const rel of ['dist/hud.mjs', 'dist/cli.mjs', 'dist/mcp-hud.mjs']) {
+  for (const rel of ['dist/hud.mjs', 'dist/cli.mjs']) {
     try {
       chmodSync(path.join(dstRoot, rel), EXECUTABLE_FILE_MODE);
     } catch {

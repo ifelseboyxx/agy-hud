@@ -28,13 +28,7 @@ import {
   type ShimWriteReceipt,
 } from './shim.ts';
 
-export const WIRE_REQUIRED_FILES: readonly string[] = [
-  'plugin.json',
-  'mcp_config.json',
-  'dist/hud.mjs',
-  'dist/cli.mjs',
-  'dist/mcp-hud.mjs',
-];
+export const WIRE_REQUIRED_FILES: readonly string[] = ['plugin.json', 'dist/hud.mjs', 'dist/cli.mjs'];
 const MAX_LOCK_RETRIES = 4;
 
 export interface WireAndShimReceipts {

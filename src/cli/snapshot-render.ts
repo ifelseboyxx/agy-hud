@@ -1,6 +1,5 @@
 import path from 'node:path';
 
-import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
 import { nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
 import { sanitizeTerminalText } from '../core/terminal-text.ts';
 import { computeHudVisibleToolsCap } from '../render/activity-lines.ts';
@@ -9,6 +8,7 @@ import {
   BRIGHT_WHITE,
   colorForUsedPct,
   CYAN,
+  formatTelemetryDiagnostics,
   formatTelemetryFields,
   GRAY,
   GREEN,
@@ -20,8 +20,16 @@ import {
   YELLOW,
 } from '../render/ansi.ts';
 import { formatSessionCostText, formatSubagentCostText } from '../render/cost.ts';
+import { formatSnapshotQuotaLine } from '../render/quota.ts';
+import {
+  formatAgentsSectionHeading,
+  formatSubagentRollupParts,
+  formatSubagentTelemetryParts,
+  formatToolsSectionHeading,
+} from '../render/snapshot-presentation.ts';
 import type { ActivitySnapshot, SnapshotCompletedTool, SnapshotSection } from '../snapshot-types.ts';
 import type { HudCostCurrency } from '../types.ts';
+import { appendContextSection, hasContextSectionContent } from './snapshot-context-render.ts';
 
 export const DEFAULT_INSPECTOR_WIDTH: number = 100;
 
@@ -129,19 +137,19 @@ function wrapInspectorChips(chips: readonly string[], sep: string, maxCols: numb
   return lines;
 }
 
-function formatTelemetryStripLine(
+function formatTelemetryStripLines(
   snapshot: ActivitySnapshot,
   cols: number,
   maxCols: number,
   palette: InspectorPalette,
   useColor: boolean,
   options: Pick<StructuredInspectorOptions, 'costCurrency' | 'usdToCnyRate'>,
-): string {
+): string[] {
   const tel = snapshot.telemetry;
   const hasMetadata =
     tel.genCount > 0 || tel.ctxUsed !== null || tel.tps !== null || tel.ttft !== null || tel.cachePct !== null;
   const cost = snapshot.cost ?? null;
-  if (!hasMetadata && cost === null) return '';
+  if (!hasMetadata && cost === null) return [];
 
   const parts: string[] = [];
   if (snapshot.model.length > 0) {
@@ -161,6 +169,12 @@ function formatTelemetryStripLine(
   if (fields.cacheText !== null) {
     parts.push(`Cache ${fields.cacheText}`);
   }
+  if (fields.outputText !== null) {
+    parts.push(fields.outputText);
+  }
+  if (fields.timeText !== null) {
+    parts.push(fields.timeText);
+  }
   if (cost !== null) {
     const costOpts = { currency: options.costCurrency, usdToCnyRate: options.usdToCnyRate, termWidth: cols };
     const totalStr = formatSessionCostText(cost, costOpts);
@@ -168,11 +182,17 @@ function formatTelemetryStripLine(
     const subPart = subStr !== null ? ` ${palette.dim}(subagents ${subStr})${palette.reset}` : '';
     parts.push(`Cost ${palette.yellow}${totalStr}${palette.reset}${subPart}`);
   }
-  if (parts.length === 0) return '';
+  if (parts.length === 0) return [];
 
   const sep = ` ${palette.dim}·${palette.reset} `;
-  const line = `${palette.dim}Telemetry:${palette.reset} ${parts.join(sep)}`;
-  return visibleLen(line) <= maxCols ? line : truncateToWidth(line, maxCols);
+  const prefix = `${palette.dim}Telemetry:${palette.reset} `;
+  const single = `${prefix}${parts.join(sep)}`;
+  if (visibleLen(single) <= maxCols) return [single];
+
+  const wrapped = wrapInspectorChips(parts, sep, maxCols, '           ');
+  if (wrapped.length === 0) return [];
+  wrapped[0] = `${prefix}${wrapped[0]?.trimStart() ?? ''}`;
+  return wrapped.map((line) => (visibleLen(line) <= maxCols ? line : truncateToWidth(line, maxCols)));
 }
 
 function formatCompletedToolCell(
@@ -211,7 +231,7 @@ function appendToolsSection(
   lines.push('');
   lines.push(
     buildSectionRule(
-      `Tools (${snapshot.runningTools.length} running · ${snapshot.completedTools.length} types · ${snapshot.totalToolCalls} calls)`,
+      formatToolsSectionHeading(snapshot.runningTools.length, snapshot.completedTools.length, snapshot.totalToolCalls),
       maxCols,
       palette,
     ),
@@ -315,12 +335,7 @@ function appendAgentsSection(
   maxCols: number,
   palette: InspectorPalette,
 ): void {
-  const alive = snapshot.agents.filter((a) => a.state !== 'done').length;
-  const done = snapshot.agents.length - alive;
-  const heading =
-    snapshot.agentsKind === 'swarm'
-      ? `Swarm (${alive} alive · ${done} stopped)`
-      : `Agents (${alive} alive · ${done} done)`;
+  const { heading } = formatAgentsSectionHeading(snapshot.agentsKind, snapshot.agents);
   lines.push('');
   lines.push(buildSectionRule(heading, maxCols, palette));
   if (snapshot.agents.length === 0) {
@@ -338,8 +353,15 @@ function appendAgentsSection(
           ? `${palette.cyan}◌${palette.reset}`
           : `${palette.green}✓${palette.reset}`;
     const stColor = agent.state === 'working' ? palette.yellow : agent.state === 'waiting' ? palette.cyan : palette.dim;
-    const row = `  ${icon} ${padEndVisible(`${palette.magenta}${truncateToWidth(sanitizeTerminalText(agent.name), nameW)}${palette.reset}`, nameW)}  ${padEndVisible(truncateToWidth(sanitizeTerminalText(agent.type), typeW), typeW)}  ${padEndVisible(`${palette.dim}${truncateToWidth(sanitizeTerminalText(agent.model), modelW)}${palette.reset}`, modelW)}  ${stColor}${agent.state}${palette.reset} ${palette.dim}(${sanitizeTerminalText(agent.ageLabel)})${palette.reset}`;
+    const telInline = formatSubagentTelemetryParts(agent.telemetry).join(' · ');
+    const telPart = telInline.length > 0 ? `  ${palette.dim}${telInline}${palette.reset}` : '';
+    const row = `  ${icon} ${padEndVisible(`${palette.magenta}${truncateToWidth(sanitizeTerminalText(agent.name), nameW)}${palette.reset}`, nameW)}  ${padEndVisible(truncateToWidth(sanitizeTerminalText(agent.type), typeW), typeW)}  ${padEndVisible(`${palette.dim}${truncateToWidth(sanitizeTerminalText(agent.model), modelW)}${palette.reset}`, modelW)}  ${stColor}${agent.state}${palette.reset} ${palette.dim}(${sanitizeTerminalText(agent.ageLabel)})${palette.reset}${telPart}`;
     lines.push(visibleLen(row) <= maxCols ? row : truncateToWidth(row, maxCols));
+  }
+  const aggParts = formatSubagentRollupParts(snapshot.subagentRollup);
+  if (aggParts.length > 0) {
+    const aggLine = `  ${palette.dim}Subagent Rollup:${palette.reset} ${aggParts.join(` ${palette.dim}·${palette.reset} `)}`;
+    lines.push(visibleLen(aggLine) <= maxCols ? aggLine : truncateToWidth(aggLine, maxCols));
   }
 }
 
@@ -353,30 +375,47 @@ export function renderStructuredInspectorLines(
   const cols = resolveInspectorWidth(options.width, process.stdout.columns);
   const maxCols = Math.max(MIN_INSPECTOR_COLS, cols - 1);
   const active = new Set<SnapshotSection>(options.sections ?? []);
-  const badge = formatSurfaceBadge(snapshot.surface);
   const wsName = sanitizeTerminalText(
     snapshot.workspace.length > 0 ? (nonEmptyStr(path.basename(snapshot.workspace)) ?? snapshot.workspace) : '-',
   );
   const cleanShortId = sanitizeTerminalText(snapshot.shortId);
   const cleanTitle = sanitizeTerminalText(snapshot.title);
 
-  const headerPrefix = `[${badge}] Activity Snapshot  ${cleanShortId}  ""`;
+  const headerPrefix = `Activity Snapshot  ${cleanShortId}  ""`;
   const titleBudget = Math.max(1, maxCols - visibleLen(headerPrefix));
-  const bannerLine0 = `${palette.bold}${palette.white}[${badge}] Activity Snapshot${palette.reset}  ${palette.cyan}${cleanShortId}${palette.reset}  "${truncateToWidth(cleanTitle, titleBudget)}"`;
-  const bannerMeta = `Workspace: ${wsName} · Matched via ${snapshot.resolutionTier} · ${snapshot.totalToolCalls} calls, ${snapshot.skills.length} skills, ${snapshot.mcps.length} MCPs, ${snapshot.agents.length} ${snapshot.agentsKind}`;
+  const bannerLine0 = `${palette.bold}${palette.white}Activity Snapshot${palette.reset}  ${palette.cyan}${cleanShortId}${palette.reset}  "${truncateToWidth(cleanTitle, titleBudget)}"`;
+  const phasePrefix = snapshot.turnPhase !== undefined ? `Phase: ${snapshot.turnPhase} · ` : '';
+  const bannerMeta = `${phasePrefix}Workspace: ${wsName} · Matched via ${snapshot.resolutionTier} · ${snapshot.totalToolCalls} calls, ${snapshot.skills.length} skills, ${snapshot.mcps.length} MCPs, ${snapshot.agents.length} ${snapshot.agentsKind}`;
   const bannerLine1 = `${palette.dim}${truncateToWidth(bannerMeta, maxCols)}${palette.reset}`;
   const lines: string[] = [
     visibleLen(bannerLine0) <= maxCols ? bannerLine0 : truncateToWidth(bannerLine0, maxCols),
     bannerLine1,
   ];
 
-  const telemetryLine = formatTelemetryStripLine(snapshot, cols, maxCols, palette, useColor, options);
-  if (telemetryLine.length > 0) {
-    lines.push(telemetryLine);
+  const telemetryLines = formatTelemetryStripLines(snapshot, cols, maxCols, palette, useColor, options);
+  lines.push(...telemetryLines);
+  const diagnosticsText = formatTelemetryDiagnostics(snapshot.telemetry);
+  if (diagnosticsText.length > 0) {
+    const diagLine = `${palette.dim}Diagnostics:${palette.reset} ${palette.yellow}${diagnosticsText}${palette.reset}`;
+    lines.push(visibleLen(diagLine) <= maxCols ? diagLine : truncateToWidth(diagLine, maxCols));
+  }
+  const quotaBuckets = snapshot.quota ?? [];
+  if (quotaBuckets.length > 0) {
+    const quotaText = formatSnapshotQuotaLine(quotaBuckets, { color: useColor });
+    if (quotaText.length > 0) {
+      const qLine = `${palette.dim}Quota:${palette.reset} ${quotaText}`;
+      lines.push(visibleLen(qLine) <= maxCols ? qLine : truncateToWidth(qLine, maxCols));
+    }
   }
   if (snapshot.siblingHint.length > 0) {
     lines.push(
       `${palette.yellow}Note:${palette.reset} ${palette.dim}${truncateToWidth(sanitizeTerminalText(snapshot.siblingHint), Math.max(12, maxCols - 6))}${palette.reset}`,
+    );
+  }
+
+  if (includesInspectorSection(active, 'context') && (active.has('context') || hasContextSectionContent(snapshot))) {
+    appendContextSection(lines, snapshot, maxCols, palette, useColor, (heading, width) =>
+      buildSectionRule(heading, width, palette),
     );
   }
 
