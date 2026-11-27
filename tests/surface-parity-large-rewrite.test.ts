@@ -7,7 +7,6 @@ import { runSnapshotCommand } from '../src/cli/snapshot.ts';
 import { loadTranscriptActivity } from '../src/collectors/activity.ts';
 import { writeSnapshotEnvelope } from '../src/collectors/snapshot-envelope.ts';
 import { runHudRender } from '../src/hud-runner.ts';
-import { pollHudSnapshot } from '../src/mcp/hud-mcp-snapshot.ts';
 import { stripAnsi } from '../src/render/ansi.ts';
 import type { ActivitySnapshot } from '../src/snapshot-types.ts';
 import type { StatusLineData } from '../src/types.ts';
@@ -19,11 +18,10 @@ afterEach(() => {
   tracker.cleanup();
 });
 
-void describe('four-surface parity for > 512 KiB transcript with running suffix in-place rewrite', () => {
-  void it('reflects out-of-window same-length rewrite across HUD, Markdown, CLI snapshot, and MCP ETag', () => {
+void describe('three-surface CLI parity for > 512 KiB transcript with running suffix in-place rewrite', () => {
+  void it('reflects out-of-window same-length rewrite across HUD, Markdown, and CLI snapshot', () => {
     const root = tracker.makeTempDir('agy-hud-parity-large-');
-    const geminiRoot = path.join(root, '.gemini');
-    const cliHome = path.join(geminiRoot, 'antigravity-cli');
+    const cliHome = path.join(root, '.gemini', 'antigravity-cli');
     const wsDir = path.join(root, 'workspace');
     const convId = 'parity-large-run-7777';
     const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
@@ -101,11 +99,6 @@ void describe('four-surface parity for > 512 KiB transcript with running suffix 
     assert.ok(before.hudLines.some((l) => l.includes('read_file')));
     assert.ok(before.markdown.includes('`read_file`'));
     assert.ok(before.markdown.includes('alpha_large.ts'));
-    const mcpBefore = pollHudSnapshot(
-      { sessionId: convId, source: 'cli' },
-      { cliHome, geminiRoot, cwd: wsDir, nowMs, isAlive: (p) => p === 4242 },
-    );
-    assert.equal(mcpBefore.unchanged, false);
 
     writeFileSync(transcriptPath, contentAfter, 'utf8');
     utimesSync(transcriptPath, fixedTime, fixedTime);
@@ -117,22 +110,14 @@ void describe('four-surface parity for > 512 KiB transcript with running suffix 
     const cliAfter = JSON.parse(
       runSnapshotCommand(['--session', convId, '--json'], {
         cliHome,
-        geminiRoot,
         cwd: wsDir,
         nowMs: nowMs + 1000,
         isAlive: (p) => p === 4242,
       }).output,
     ) as ActivitySnapshot;
-    const mcpAfter = pollHudSnapshot(
-      { sessionId: convId, source: 'cli', etag: mcpBefore.etag },
-      { cliHome, geminiRoot, cwd: wsDir, nowMs: nowMs + 1000, isAlive: (p) => p === 4242 },
-    );
 
-    assert.equal(mcpAfter.unchanged, false);
-    assert.notEqual(mcpAfter.etag, mcpBefore.etag);
     assert.equal(hudAfter?.completedTools?.[0]?.disp, 'edit_file');
     assert.equal(cliAfter.completedTools[0]?.disp, 'edit_file');
-    assert.equal(mcpAfter.snapshot?.completedTools[0]?.disp, 'edit_file');
     assert.ok(after.hudLines.some((l) => l.includes('edit_file')));
     assert.equal(
       after.hudLines.some((l) => l.includes('read_file')),
@@ -143,10 +128,9 @@ void describe('four-surface parity for > 512 KiB transcript with running suffix 
     assert.equal(after.markdown.includes('alpha_large.ts'), false);
   });
 
-  void it('reflects out-of-window same-length rewrite combined with an appended line across all four surfaces', () => {
+  void it('reflects out-of-window same-length rewrite combined with an appended line across all three CLI surfaces', () => {
     const root = tracker.makeTempDir('agy-hud-parity-large-append-');
-    const geminiRoot = path.join(root, '.gemini');
-    const cliHome = path.join(geminiRoot, 'antigravity-cli');
+    const cliHome = path.join(root, '.gemini', 'antigravity-cli');
     const wsDir = path.join(root, 'workspace');
     const convId = 'parity-large-append-8888';
     const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
@@ -218,11 +202,6 @@ void describe('four-surface parity for > 512 KiB transcript with running suffix 
 
     const before = renderHud(nowMs);
     assert.ok(before.hudLines.some((l) => l.includes('read_file')));
-    const mcpBefore = pollHudSnapshot(
-      { sessionId: convId, source: 'cli' },
-      { cliHome, geminiRoot, cwd: wsDir, nowMs, isAlive: (p) => p === 4243 },
-    );
-    assert.equal(mcpBefore.unchanged, false);
 
     // Same-round out-of-window same-length rewrite + appended line.
     writeFileSync(transcriptPath, contentAfter, 'utf8');
@@ -233,25 +212,16 @@ void describe('four-surface parity for > 512 KiB transcript with running suffix 
     const cliAfter = JSON.parse(
       runSnapshotCommand(['--session', convId, '--json'], {
         cliHome,
-        geminiRoot,
         cwd: wsDir,
         nowMs: nowMs + 1000,
         isAlive: (p) => p === 4243,
       }).output,
     ) as ActivitySnapshot;
-    const mcpAfter = pollHudSnapshot(
-      { sessionId: convId, source: 'cli', etag: mcpBefore.etag },
-      { cliHome, geminiRoot, cwd: wsDir, nowMs: nowMs + 1000, isAlive: (p) => p === 4243 },
-    );
 
-    assert.equal(mcpAfter.unchanged, false);
-    assert.notEqual(mcpAfter.etag, mcpBefore.etag);
     const hudDisps = (hudHot?.completedTools ?? []).map((t) => t.disp).sort();
     const cliDisps = cliAfter.completedTools.map((t) => t.disp).sort();
-    const mcpDisps = (mcpAfter.snapshot?.completedTools ?? []).map((t) => t.disp).sort();
     assert.deepEqual(hudDisps, ['edit_file', 'run_command']);
     assert.deepEqual(cliDisps, ['edit_file', 'run_command']);
-    assert.deepEqual(mcpDisps, ['edit_file', 'run_command']);
     assert.ok(after.markdown.includes('`edit_file`') && after.markdown.includes('bravo_append.ts'));
     assert.equal(after.markdown.includes('`read_file`'), false);
     assert.equal(after.markdown.includes('alpha_append.ts'), false);

@@ -28,7 +28,7 @@ function writeValidPluginFixture(rootDir: string): void {
     displayName: 'Agy HUD',
     version: '0.1.0',
     description:
-      'Live terminal HUD statusline and Antigravity App HUD Inspector showing model, quotas, throughput, Git diff stats, cost, and swarm activity.',
+      'Native ANSI terminal HUD statusline and snapshot inspector for Antigravity CLI, with live model, quota, token/TTFT telemetry, cost, and swarm chips.',
     logo: 'assets/logo.svg',
     suggestedPrompts: ['/hud setup', '/hud check', '/hud configure'],
     author: { name: 'ifelseboyxx', url: 'https://github.com/ifelseboyxx' },
@@ -37,27 +37,17 @@ function writeValidPluginFixture(rootDir: string): void {
     license: 'MIT',
     keywords: ['hud', 'statusline', 'telemetry'],
   });
-  writeJson(path.join(rootDir, 'mcp_config.json'), {
-    mcpServers: {
-      inspector: {
-        command: 'node',
-        args: ['${PLUGIN_ROOT}/dist/mcp-hud.mjs'],
-      },
-    },
-  });
   mkdirSync(path.join(rootDir, 'assets'), { recursive: true });
   writeFileSync(
     path.join(rootDir, 'assets', 'logo.svg'),
     '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128"/></svg>\n',
     'utf8',
   );
-  mkdirSync(path.join(rootDir, 'dist'), { recursive: true });
-  writeFileSync(path.join(rootDir, 'dist', 'mcp-hud.mjs'), '#!/usr/bin/env node\n', 'utf8');
   writeFileSync(path.join(rootDir, 'README.md'), '# Agy HUD\n\nMarketplace documentation.\n', 'utf8');
 }
 
 void describe('dist:check tree and executable mode verification', () => {
-  void it('passes on matching 6-file standalone trees and catches missing, stale, or drifted files', () => {
+  void it('passes on matching 5-file standalone trees and catches missing, stale, or drifted files', () => {
     const root = tracker.makeTempDir('agy-hud-dist-cmp-');
     const actual = path.join(root, 'actual');
     const expected = path.join(root, 'expected');
@@ -69,7 +59,7 @@ void describe('dist:check tree and executable mode verification', () => {
       writeFileSync(path.join(expected, rel), `// ${rel}\n`, 'utf8');
     }
 
-    // Positive control: identical 6-file trees pass.
+    // Positive control: identical 5-file trees pass.
     assert.deepEqual(compareDistTrees(actual, expected), []);
 
     // Negative: byte drift on one file.
@@ -91,11 +81,11 @@ void describe('dist:check tree and executable mode verification', () => {
     assert.ok(missingErrors.some((e) => e.includes('dist/cli.mjs') && e.includes('missing')));
     writeFileSync(path.join(actual, 'cli.mjs'), '// cli.mjs\n', 'utf8');
 
-    // Negative: extra 7th file emitted in both actual and fresh build must still fail.
+    // Negative: extra 6th file emitted in both actual and fresh build must still fail.
     writeFileSync(path.join(actual, 'extra.mjs'), 'export {};\n', 'utf8');
     writeFileSync(path.join(expected, 'extra.mjs'), 'export {};\n', 'utf8');
-    const seventhErrors = compareDistTrees(actual, expected);
-    assert.ok(seventhErrors.some((e) => e.includes('dist/extra.mjs') && e.includes('strictly 6 standalone files')));
+    const extraErrors = compareDistTrees(actual, expected);
+    assert.ok(extraErrors.some((e) => e.includes('dist/extra.mjs') && e.includes('strictly 5 standalone files')));
     rmSync(path.join(actual, 'extra.mjs'));
     rmSync(path.join(expected, 'extra.mjs'));
 
@@ -198,26 +188,20 @@ void describe('Layer 1 offline plugin package hygiene validator', () => {
     assert.ok(manifestErrors.some((e) => e.includes('must match package.json version')));
     assert.ok(manifestErrors.some((e) => e.includes('string https:// URL')));
 
-    // Restore valid fixture, then test logo, mcp env, missing target, and forbidden root paths.
+    // Restore valid fixture, then test logo and forbidden root paths (including stray mcp_config.json).
     writeValidPluginFixture(root);
     writeFileSync(path.join(root, 'assets', 'logo.svg'), '<svg viewBox="0 0 64 64" width="64" height="64"/>', 'utf8');
-    writeJson(path.join(root, 'mcp_config.json'), {
-      mcpServers: {
-        inspector: {
-          command: 'node',
-          args: ['${PLUGIN_ROOT}/dist/missing.mjs'],
-          env: { PLUGIN_ROOT: '${PLUGIN_ROOT}' },
-        },
-      },
-    });
+    writeJson(path.join(root, 'mcp_config.json'), { mcpServers: {} });
     writeFileSync(path.join(root, 'GEMINI.md'), '# forbidden\n', 'utf8');
     mkdirSync(path.join(root, 'rules'), { recursive: true });
     const hygieneErrors = validatePluginPackageHygiene(root);
     assert.ok(hygieneErrors.some((e) => e.includes('viewBox must be 1:1 and >= 128x128')));
-    assert.ok(hygieneErrors.some((e) => e.includes("must not duplicate 'PLUGIN_ROOT'")));
-    assert.ok(hygieneErrors.some((e) => e.includes("target 'dist/missing.mjs' does not exist")));
+    assert.ok(hygieneErrors.some((e) => e.includes('mcp_config.json: forbidden')));
     assert.ok(hygieneErrors.some((e) => e.includes('GEMINI.md: forbidden')));
     assert.ok(hygieneErrors.some((e) => e.includes('rules: forbidden')));
+    rmSync(path.join(root, 'mcp_config.json'));
+    rmSync(path.join(root, 'GEMINI.md'));
+    rmSync(path.join(root, 'rules'), { recursive: true, force: true });
     // Negative: leading-zero SemVer rejected even if package.json matches.
     writeValidPluginFixture(root);
     writeJson(path.join(root, 'package.json'), { name: 'agy-hud', version: '01.2.3' });
@@ -245,10 +229,10 @@ void describe('Layer 2 agy plugin validate JSON evaluator', () => {
     assert.equal(isAllowlistedPluginFinding({ severity: 'error', file: 'AGENTS.md', message: 'err' }), false);
     assert.equal(isAllowlistedPluginFinding({ severity: 'warning', file: 'README.md', message: 'warn' }), false);
 
-    // Positive control: allowlisted AGENTS.md warning + expected components.
+    // Positive control: allowlisted AGENTS.md warning + expected skill-only CLI components.
     const passingJson = JSON.stringify({
       name: 'agy-hud',
-      components: { skills: 1, mcpServers: 1, hooks: 0, rules: 0 },
+      components: { skills: 1, mcpServers: 0, hooks: 0, rules: 0 },
       findings: [{ severity: 'warning', file: 'AGENTS.md', message: 'never loaded' }],
     });
     assert.deepEqual(evaluateAgyPluginValidationReport(passingJson), []);
@@ -262,7 +246,7 @@ void describe('Layer 2 agy plugin validate JSON evaluator', () => {
     // Negative: mismatched plugin name must fail closed even when component counts match.
     const wrongNameJson = JSON.stringify({
       name: 'other-plugin',
-      components: { skills: 1, mcpServers: 1, hooks: 0, rules: 0 },
+      components: { skills: 1, mcpServers: 0, hooks: 0, rules: 0 },
       findings: [],
     });
     const wrongNameErrors = evaluateAgyPluginValidationReport(wrongNameJson);
@@ -282,6 +266,7 @@ void describe('Layer 2 agy plugin validate JSON evaluator', () => {
     assert.ok(errors.some((e) => e.includes('skills/hud/SKILL.md')));
     assert.ok(errors.some((e) => e.includes('plugin.json')));
     assert.ok(errors.some((e) => e.includes('components.skills === 1')));
+    assert.ok(errors.some((e) => e.includes('components.mcpServers === 0')));
     assert.ok(errors.some((e) => e.includes('components.hooks === 0')));
     assert.ok(errors.some((e) => e.includes('components.rules === 0')));
   });
@@ -305,8 +290,8 @@ void describe('CI and Release workflow security and gate contracts', () => {
       assert.ok(yml.includes('pnpm validate:plugin'), `${label} must run pnpm validate:plugin`);
       assert.ok(yml.includes('agy plugin install .'), `${label} must smoke-test isolated agy plugin install .`);
       assert.ok(
-        yml.includes("skills.includes('hud')") && yml.includes("mcps.includes('inspector')"),
-        `${label} must assert installed hud skill and inspector MCP in isolated smoke test`,
+        yml.includes("skills.includes('hud')") && yml.includes('mcps.length !== 0'),
+        `${label} must assert installed hud skill and zero MCP servers in isolated smoke test`,
       );
       assert.ok(
         !yml.includes('echo "${{ github.ref_name }}"'),
@@ -316,8 +301,8 @@ void describe('CI and Release workflow security and gate contracts', () => {
 
     assert.ok(ciYml.includes('ubuntu-latest') && ciYml.includes('macos-latest') && ciYml.includes('windows-latest'));
     assert.ok(releaseYml.includes('RELEASE_TAG: ${{ github.ref_name }}'));
-    assert.ok(releaseYml.includes('(?:0|[1-9]\\d*)'));
+    assert.ok(releaseYml.includes('isStrictSemverTag'));
     assert.ok(releaseYml.includes('single-segment semver'));
-    assert.ok(releaseYml.includes('.zip') && releaseYml.includes('agy plugin install'));
+    assert.ok(releaseYml.includes('scripts/release.mts notes') && releaseYml.includes('--with-install-header'));
   });
 });

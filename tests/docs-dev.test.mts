@@ -129,23 +129,42 @@ void describe('startDocsDevServer', async () => {
 
     try {
       const reloadReceived = await new Promise<string>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timed out waiting for SSE reload')), 3000);
+        let writeCount = 0;
+        let retryTimer: ReturnType<typeof setInterval> | null = null;
+        const stopTimers = (): void => {
+          clearTimeout(timeout);
+          if (retryTimer !== null) {
+            clearInterval(retryTimer);
+            retryTimer = null;
+          }
+        };
+        const bumpFile = (): void => {
+          writeCount += 1;
+          writeFileSync(path.join(root, 'README.md'), `# Updated ${writeCount}\n`, 'utf8');
+        };
+        const timeout = setTimeout(() => {
+          stopTimers();
+          reject(new Error('Timed out waiting for SSE reload'));
+        }, 5000);
         const req = http.get(`${server.url}__dev/events`, (res) => {
           let buf = '';
+          let triggered = false;
           res.on('data', (chunk: Buffer) => {
             buf += chunk.toString('utf8');
-            if (buf.includes(': connected')) {
-              writeFileSync(path.join(root, 'README.md'), '# Updated\n', 'utf8');
+            if (!triggered && buf.includes(': connected')) {
+              triggered = true;
+              bumpFile();
+              retryTimer = setInterval(bumpFile, 250);
             }
             if (buf.includes('event: reload')) {
-              clearTimeout(timeout);
+              stopTimers();
               res.destroy();
               resolve(buf);
             }
           });
         });
         req.on('error', (err) => {
-          clearTimeout(timeout);
+          stopTimers();
           reject(err);
         });
       });

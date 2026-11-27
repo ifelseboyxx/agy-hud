@@ -6,11 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 
-import {
-  collectArchitectureErrors,
-  findDuplicateFunctionErrors,
-  validateEmbeddedClientScript,
-} from '../scripts/validate-architecture.ts';
+import { collectArchitectureErrors, findDuplicateFunctionErrors } from '../scripts/validate-architecture.ts';
 import { findEmojiViolations } from '../scripts/validate-no-emoji.mts';
 import { validateSourceMaintainability } from '../scripts/validate-source-maintainability.mts';
 import { findMisplacedTests } from '../scripts/validate-test-layout.mts';
@@ -25,7 +21,6 @@ import {
   runVerify,
   type StepOutcome,
 } from '../scripts/verify.mts';
-import { INSPECTOR_SCRIPT } from '../src/mcp/hud-inspector-script.ts';
 
 const ROOT = process.cwd();
 const execFileAsync = promisify(execFile);
@@ -55,17 +50,19 @@ async function runCommitlintMsg(msg: string): Promise<number> {
 }
 
 void test('commitlint 放行合法提交头并拦截缺失或非法 scope', async () => {
-  const [okRoot, okMcp, badNoScope, badScope] = await Promise.all([
+  const [okRoot, okCollectors, badNoScope, badScope, badRemovedMcp] = await Promise.all([
     runCommitlintMsg('feat(root): 补齐工程化门禁'),
-    runCommitlintMsg('fix(mcp): 修复遥测增量读取边界'),
+    runCommitlintMsg('fix(collectors): 修复遥测增量读取边界'),
     runCommitlintMsg('feat: 缺少 scope'),
     runCommitlintMsg('feat(invalid): 非法 scope'),
+    runCommitlintMsg('fix(mcp): 已移除的 scope'),
   ]);
 
   assert.equal(okRoot, 0);
-  assert.equal(okMcp, 0);
+  assert.equal(okCollectors, 0);
   assert.notEqual(badNoScope, 0);
   assert.notEqual(badScope, 0);
+  assert.notEqual(badRemovedMcp, 0);
 });
 
 void test('isolate-git-env 预加载清空继承的 GIT_* 变量', () => {
@@ -234,9 +231,14 @@ void test('架构守卫拦截受限目录的网络 API', (t) => {
   const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'arch-net-fence-')));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
   writeFixtureFiles(tmp, {
-    'src/mcp/rogue-fetch.ts':
+    'src/collectors/clean.ts': 'export const OK = 1;\n',
+  });
+  assert.deepEqual(collectArchitectureErrors(tmp, { checkSkills: false, checkUnusedExports: false }).errors, []);
+
+  writeFixtureFiles(tmp, {
+    'src/collectors/rogue-fetch.ts':
       "export async function leak(): Promise<unknown> { return fetch('https://example.com'); }\n",
-    'src/mcp/rogue-cjs.cjs': "const http = require('node:http'); module.exports = http;\n",
+    'src/collectors/rogue-cjs.cjs': "const http = require('node:http'); module.exports = http;\n",
   });
   const { errors } = collectArchitectureErrors(tmp, { checkSkills: false });
   assert.ok(errors.some((e) => e.includes('rogue-fetch.ts') && e.includes('fetch')));
@@ -255,17 +257,14 @@ void test('架构守卫拦截 collectors 导入 render 层', (t) => {
   assert.ok(errors.some((e) => e.includes('rogue-collector.ts') && e.includes('src/render/')));
 });
 
-void test('架构守卫强制保持 src/render/ 纯净并校验内嵌客户端脚本语法', (t) => {
-  assert.deepEqual(validateEmbeddedClientScript(INSPECTOR_SCRIPT), []);
-  assert.ok(validateEmbeddedClientScript('function broken( {').length > 0);
-
+void test('架构守卫强制保持 src/render/ 纯净', (t) => {
   const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'arch-pure-render-')));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
   writeFixtureFiles(tmp, {
     'src/core/file-lock.ts': 'export function withFileLocksSync(): void {}\n',
     'src/render/clean.ts': 'export const CLEAN = 1;\n',
   });
-  assert.deepEqual(collectArchitectureErrors(tmp, { checkSkills: false, checkClientScripts: false }).errors, []);
+  assert.deepEqual(collectArchitectureErrors(tmp, { checkSkills: false, checkUnusedExports: false }).errors, []);
 
   writeFixtureFiles(tmp, {
     'src/render/impure.ts': [
@@ -274,7 +273,7 @@ void test('架构守卫强制保持 src/render/ 纯净并校验内嵌客户端�
       'export function leak(): void { withFileLocksSync(); writeFileSync("/tmp/x", "1"); }',
     ].join('\n'),
   });
-  const { errors } = collectArchitectureErrors(tmp, { checkSkills: false, checkClientScripts: false });
+  const { errors } = collectArchitectureErrors(tmp, { checkSkills: false });
   assert.ok(errors.some((e) => e.includes('impure.ts') && e.includes('src/core/file-lock.ts')));
   assert.ok(errors.some((e) => e.includes('impure.ts') && e.includes('writeFileSync')));
 });

@@ -317,13 +317,13 @@ void describe('publishStagingDirSync', async () => {
     writeTree(targetDir, {
       'cli.mjs': { content: '#!/usr/bin/env node\nconsole.log("old-cli");\n', mode: 0o755 },
       'hud.mjs': { content: '#!/usr/bin/env node\nconsole.log("old-hud");\n', mode: 0o755 },
-      'mcp-hud.mjs': { content: '#!/usr/bin/env node\nconsole.log("old-mcp");\n', mode: 0o755 },
+      'index.mjs': { content: 'export const version = "old";\n' },
       'chunks/old-aaa.mjs': { content: 'export const v = 1;\n' },
     });
     writeTree(stagingDir, {
       'cli.mjs': { content: '#!/usr/bin/env node\nconsole.log("new-cli");\n', mode: 0o755 },
       'hud.mjs': { content: '#!/usr/bin/env node\nconsole.log("new-hud");\n', mode: 0o755 },
-      'mcp-hud.mjs': { content: '#!/usr/bin/env node\nconsole.log("new-mcp");\n', mode: 0o755 },
+      'index.mjs': { content: 'export const version = "new";\n' },
       'chunks/new-bbb.mjs': { content: 'export const v = 2;\n' },
     });
 
@@ -349,10 +349,7 @@ void describe('publishStagingDirSync', async () => {
       readFileSync(path.join(targetDir, 'hud.mjs'), 'utf8'),
       '#!/usr/bin/env node\nconsole.log("old-hud");\n',
     );
-    assert.equal(
-      readFileSync(path.join(targetDir, 'mcp-hud.mjs'), 'utf8'),
-      '#!/usr/bin/env node\nconsole.log("old-mcp");\n',
-    );
+    assert.equal(readFileSync(path.join(targetDir, 'index.mjs'), 'utf8'), 'export const version = "old";\n');
     assert.equal(existsSync(path.join(targetDir, 'chunks', 'new-bbb.mjs')), false);
     assert.equal(readFileSync(path.join(targetDir, 'chunks', 'old-aaa.mjs'), 'utf8'), 'export const v = 1;\n');
   });

@@ -105,9 +105,13 @@ void describe('runAtomicBuild', async () => {
   });
 
   await it('emits all expected distribution files', () => {
-    for (const rel of ['hud.mjs', 'cli.mjs', 'mcp-hud.mjs', 'index.mjs', 'index.d.mts', 'types.d.mts']) {
-      assert.equal(existsSync(path.join(sharedOutDir, rel)), true, `missing ${rel}`);
-    }
+    assert.deepEqual(readdirSync(sharedOutDir).sort(), [
+      'cli.mjs',
+      'hud.mjs',
+      'index.d.mts',
+      'index.mjs',
+      'types.d.mts',
+    ]);
   });
 
   await it('rejects an outDir overlapping staging cache before compiling', async () => {

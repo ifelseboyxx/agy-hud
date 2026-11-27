@@ -7,7 +7,6 @@ import { runSnapshotCommand } from '../src/cli/snapshot.ts';
 import { loadTranscriptActivity } from '../src/collectors/activity.ts';
 import { writeSnapshotEnvelope } from '../src/collectors/snapshot-envelope.ts';
 import { runHudRender } from '../src/hud-runner.ts';
-import { pollHudSnapshot } from '../src/mcp/hud-mcp-snapshot.ts';
 import { stripAnsi } from '../src/render/ansi.ts';
 import type { ActivitySnapshot } from '../src/snapshot-types.ts';
 import type { StatusLineData } from '../src/types.ts';
@@ -20,7 +19,6 @@ afterEach(() => {
 });
 
 interface ParityFixture {
-  geminiRoot: string;
   cliHome: string;
   wsDir: string;
   convId: string;
@@ -35,8 +33,7 @@ interface ParityFixture {
 
 function createParityFixture(convId = 'parity-shared-1234', withRunning = false): ParityFixture {
   const root = tracker.makeTempDir('agy-hud-parity-');
-  const geminiRoot = path.join(root, '.gemini');
-  const cliHome = path.join(geminiRoot, 'antigravity-cli');
+  const cliHome = path.join(root, '.gemini', 'antigravity-cli');
   const wsDir = path.join(root, 'workspace');
   const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
   mkdirSync(logsDir, { recursive: true });
@@ -90,7 +87,6 @@ function createParityFixture(convId = 'parity-shared-1234', withRunning = false)
   writeSnapshotEnvelope(cliHome, data, 4242, { nowMs });
 
   return {
-    geminiRoot,
     cliHome,
     wsDir,
     convId,
@@ -147,25 +143,19 @@ function renderAndMaterializeHud(
   return { rawHudLines, hudLines, markdown: readFileSync(f.mdPath, 'utf8') };
 }
 
-void describe('cross-surface activity parity contract', () => {
-  void it('matches canonical activity projections across all four surfaces', () => {
+void describe('3-surface CLI activity parity contract', () => {
+  void it('matches canonical activity projections across HUD, OSC 8 Markdown, and CLI snapshot', () => {
     const f = createParityFixture('parity-full-1111', false);
     const { hudLines, markdown } = renderAndMaterializeHud(f);
     const hudActivity = loadTranscriptActivity(f.cliHome, f.data);
     const cliSnap = JSON.parse(
       runSnapshotCommand(['--session', f.convId, '--json'], {
         cliHome: f.cliHome,
-        geminiRoot: f.geminiRoot,
         cwd: f.wsDir,
         nowMs: f.nowMs,
         isAlive: (p) => p === 4242,
       }).output,
     ) as ActivitySnapshot;
-    const mcpRes = pollHudSnapshot(
-      { sessionId: f.convId, source: 'cli' },
-      { cliHome: f.cliHome, geminiRoot: f.geminiRoot, cwd: f.wsDir, nowMs: f.nowMs, isAlive: (p) => p === 4242 },
-    );
-    assert.equal(mcpRes.unchanged, false);
 
     const expectedTools = [
       { disp: 'invoke_subagent', count: 2, target: 'Reviewer' },
@@ -180,21 +170,11 @@ void describe('cross-surface activity parity contract', () => {
       cliSnap.completedTools.map((t) => ({ disp: t.disp, count: t.count, target: t.latestTarget })),
       expectedTools,
     );
-    assert.deepEqual(
-      mcpRes.snapshot?.completedTools.map((t) => ({ disp: t.disp, count: t.count, target: t.latestTarget })),
-      expectedTools,
-    );
     assert.deepEqual(cliSnap.mcps, [{ server: 'github', totalCalls: 1, subtools: [{ name: 'get_issue', count: 1 }] }]);
-    assert.deepEqual(mcpRes.snapshot?.mcps, cliSnap.mcps);
     assert.deepEqual(cliSnap.skills, ['tdd']);
-    assert.deepEqual(mcpRes.snapshot?.skills, ['tdd']);
     assert.deepEqual(
       cliSnap.agents.map((a) => `${a.name}:${a.state}:${a.model}`),
       ['Coder:working:inherit', 'Reviewer:done:flash', 'Reviewer:done:pro'],
-    );
-    assert.deepEqual(
-      mcpRes.snapshot?.agents.map((a) => `${a.name}:${a.state}:${a.model}`),
-      cliSnap.agents.map((a) => `${a.name}:${a.state}:${a.model}`),
     );
     assert.ok(hudLines.some((l) => l.includes('Skills (1): tdd')));
     assert.ok(hudLines.some((l) => l.includes('MCPs (1): github')));
@@ -205,23 +185,17 @@ void describe('cross-surface activity parity contract', () => {
     assert.equal(markdown.split('\n').filter((line) => line.startsWith('| `Reviewer` |')).length, 2);
   });
 
-  void it('orders 3 running tool calls newest-first identically across HUD, Markdown, CLI, and MCP', () => {
+  void it('orders 3 running tool calls newest-first identically across HUD, Markdown, and CLI snapshot', () => {
     const f = createParityFixture('parity-running-2222', true);
     const { hudLines, markdown } = renderAndMaterializeHud(f);
     const cliText = stripAnsi(
       runSnapshotCommand(['--session', f.convId, '--no-color'], {
         cliHome: f.cliHome,
-        geminiRoot: f.geminiRoot,
         cwd: f.wsDir,
         nowMs: f.nowMs,
         isAlive: (p) => p === 4242,
       }).output,
     );
-    const mcpRes = pollHudSnapshot(
-      { sessionId: f.convId, source: 'cli' },
-      { cliHome: f.cliHome, geminiRoot: f.geminiRoot, cwd: f.wsDir, nowMs: f.nowMs, isAlive: (p) => p === 4242 },
-    );
-    assert.equal(mcpRes.unchanged, false);
 
     const toolsLine = hudLines.find((l) => l.includes('◐ run_command')) ?? '';
     assert.ok(toolsLine.indexOf('run_command') < toolsLine.indexOf('edit_file'), `HUD newest-first: ${toolsLine}`);
@@ -238,25 +212,14 @@ void describe('cross-surface activity parity contract', () => {
     assert.ok(cliRunningRows[0]?.includes('run_command'));
     assert.ok(cliRunningRows[1]?.includes('edit_file'));
     assert.ok(cliRunningRows[2]?.includes('grep_search') && cliRunningRows[2]?.includes('[+more]'));
-
-    assert.deepEqual(
-      mcpRes.snapshot?.runningTools.map((rt) => rt.disp),
-      ['run_command', 'edit_file', 'grep_search'],
-    );
   });
 
-  void it('replaces old activity completely after same-inode same-length rewrite across all four surfaces', () => {
+  void it('replaces old activity completely after same-inode same-length rewrite across all three CLI surfaces', () => {
     const f = createParityFixture('parity-rewrite-4444', false);
     const before = renderAndMaterializeHud(f);
     assert.ok(before.hudLines.some((l) => l.includes('read_file')));
     assert.ok(before.markdown.includes('`read_file`'));
     assert.ok(before.markdown.includes('alpha.ts'));
-
-    const mcpBefore = pollHudSnapshot(
-      { sessionId: f.convId, source: 'cli' },
-      { cliHome: f.cliHome, geminiRoot: f.geminiRoot, cwd: f.wsDir, nowMs: f.nowMs, isAlive: (p) => p === 4242 },
-    );
-    assert.equal(mcpBefore.unchanged, false);
 
     const stBefore = statSync(f.transcriptPath);
     const oldCall = JSON.stringify({ name: 'read_file', args: { Path: path.join(f.wsDir, 'alpha.ts') } });
@@ -274,34 +237,23 @@ void describe('cross-surface activity parity contract', () => {
     const cliAfter = JSON.parse(
       runSnapshotCommand(['--session', f.convId, '--json'], {
         cliHome: f.cliHome,
-        geminiRoot: f.geminiRoot,
         cwd: f.wsDir,
         nowMs: f.nowMs + 1000,
         isAlive: (p) => p === 4242,
       }).output,
     ) as ActivitySnapshot;
-    const mcpAfter = pollHudSnapshot(
-      { sessionId: f.convId, source: 'cli', etag: mcpBefore.etag },
-      { cliHome: f.cliHome, geminiRoot: f.geminiRoot, cwd: f.wsDir, nowMs: f.nowMs + 1000, isAlive: (p) => p === 4242 },
-    );
 
     const expectedAfter = [
       { disp: 'invoke_subagent', count: 2, target: 'Reviewer' },
       { disp: 'edit_file', count: 1, target: 'bravo.ts' },
       { disp: 'github:get_issue', count: 1, target: 'issue-1' },
     ];
-    assert.equal(mcpAfter.unchanged, false);
-    assert.notEqual(mcpAfter.etag, mcpBefore.etag);
     assert.deepEqual(
       hudAfter?.completedTools?.map((t) => ({ disp: t.disp, count: t.count, target: t.latestTarget })),
       expectedAfter,
     );
     assert.deepEqual(
       cliAfter.completedTools.map((t) => ({ disp: t.disp, count: t.count, target: t.latestTarget })),
-      expectedAfter,
-    );
-    assert.deepEqual(
-      mcpAfter.snapshot?.completedTools.map((t) => ({ disp: t.disp, count: t.count, target: t.latestTarget })),
       expectedAfter,
     );
     assert.ok(after.markdown.includes('`edit_file`') && after.markdown.includes('bravo.ts'));
@@ -315,7 +267,7 @@ void describe('cross-surface activity parity contract', () => {
     assert.ok(after.hudLines.some((l) => l.includes('edit_file')));
   });
 
-  void it('renders stopped Swarm members consistently across CLI Inspector, materialized Markdown, and MCP', () => {
+  void it('renders stopped Swarm members consistently across CLI snapshot and materialized Markdown', () => {
     const f = createParityFixture('parity-swarm-5555', false);
     const swarmDir = path.join(f.cliHome, 'brain', f.convId, '.system_generated', 'swarm');
     mkdirSync(swarmDir, { recursive: true });
@@ -335,27 +287,19 @@ void describe('cross-surface activity parity contract', () => {
     const cliText = stripAnsi(
       runSnapshotCommand(['--session', f.convId, '--no-color'], {
         cliHome: f.cliHome,
-        geminiRoot: f.geminiRoot,
         cwd: f.wsDir,
         nowMs: f.nowMs,
         isAlive: (p) => p === 4242,
       }).output,
-    );
-    const mcpRes = pollHudSnapshot(
-      { sessionId: f.convId, source: 'cli' },
-      { cliHome: f.cliHome, geminiRoot: f.geminiRoot, cwd: f.wsDir, nowMs: f.nowMs, isAlive: (p) => p === 4242 },
     );
 
     assert.ok(markdown.includes('## Swarm (1 alive · 3 stopped)'));
     assert.ok(markdown.includes('| `retiredWorker` |'));
     assert.ok(cliText.includes('Swarm (1 alive · 3 stopped)'));
     assert.ok(cliText.includes('retiredWorker'));
-    assert.equal(mcpRes.unchanged, false);
-    assert.equal(mcpRes.snapshot?.agentsKind, 'swarm');
-    assert.ok(mcpRes.snapshot?.agents.some((a) => a.name === 'retiredWorker' && a.state === 'done'));
   });
 
-  void it('sanitizes terminal escapes and bidi controls consistently across HUD, Markdown, CLI, and MCP', () => {
+  void it('sanitizes terminal escapes and bidi controls consistently across HUD, Markdown, and CLI snapshot', () => {
     const osc52 = '\x1b]52;c;SGVsbG8=\x07';
     const osc8Evil = '\x1b]8;;https://evil.test\x07';
     const csiClear = '\x1b[2J';
@@ -406,22 +350,24 @@ void describe('cross-surface activity parity contract', () => {
     const { rawHudLines, hudLines, markdown } = renderAndMaterializeHud(fixture, f.nowMs + 2000, true);
     const cliText = runSnapshotCommand(['--session', f.convId, '--no-color'], {
       cliHome: f.cliHome,
-      geminiRoot: f.geminiRoot,
       cwd: f.wsDir,
       nowMs: f.nowMs + 2000,
       isAlive: (p) => p === 4242,
     }).output;
-    const cliSessions = runSnapshotCommand(['--sessions', '--source', 'cli'], {
+    const cliSessions = runSnapshotCommand(['--sessions'], {
       cliHome: f.cliHome,
-      geminiRoot: f.geminiRoot,
       cwd: f.wsDir,
       nowMs: f.nowMs + 2000,
       isAlive: (p) => p === 4242,
     }).output;
-    const mcpRes = pollHudSnapshot(
-      { sessionId: f.convId, source: 'cli' },
-      { cliHome: f.cliHome, geminiRoot: f.geminiRoot, cwd: f.wsDir, nowMs: f.nowMs + 2000, isAlive: (p) => p === 4242 },
-    );
+    const cliJson = JSON.parse(
+      runSnapshotCommand(['--session', f.convId, '--json'], {
+        cliHome: f.cliHome,
+        cwd: f.wsDir,
+        nowMs: f.nowMs + 2000,
+        isAlive: (p) => p === 4242,
+      }).output,
+    ) as ActivitySnapshot;
 
     // Inspect raw HUD stdout directly (before stripAnsi) so leaked OSC 52/8 or CSI cannot be masked.
     const rawHudJoined = rawHudLines.join('\n');
@@ -450,13 +396,12 @@ void describe('cross-surface activity parity contract', () => {
     assert.ok(markdown.includes('TitleSafe'));
     assert.ok(markdown.includes('note.ts'));
     assert.ok(cliSessions.includes('TitleSafe'));
-    assert.equal(mcpRes.unchanged, false);
-    assert.equal(mcpRes.snapshot?.title, 'TitleSafe');
-    assert.equal(mcpRes.snapshot?.todos?.current, 'Finishtodo');
-    assert.ok(mcpRes.snapshot?.completedTools.some((t) => t.disp === 'edit_file' && t.latestTarget === 'note.ts'));
-    assert.deepEqual(mcpRes.snapshot?.skills, ['safe-skill']);
-    assert.deepEqual(mcpRes.snapshot?.mcps, [{ server: 'srv', totalCalls: 1, subtools: [{ name: 'sub', count: 1 }] }]);
-    assert.ok(mcpRes.snapshot?.agents.some((a) => a.name === 'Agent' && a.type === 'type' && a.model === 'flash'));
+    assert.equal(cliJson.title, 'TitleSafe');
+    assert.equal(cliJson.todos?.current, 'Finishtodo');
+    assert.ok(cliJson.completedTools.some((t) => t.disp === 'edit_file' && t.latestTarget === 'note.ts'));
+    assert.deepEqual(cliJson.skills, ['safe-skill']);
+    assert.deepEqual(cliJson.mcps, [{ server: 'srv', totalCalls: 1, subtools: [{ name: 'sub', count: 1 }] }]);
+    assert.ok(cliJson.agents.some((a) => a.name === 'Agent' && a.type === 'type' && a.model === 'flash'));
   });
 
   void it('sanitizes terminal escapes in ambiguous session prefix error output', () => {
@@ -477,9 +422,8 @@ void describe('cross-surface activity parity contract', () => {
 
     assert.throws(
       () =>
-        runSnapshotCommand(['--session', 'ambig-aaaa', '--source', 'cli'], {
+        runSnapshotCommand(['--session', 'ambig-aaaa'], {
           cliHome: f.cliHome,
-          geminiRoot: f.geminiRoot,
           cwd: f.wsDir,
           nowMs: f.nowMs,
           isAlive: () => true,
