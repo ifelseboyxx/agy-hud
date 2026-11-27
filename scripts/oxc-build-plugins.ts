@@ -2,11 +2,14 @@ import { chmodSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { minifySync } from 'oxc-minify';
+import { parseSync } from 'oxc-parser';
 import { isolatedDeclaration } from 'oxc-transform';
 import type { Plugin, ResolvedConfig } from 'vite';
 
+import { EXECUTABLE_DIST_FILES } from './lib/dist-manifest.mts';
+
 const SHEBANG_RE = /^(#![^\r\n]*)\r?\n/;
-const EXECUTABLE_BINS = new Set(['hud.mjs', 'cli.mjs']);
+const EXECUTABLE_BINS: ReadonlySet<string> = new Set(EXECUTABLE_DIST_FILES);
 
 function extractShebangFromFile(filePath: string | null | undefined): string {
   if (!filePath || !existsSync(filePath)) return '';
@@ -23,21 +26,146 @@ function formatOxcErrors(label: string, errors: Array<{ message: string; codefra
   return errors.map((err) => `${label}: ${err.codeframe ?? err.message}`).join('\n');
 }
 
-function rewriteTypesImportExtension(dtsCode: string): string {
-  return dtsCode.replace(/(['"])(\.\/types)\.ts\1/g, '$1$2.mjs$1');
-}
-
-async function emitIsolatedDts(rootDir: string, relSource: string): Promise<string> {
+async function runIsolatedDeclaration(rootDir: string, relSource: string): Promise<string> {
   const fullPath = path.join(rootDir, relSource);
   const sourceText = readFileSync(fullPath, 'utf8');
   const result = await isolatedDeclaration(relSource, sourceText);
   if (result.errors.length > 0) {
     throw new Error(formatOxcErrors(`isolatedDeclaration(${relSource})`, result.errors));
   }
-  return relSource === 'src/index.ts' ? rewriteTypesImportExtension(result.code) : result.code;
+  return result.code;
 }
 
-export function oxcIsolatedDtsAndMinifyPlugin(): Plugin {
+function stripInlinedRelativeTypeEdges(dtsCode: string, inlinedSpecs: ReadonlySet<string>): string {
+  const parsed = parseSync('types.d.mts', dtsCode);
+  const ranges: Array<readonly [number, number]> = [];
+  for (const stmt of parsed.program.body) {
+    if (
+      (stmt.type === 'ImportDeclaration' || stmt.type === 'ExportAllDeclaration') &&
+      typeof stmt.source.value === 'string' &&
+      inlinedSpecs.has(stmt.source.value)
+    ) {
+      ranges.push([stmt.start, stmt.end]);
+    }
+  }
+  if (ranges.length === 0) return dtsCode.trim();
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    out += dtsCode.slice(cursor, start);
+    cursor = end;
+  }
+  out += dtsCode.slice(cursor);
+  return out.replace(/^\s*\n+/g, '').trim();
+}
+
+async function emitBundledTypesDts(rootDir: string): Promise<string> {
+  const entryRel = 'src/types.ts';
+  const entrySource = readFileSync(path.join(rootDir, entryRel), 'utf8');
+  const parsedEntry = parseSync(entryRel, entrySource);
+  if (parsedEntry.errors.length > 0) {
+    throw new Error(`parseSync(${entryRel}) failed: ${parsedEntry.errors.map((e) => e.message).join('; ')}`);
+  }
+
+  const inlinedSpecs = new Set<string>();
+  const subParts: string[] = [];
+  for (const exp of parsedEntry.module.staticExports) {
+    for (const entry of exp.entries) {
+      const req = entry.moduleRequest?.value;
+      if (!req || (!req.startsWith('./') && !req.startsWith('../'))) continue;
+      if (inlinedSpecs.has(req)) continue;
+      inlinedSpecs.add(req);
+      const subRel = path.posix.normalize(path.posix.join('src', req));
+      const subDts = await runIsolatedDeclaration(rootDir, subRel);
+      subParts.push(subDts.trim());
+    }
+  }
+
+  const rootDts = await runIsolatedDeclaration(rootDir, entryRel);
+  const cleanedRoot = stripInlinedRelativeTypeEdges(rootDts, inlinedSpecs);
+  return `${[...subParts, cleanedRoot].filter((part) => part.length > 0).join('\n\n')}\n`;
+}
+
+function collectExportedTypeNames(typesDtsCode: string): Set<string> {
+  const names = new Set<string>();
+  const parsed = parseSync('types.d.mts', typesDtsCode);
+  for (const stmt of parsed.program.body) {
+    if (stmt.type !== 'ExportNamedDeclaration' || !stmt.declaration) continue;
+    const decl = stmt.declaration;
+    if (
+      (decl.type === 'TSInterfaceDeclaration' || decl.type === 'TSTypeAliasDeclaration') &&
+      decl.id.type === 'Identifier'
+    ) {
+      names.add(decl.id.name);
+    }
+  }
+  return names;
+}
+
+async function emitBundledIndexDts(rootDir: string, typesDtsCode: string): Promise<string> {
+  const indexRel = 'src/index.ts';
+  const indexSource = readFileSync(path.join(rootDir, indexRel), 'utf8');
+  const parsedIndex = parseSync(indexRel, indexSource);
+  if (parsedIndex.errors.length > 0) {
+    throw new Error(`parseSync(${indexRel}) failed: ${parsedIndex.errors.map((e) => e.message).join('; ')}`);
+  }
+
+  const availableTypes = collectExportedTypeNames(typesDtsCode);
+  const declarations: string[] = [];
+
+  for (const exp of parsedIndex.module.staticExports) {
+    for (const entry of exp.entries) {
+      const req = entry.moduleRequest?.value;
+      if (!req || req === './types.ts') continue;
+      if (entry.isType) continue;
+      const exportedName = entry.exportName.name;
+      const localName = entry.localName.name ?? exportedName;
+      if (!exportedName || !localName) continue;
+
+      const targetRel = path.posix.normalize(path.posix.join('src', req));
+      const targetDts = await runIsolatedDeclaration(rootDir, targetRel);
+      const parsedTarget = parseSync(`${targetRel}.d.ts`, targetDts);
+
+      for (const stmt of parsedTarget.program.body) {
+        if (stmt.type !== 'ExportNamedDeclaration' || !stmt.declaration) continue;
+        if (stmt.declaration.type === 'TSDeclareFunction' && stmt.declaration.id?.name === localName) {
+          const rawDecl = targetDts.slice(stmt.start, stmt.end).trim();
+          const renamed =
+            localName === exportedName ? rawDecl : rawDecl.replace(`function ${localName}`, `function ${exportedName}`);
+          declarations.push(renamed);
+        } else if (stmt.declaration.type === 'VariableDeclaration') {
+          const matchesLocal = stmt.declaration.declarations.some(
+            (d) => d.id.type === 'Identifier' && d.id.name === localName,
+          );
+          if (matchesLocal) {
+            const rawDecl = targetDts.slice(stmt.start, stmt.end).trim();
+            const renamed =
+              localName === exportedName ? rawDecl : rawDecl.replace(`const ${localName}`, `const ${exportedName}`);
+            declarations.push(renamed);
+          }
+        }
+      }
+    }
+  }
+
+  const usedTypes = [...availableTypes]
+    .filter((t) => declarations.some((d) => new RegExp(`\\b${t}\\b`).test(d)))
+    .sort();
+  const lines: string[] = [];
+  if (usedTypes.length > 0) {
+    lines.push(`import type { ${usedTypes.join(', ')} } from "./types.mjs";`);
+  }
+  lines.push(...declarations);
+  lines.push('export * from "./types.mjs";', '');
+  return lines.join('\n');
+}
+
+export interface OxcBuildPluginOptions {
+  readonly emitDts?: boolean;
+}
+
+export function oxcIsolatedDtsAndMinifyPlugin(options: OxcBuildPluginOptions = {}): Plugin {
+  const shouldEmitDts = options.emitDts ?? true;
   let rootDir = process.cwd();
   let outDir = path.resolve(rootDir, 'dist');
 
@@ -54,7 +182,7 @@ export function oxcIsolatedDtsAndMinifyPlugin(): Plugin {
 
         const codeShebang = item.code.match(SHEBANG_RE)?.[1] ?? '';
         const sourceShebang = item.isEntry ? extractShebangFromFile(item.facadeModuleId) : '';
-        const shebang = codeShebang || sourceShebang;
+        const shebang = codeShebang.length > 0 ? codeShebang : sourceShebang;
         const body = item.code.replace(SHEBANG_RE, '');
 
         const minified = minifySync(fileName, body, { compress: true, mangle: false });
@@ -65,22 +193,24 @@ export function oxcIsolatedDtsAndMinifyPlugin(): Plugin {
         item.code = shebang ? `${shebang}\n${cleaned}` : cleaned;
       }
 
-      if (existsSync(path.join(rootDir, 'src/types.ts'))) {
+      if (shouldEmitDts && existsSync(path.join(rootDir, 'src/types.ts'))) {
+        const typesDtsCode = await emitBundledTypesDts(rootDir);
         this.emitFile({
           type: 'asset',
           fileName: 'types.d.mts',
-          source: await emitIsolatedDts(rootDir, 'src/types.ts'),
+          source: typesDtsCode,
         });
-      }
-      if (existsSync(path.join(rootDir, 'src/index.ts'))) {
-        this.emitFile({
-          type: 'asset',
-          fileName: 'index.d.mts',
-          source: await emitIsolatedDts(rootDir, 'src/index.ts'),
-        });
+        if (existsSync(path.join(rootDir, 'src/index.ts'))) {
+          this.emitFile({
+            type: 'asset',
+            fileName: 'index.d.mts',
+            source: await emitBundledIndexDts(rootDir, typesDtsCode),
+          });
+        }
       }
     },
     writeBundle(_options, bundle): void {
+      if (process.platform === 'win32') return;
       for (const fileName of Object.keys(bundle)) {
         if (!EXECUTABLE_BINS.has(fileName)) continue;
         const fullPath = path.join(outDir, fileName);

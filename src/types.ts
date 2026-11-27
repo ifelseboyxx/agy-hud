@@ -1,3 +1,9 @@
+import type { HudConfig } from './profile-types.ts';
+import type { SessionTelemetry } from './telemetry-types.ts';
+
+export type * from './profile-types.ts';
+export type * from './telemetry-types.ts';
+
 export interface StatusLineModel {
   id?: string;
   display_name?: string;
@@ -92,6 +98,8 @@ export interface StatusLineVim {
 
 export interface StatusLineCost {
   total_usd?: number;
+  subagent_usd?: number;
+  estimated?: boolean;
   total_cost_usd?: number;
   total_duration_ms?: number;
   total_api_duration_ms?: number;
@@ -139,54 +147,20 @@ export interface StatusLineData {
   output_style?: string | { name?: string };
 }
 
-export type HudPreset = 'full' | 'compact' | 'minimal';
-
-export interface HudConfig {
-  preset: HudPreset;
-  showModeLine: boolean;
-  showPerfCapsule: boolean;
-  showQuota: boolean;
-  showCost: boolean;
-  showSwarmChips: boolean;
-  showToolsLine: boolean;
-  showSkillsMcpLine: boolean;
-  showTodosLine: boolean;
-  maxAgentChips: number;
-}
-
-export const DEFAULT_HUD_CONFIG: HudConfig = {
-  preset: 'full',
-  showModeLine: true,
-  showPerfCapsule: true,
-  showQuota: true,
-  showCost: true,
-  showSwarmChips: true,
-  showToolsLine: true,
-  showSkillsMcpLine: true,
-  showTodosLine: true,
-  maxAgentChips: 4,
-};
-
-export interface GenMetadataRow {
-  in: number;
-  out: number;
-  cw: number;
-  cr: number;
-  ttft: number;
-  stream: number;
-  ctxUsed: number;
-  ctxMax: number;
-  stepIdx?: number;
-}
-
-export interface SessionTelemetry {
-  genCount: number;
-  tps: number | null;
-  ttft: number | null;
-  cachePct: number | null;
-  ctxUsed: number | null;
-  ctxMax: number | null;
-  compacted?: boolean;
+export interface GitStatusInfo {
+  branch: string;
+  dirty: boolean;
+  staged?: number;
+  modified?: number;
+  deleted?: number;
+  renamed?: number;
+  untracked?: number;
+  conflicted?: number;
+  stash?: number;
+  ahead?: number;
+  behind?: number;
+  diffAdded?: number;
+  diffDeleted?: number;
 }
 
 export type AgentState = 'working' | 'waiting' | 'done';
@@ -214,8 +188,17 @@ export interface TranscriptToolEntry {
   name: string;
   disp: string;
   target: string;
+  fullTarget?: string;
   running: boolean;
   isSkillRead: boolean;
+}
+
+export interface CompletedToolAggregate {
+  disp: string;
+  count: number;
+  latestTarget: string;
+  fullTarget: string;
+  recentTargets: string[];
 }
 
 export interface ActivityAgentEntry {
@@ -231,6 +214,7 @@ export interface TranscriptActivity {
   skills: string[];
   mcps: string[];
   agents: ActivityAgentEntry[];
+  completedTools?: CompletedToolAggregate[];
 }
 
 export interface TodoSummary {
@@ -262,4 +246,42 @@ export interface CliSettings {
   statusLine?: StatusLineSetting;
   trustedWorkspaces?: string[];
   [key: string]: unknown;
+}
+
+export interface ActivityLineFormatOptions {
+  formatOverflow?: (hiddenCount: number) => string;
+}
+
+export interface HudCollectorOverrides {
+  detectGitStatus?: (cliHome: string, cwd: string | undefined, stdinVcs?: StatusLineVcs) => GitStatusInfo;
+  loadTodos?: (cliHome: string, data: StatusLineData) => TodoSummary | null;
+  loadSessionTelemetry?: (cliHome: string, data: StatusLineData) => SessionTelemetry;
+  loadTranscriptActivity?: (cliHome: string, data: StatusLineData) => TranscriptActivity | null;
+  collectAgentsSummary?: (
+    cliHome: string,
+    data: StatusLineData,
+    activityAgents?: readonly ActivityAgentEntry[],
+  ) => AgentsSummary;
+}
+
+export interface RenderHudOptions {
+  cliHome?: string;
+  cliSettings?: CliSettings;
+  hudConfig?: Partial<HudConfig>;
+  telemetry?: SessionTelemetry;
+  activity?: TranscriptActivity | null;
+  agentsSummary?: AgentsSummary;
+  todos?: TodoSummary | null;
+  nowSec?: number;
+  agyPid?: number | null;
+  bypass?: boolean;
+  cliMode?: string;
+  branch?: string;
+  dirty?: boolean;
+  gitInfo?: GitStatusInfo;
+  elapsedSeconds?: number | null;
+  activityLineOptions?: ActivityLineFormatOptions;
+  formatActivitySummaryTail?: (remainingCols: number) => string;
+  collectors?: HudCollectorOverrides;
+  env?: NodeJS.ProcessEnv;
 }

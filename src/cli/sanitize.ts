@@ -1,9 +1,7 @@
 import { isPlainObject, UNSAFE_OBJECT_KEYS as UNSAFE_KEYS } from '../core/guards.ts';
 import { hydrateHudConfig } from '../core/hud-config.ts';
-import { DEFAULT_HUD_CONFIG } from '../types.ts';
 
-export const REDACTED_PLACEHOLDER = '<SET_IN_ENV>';
-export { UNSAFE_KEYS };
+const REDACTED_PLACEHOLDER = '<SET_IN_ENV>';
 
 const SECRET_KEY_RE = /token|key|secret|pass|pwd|auth|cred|cookie|session|bearer|private|cert|pat|sig|dsn|webhook/i;
 const SENSITIVE_QUERY_KEY_RE = /token|key|secret|pass|pwd|auth|sig|signature|cred|cookie|session/i;
@@ -42,8 +40,6 @@ const ALLOWED_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   'thinkingLevel',
   'effort',
 ]);
-
-const ALLOWED_HUD_KEYS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_HUD_CONFIG));
 
 const ALLOWED_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
   'command',
@@ -98,7 +94,7 @@ function redactSensitiveQueryParams(parsed: URL): void {
   }
 }
 
-export function sanitizeUrlString(raw: string, stripAllQuery = false): string {
+function sanitizeUrlString(raw: string, stripAllQuery = false): string {
   const trimmed = raw.trim();
   const hasGitPrefix = trimmed.toLowerCase().startsWith(GIT_SCHEME_PREFIX);
   const candidate = hasGitPrefix ? trimmed.slice(GIT_SCHEME_PREFIX.length) : trimmed;
@@ -239,13 +235,17 @@ export function sanitizeSettingsTemplate(raw: Record<string, unknown>): Record<s
 }
 
 export function sanitizeHudConfigTemplate(raw: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(raw)) {
-    if (UNSAFE_KEYS.has(key) || !ALLOWED_HUD_KEYS.has(key)) continue;
-    out[key] = cloneValue(val);
-  }
-  hydrateHudConfig(out);
-  return out;
+  const hydrated = hydrateHudConfig(raw);
+  return {
+    preset: hydrated.preset,
+    maxAgentChips: hydrated.maxAgentChips,
+    osc8Links: hydrated.osc8Links,
+    costCurrency: hydrated.costCurrency,
+    usdToCnyRate: hydrated.usdToCnyRate,
+    lines: [...hydrated.lines],
+    segments: { ...hydrated.segments },
+    ...(hydrated.narrow !== undefined ? { narrow: cloneValue(hydrated.narrow) } : {}),
+  };
 }
 
 function sanitizeInstalledFromMeta(installedFrom: Record<string, unknown>): Record<string, unknown> | null {

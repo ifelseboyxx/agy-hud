@@ -14,8 +14,8 @@ import {
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 
-import { toComparePath } from '../../core/paths.ts';
-import { lstatIfPresentSync, readJsonObjectSync } from '../../fs-utils.ts';
+import { lstatIfPresentSync, readJsonObjectSync, statIfPresentSync } from '../../core/fs-utils.ts';
+import { isStrictDescendantPath, toComparePath } from '../../core/paths.ts';
 
 const EXECUTABLE_FILE_MODE = 0o755;
 const RM_MAX_RETRIES = 3;
@@ -46,13 +46,13 @@ export function runRollbackSteps(steps: readonly RollbackStep[]): string[] {
 }
 
 function isStrictAncestorPath(ancestorPath: string, descendantPath: string): boolean {
-  const rel = path.relative(ancestorPath, descendantPath);
-  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  return isStrictDescendantPath(ancestorPath, descendantPath);
 }
 
 export function assertRuntimeFilesPresent(srcRoot: string, runtimeFiles: readonly string[]): void {
   for (const rel of runtimeFiles) {
-    if (lstatIfPresentSync(path.join(srcRoot, rel)) === null) {
+    const fileStat = statIfPresentSync(path.join(srcRoot, rel));
+    if (fileStat === null || !fileStat.isFile()) {
       throw new Error(`Missing required file: ${rel}. Run 'pnpm build' first.`);
     }
   }
@@ -72,10 +72,22 @@ export function inspectTargetRelationship(
   return { sameDirectory: srcCompare === dstCompare };
 }
 
+function isInstalledGlobalPluginDir(resolvedDst: string): boolean {
+  const normalized = resolvedDst.split(path.sep).join('/').toLowerCase();
+  return normalized.endsWith('/config/plugins/agy-hud');
+}
+
 export function assertNotActiveSourceRepo(resolvedSrc: string, resolvedDst: string, dstStat: Stats | null): void {
   if (!dstStat) return;
   const { sameDirectory } = inspectTargetRelationship(resolvedSrc, resolvedDst, dstStat);
   if (sameDirectory && lstatIfPresentSync(path.join(resolvedSrc, 'src')) !== null) {
+    if (isInstalledGlobalPluginDir(resolvedDst)) {
+      throw new Error(
+        `Cannot self-delete Plugin Install at ${resolvedDst}. Run two-step clean uninstall instead:\n` +
+          `  1. node "${path.join(resolvedDst, 'scripts', 'install.mjs')}" unwire [--purge]\n` +
+          `  2. agy plugin uninstall agy-hud`,
+      );
+    }
     throw new Error(`Refusing to delete active source repository at ${resolvedDst}.`);
   }
 }
@@ -160,11 +172,9 @@ export function copyRuntimeFiles(srcRoot: string, dstRoot: string, runtimeFiles:
     mkdirSync(path.dirname(dst), { recursive: true });
     copyFileSync(src, dst);
   }
-  for (const dirRel of ['skills', 'dist/chunks']) {
-    const srcDir = path.join(srcRoot, dirRel);
-    if (lstatIfPresentSync(srcDir) !== null) {
-      cpSync(srcDir, path.join(dstRoot, dirRel), { recursive: true });
-    }
+  const srcSkillsDir = path.join(srcRoot, 'skills');
+  if (lstatIfPresentSync(srcSkillsDir) !== null) {
+    cpSync(srcSkillsDir, path.join(dstRoot, 'skills'), { recursive: true });
   }
   for (const rel of ['dist/hud.mjs', 'dist/cli.mjs']) {
     try {

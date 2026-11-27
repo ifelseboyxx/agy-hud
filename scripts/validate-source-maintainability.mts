@@ -2,12 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isMainEntry } from '../src/core/paths.ts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_ROOTS = ['src', 'scripts', 'tests'] as const;
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage', '.cache']);
 const SOURCE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
 
 const MAX_LINES = 500;
@@ -26,7 +25,7 @@ function collectSourceFiles(projectRoot: string): string[] {
     walkFiles(
       path.join(projectRoot, rel),
       projectRoot,
-      { skipDirs: SKIP_DIRS, includeFile: (_rel, name) => SOURCE_EXTS.has(path.extname(name)) },
+      { includeFile: (_rel, name) => SOURCE_EXTS.has(path.extname(name)) },
       files,
     );
   }
@@ -45,6 +44,9 @@ function inspectFile(rel: string, content: string, issues: MaintainabilityIssue[
   }
 
   let inBlockComment = false;
+  let inExemptHostContract = false;
+  let seenCode = false;
+  let usedHostContractExempt = false;
   let commentLines = 0;
   let nonEmptyLines = 0;
   let currentRun = 0;
@@ -59,20 +61,37 @@ function inspectFile(rel: string, content: string, issues: MaintainabilityIssue[
     nonEmptyLines += 1;
 
     let isCommentLine = false;
+    let isExemptLine = false;
     if (inBlockComment) {
       isCommentLine = true;
-      if (trimmed.includes('*/')) inBlockComment = false;
+      isExemptLine = inExemptHostContract;
+      if (trimmed.includes('*/')) {
+        inBlockComment = false;
+        inExemptHostContract = false;
+      }
     } else if (trimmed.startsWith('//')) {
       isCommentLine = true;
     } else if (trimmed.startsWith('/*')) {
       isCommentLine = true;
-      if (!trimmed.includes('*/')) inBlockComment = true;
+      const startsContract = !seenCode && !usedHostContractExempt && trimmed.includes('@host-contract');
+      if (startsContract) {
+        usedHostContractExempt = true;
+        isExemptLine = true;
+      }
+      if (!trimmed.includes('*/')) {
+        inBlockComment = true;
+        inExemptHostContract = startsContract;
+      }
+    } else {
+      seenCode = true;
     }
 
     if (isCommentLine) {
-      commentLines += 1;
-      currentRun += 1;
-      if (currentRun > longestRun) longestRun = currentRun;
+      if (!isExemptLine) {
+        commentLines += 1;
+        currentRun += 1;
+        if (currentRun > longestRun) longestRun = currentRun;
+      }
     } else {
       currentRun = 0;
     }

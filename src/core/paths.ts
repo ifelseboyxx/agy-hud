@@ -1,9 +1,10 @@
-import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { nonEmptyStr } from './guards.ts';
+
+export const SAFE_POSIX_SHELL_PATH_RE: RegExp = /^[A-Za-z0-9_./:@%+,-]+$/;
+export const SAFE_WIN_SHELL_PATH_RE: RegExp = /^[A-Za-z0-9_.:\\/+-]+$/;
 
 export interface ResolvedProfileRoots {
   cliHome: string;
@@ -78,29 +79,36 @@ export function toComparePath(p: string): string {
     : path.resolve(p);
 }
 
-export function realpathExistingPrefixSync(dirPath: string): string {
-  const resolved = path.resolve(dirPath);
-  const tail: string[] = [];
-  let cur = resolved;
-  while (true) {
-    try {
-      const real = realpathSync(cur);
-      return tail.length > 0 ? path.join(real, ...tail) : real;
-    } catch {
-      const parent = path.dirname(cur);
-      if (parent === cur) return resolved;
-      tail.unshift(path.basename(cur));
-      cur = parent;
-    }
+export function toPosixPath(relPath: string): string {
+  return relPath.split(path.sep).join('/');
+}
+
+export function isSameOrDescendantPath(
+  ancestorPath: string,
+  candidatePath: string,
+  pathApi: path.PlatformPath = path,
+): boolean {
+  if (ancestorPath === candidatePath) return true;
+  const rel = pathApi.relative(ancestorPath, candidatePath);
+  return rel !== '..' && !rel.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(rel);
+}
+
+export function isStrictDescendantPath(
+  ancestorPath: string,
+  candidatePath: string,
+  pathApi: path.PlatformPath = path,
+): boolean {
+  const rel = pathApi.relative(ancestorPath, candidatePath);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(rel);
+}
+
+export function assertNoLineBreaks(label: string, value: string): void {
+  if (value.includes('\n') || value.includes('\r') || value.includes('\0')) {
+    throw new Error(`Invalid ${label}: path must not contain newline or NUL characters.`);
   }
 }
 
-export function isMainEntry(metaUrl: string): boolean {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  try {
-    return realpathSync(argv1) === realpathSync(fileURLToPath(metaUrl));
-  } catch {
-    return false;
-  }
+export function quotePosixSh(value: string): string {
+  assertNoLineBreaks('shell path', value);
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }

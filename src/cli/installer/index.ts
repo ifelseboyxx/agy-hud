@@ -1,16 +1,22 @@
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync, renameSync, symlinkSync } from 'node:fs';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { getCliHomeLockPath, getTargetLockPath, withFileLocksSync } from '../../core/file-lock.ts';
-import { isPlainObject } from '../../core/guards.ts';
+import { getCliHomeLockPath, getShimBinLockPath, getTargetLockPath, withFileLocksSync } from '../../core/file-lock.ts';
+import { lstatIfPresentSync, makeTempSuffix } from '../../core/fs-utils.ts';
 import { resolveCliHome } from '../../core/paths.ts';
-import { getSettingsPaths, isSameCommandPath } from '../../core/statusline-ownership.ts';
-import { lstatIfPresentSync, makeTempSuffix, readJsonObjectSync } from '../../fs-utils.ts';
+import { getSettingsPaths } from '../../core/statusline-ownership.ts';
 import { INSTALLER_HELP_TEXT, parseInstallerArgs, PLUGIN_NAME, type InstallerOptions } from './args.ts';
-import { checkSqliteBuiltin, runAgyPluginValidate, runHudStdinSmoke } from './doctor.ts';
+import { preflightPurgeConfig, runPostTeardownCleanup } from './cleanup.ts';
+import {
+  hasAgyCli,
+  type InstallerRuntimeContext,
+  runDoctor,
+  toggleAgyPlugin,
+  uninstallAgyPlugin,
+  writeInstallerLine,
+} from './doctor.ts';
 import {
   assertDirectoryTreeRemovable,
   assertNotActiveSourceRepo,
@@ -29,24 +35,33 @@ import {
 import {
   createWireRollbackSteps,
   disableCliStatusLine,
-  inspectStatusLineState,
-  isSupportedNodeVersion,
-  NODE_RANGE_LABEL,
-  readStatusLineBackupStrict,
-  restoreCliStatusLine,
+  preflightStatusLineBackup,
   wireCliStatusLine,
   type WireStatusLineResult,
 } from './settings.ts';
-
-const AGY_PROBE_TIMEOUT_MS = 10_000;
-const AGY_COMMAND_TIMEOUT_MS = 10_000;
-const MAX_UNINSTALL_LOCK_RETRIES = 3;
+import {
+  assertShimBinDirUsable,
+  assertShimWritablePreflight,
+  createShimRemovalRollbackSteps,
+  createShimRollbackSteps,
+  type ShimWriteReceipt,
+} from './shim.ts';
+import {
+  applyWireShimAndDoctor,
+  printPathHintIfNeeded,
+  printTeardownResults,
+  runUnwire,
+  runWire,
+  teardownShimAndStatusLine,
+  WIRE_REQUIRED_FILES,
+  withDynamicInstallerLocks,
+  type TeardownReceipts,
+  type WireAndShimReceipts,
+} from './wire.ts';
 
 const RUNTIME_FILES: readonly string[] = [
-  'plugin.json',
+  ...WIRE_REQUIRED_FILES,
   'assets/logo.svg',
-  'dist/hud.mjs',
-  'dist/cli.mjs',
   'dist/index.mjs',
   'dist/index.d.mts',
   'dist/types.d.mts',
@@ -75,60 +90,8 @@ interface InstallStageState {
   createdIdentity: Stats | null;
 }
 
-function out(line = ''): void {
-  process.stdout.write(`${line}\n`);
-}
-
 function pathExists(p: string): boolean {
   return lstatIfPresentSync(p) !== null;
-}
-
-function hasAgyCli(): boolean {
-  const res = spawnSync('agy', ['--version'], { stdio: 'ignore', timeout: AGY_PROBE_TIMEOUT_MS, windowsHide: true });
-  return !res.error && res.status === 0;
-}
-
-function toggleAgyPlugin(opts: InstallerOptions, action: 'enable' | 'disable', agyAvailable?: boolean): void {
-  if (opts.isProject || opts.isCustomTarget || opts.skipEnable || !(agyAvailable ?? hasAgyCli())) return;
-  const res = spawnSync('agy', ['plugin', action, PLUGIN_NAME], { stdio: 'ignore', timeout: AGY_COMMAND_TIMEOUT_MS });
-  if (action === 'enable' && !opts.quiet && (res.error || res.status !== 0)) {
-    out(`Note: enable '${PLUGIN_NAME}' in Antigravity Customizations UI if needed.`);
-  }
-}
-
-function runDoctor(targetDir: string, quiet: boolean, agyAvailable?: boolean): { ok: boolean } {
-  const nodeVer = process.versions.node;
-  if (!isSupportedNodeVersion(nodeVer)) {
-    throw new Error(`Node.js ${NODE_RANGE_LABEL} required (current: v${nodeVer})`);
-  }
-  const resolvedTarget = path.resolve(targetDir);
-  const targetExists = pathExists(resolvedTarget);
-  const pluginBase = targetExists ? resolvedTarget : PACKAGE_ROOT;
-  const hudPath = path.join(pluginBase, 'dist', 'hud.mjs');
-  const sqliteOk = checkSqliteBuiltin();
-  const hudSmoke = pathExists(hudPath)
-    ? runHudStdinSmoke(hudPath, PACKAGE_ROOT)
-    : { ok: false, durationMs: 0, bytes: 0, detail: 'missing dist/hud.mjs' };
-  const slState = inspectStatusLineState(resolveCliHome(), resolvedTarget);
-  const agyValidate =
-    (agyAvailable ?? hasAgyCli()) ? runAgyPluginValidate(pluginBase, PACKAGE_ROOT, AGY_COMMAND_TIMEOUT_MS) : null;
-
-  const ok = sqliteOk && hudSmoke.ok && slState.valid && (agyValidate === null || agyValidate.ok);
-  if (!quiet) {
-    const smokeDesc = hudSmoke.ok
-      ? `OK (${hudSmoke.durationMs}ms, ${hudSmoke.bytes} bytes)`
-      : `FAILED (${hudSmoke.detail})`;
-    out('agy-hud doctor:');
-    out(`  - Plugin base  : ${pluginBase}${targetExists ? '' : ' (fallback to repo; not installed at target)'}`);
-    out(`  - Node.js      : v${nodeVer} (OK)`);
-    out(`  - node:sqlite  : ${sqliteOk ? 'OK' : 'FAILED'}`);
-    out(`  - dist/hud.mjs : ${smokeDesc}`);
-    out(`  - statusLine   : ${slState.state} (${slState.settingsPath})`);
-    if (agyValidate !== null) {
-      out(`  - agy validate : ${agyValidate.ok ? 'PASSED (--strict)' : `FAILED (${agyValidate.output})`}`);
-    }
-  }
-  return { ok };
 }
 
 function stagePluginInstall(
@@ -138,6 +101,7 @@ function stagePluginInstall(
   resolvedDst: string,
   dstStat: Stats | null,
   suffix: string,
+  stdout?: { write(chunk: string): boolean },
 ): void {
   mkdirSync(path.dirname(resolvedDst), { recursive: true });
   if (!opts.useLink) {
@@ -158,7 +122,7 @@ function stagePluginInstall(
     symlinkSync(resolvedSrc, resolvedDst, process.platform === 'win32' ? 'junction' : 'dir');
     stage.createdTarget = true;
     stage.createdIdentity = lstatIfPresentSync(resolvedDst);
-    if (!opts.quiet) out(`Linked ${resolvedDst} -> ${resolvedSrc}`);
+    if (!opts.quiet) writeInstallerLine(`Linked ${resolvedDst} -> ${resolvedSrc}`, stdout);
     return;
   }
   const stagedNewPath = stage.stagedNewPath;
@@ -168,11 +132,12 @@ function stagePluginInstall(
   stage.stagedNewPath = null;
   stage.createdTarget = true;
   stage.createdIdentity = stagedIdentity;
-  if (!opts.quiet) out(`Installed ${PLUGIN_NAME} to ${resolvedDst}`);
+  if (!opts.quiet) writeInstallerLine(`Installed ${PLUGIN_NAME} to ${resolvedDst}`, stdout);
 }
 
 function buildInstallRollbackSteps(
   wireReceipt: WireStatusLineResult | null,
+  shimReceipt: ShimWriteReceipt | null,
   stage: InstallStageState,
   resolvedDst: string,
   sameDirectory: boolean,
@@ -181,7 +146,10 @@ function buildInstallRollbackSteps(
     if (!stage.createdTarget || sameDirectory) return true;
     return isSameStatIdentity(lstatIfPresentSync(resolvedDst), stage.createdIdentity);
   };
-  const steps: RollbackStep[] = [...createWireRollbackSteps(wireReceipt, ownsTarget)];
+  const steps: RollbackStep[] = [
+    ...createShimRollbackSteps(shimReceipt, ownsTarget),
+    ...createWireRollbackSteps(wireReceipt, ownsTarget),
+  ];
   const stagedNewPath = stage.stagedNewPath;
   if (stagedNewPath !== null) {
     steps.push([
@@ -215,12 +183,14 @@ function buildInstallRollbackSteps(
   return steps;
 }
 
-function runInstall(opts: InstallerOptions): void {
+function runInstall(opts: InstallerOptions, runtime?: InstallerRuntimeContext): void {
   const resolvedDst = path.resolve(opts.targetDir);
-  const cliHome = resolveCliHome();
-  const locks = opts.wireStatusLine
-    ? [getTargetLockPath(resolvedDst), getCliHomeLockPath(cliHome)]
-    : [getTargetLockPath(resolvedDst)];
+  const env = runtime?.env ?? process.env;
+  const cliHome = resolveCliHome(runtime?.cliHome, env);
+  if (opts.manageShim) assertShimBinDirUsable(opts.binDir);
+  const locks = [getTargetLockPath(resolvedDst)];
+  if (opts.wireStatusLine || opts.manageShim) locks.push(getCliHomeLockPath(cliHome));
+  if (opts.manageShim) locks.push(getShimBinLockPath(opts.binDir));
   withFileLocksSync(locks, () => {
     const resolvedSrc = realpathSync(PACKAGE_ROOT);
     const dstStat = lstatIfPresentSync(resolvedDst);
@@ -231,13 +201,10 @@ function runInstall(opts: InstallerOptions): void {
       if (!dstStat.isSymbolicLink()) assertDirectoryTreeRemovable(resolvedDst);
     }
 
-    const { settingsPath, backupPath } = getSettingsPaths(cliHome);
-    const hudCmd = path.join(resolvedDst, 'dist', 'hud.mjs');
     if (opts.wireStatusLine) {
-      const existingSettings = readJsonObjectSync(settingsPath, true);
-      const curCmd = isPlainObject(existingSettings?.statusLine) ? existingSettings.statusLine.command : undefined;
-      if (!isSameCommandPath(curCmd, hudCmd)) readStatusLineBackupStrict(backupPath);
+      preflightStatusLineBackup(cliHome, resolvedDst, 'wire');
     }
+    if (opts.manageShim) assertShimWritablePreflight(opts.binDir, resolvedDst);
 
     const stage: InstallStageState = {
       stagedPrevPath: null,
@@ -247,27 +214,40 @@ function runInstall(opts: InstallerOptions): void {
       createdTarget: false,
       createdIdentity: null,
     };
-    let wireReceipt: WireStatusLineResult | null = null;
-    const agyAvailable = hasAgyCli();
+    const receipts: WireAndShimReceipts = { wireReceipt: null, shimReceipt: null };
+    const agyAvailable = hasAgyCli(env);
 
     try {
       if (sameDirectory) {
-        if (!opts.quiet) out(`Repository is already at target plugin directory: ${resolvedDst}`);
+        if (!opts.quiet) {
+          writeInstallerLine(`Repository is already at target plugin directory: ${resolvedDst}`, runtime?.stdout);
+        }
       } else {
-        stagePluginInstall(stage, opts, resolvedSrc, resolvedDst, dstStat, makeTempSuffix());
+        stagePluginInstall(stage, opts, resolvedSrc, resolvedDst, dstStat, makeTempSuffix(), runtime?.stdout);
       }
-      if (opts.wireStatusLine) {
-        wireReceipt = wireCliStatusLine(cliHome, resolvedDst);
-        if (!opts.quiet) out(`Wired statusLine in ${wireReceipt.settingsPath}`);
-      }
-      const { ok } = runDoctor(resolvedDst, opts.quiet, agyAvailable);
-      if (!ok) throw new Error('Post-install doctor check failed.');
+      applyWireShimAndDoctor({
+        opts,
+        cliHome,
+        resolvedDst,
+        packageRoot: PACKAGE_ROOT,
+        wireStatusLine: opts.wireStatusLine,
+        agyAvailable,
+        doctorFailMessage: 'Post-install doctor check failed.',
+        receipts,
+        runtime,
+      });
     } catch (err) {
-      const steps = buildInstallRollbackSteps(wireReceipt, stage, resolvedDst, sameDirectory);
+      const steps = buildInstallRollbackSteps(
+        receipts.wireReceipt,
+        receipts.shimReceipt,
+        stage,
+        resolvedDst,
+        sameDirectory,
+      );
       throw makeRollbackError(err, runRollbackSteps(steps));
     }
 
-    toggleAgyPlugin(opts, 'enable', agyAvailable);
+    toggleAgyPlugin(opts, 'enable', agyAvailable, runtime);
     if (stage.prevMoved && stage.stagedPrevPath !== null && stage.prevIdentity !== null) {
       try {
         removeVerifiedStagedPath(stage.stagedPrevPath, stage.prevIdentity);
@@ -278,55 +258,58 @@ function runInstall(opts: InstallerOptions): void {
         );
       }
     }
+    printPathHintIfNeeded(opts, runtime);
   });
 }
 
-function runUninstall(opts: InstallerOptions): void {
+function runUninstall(opts: InstallerOptions, runtime?: InstallerRuntimeContext): void {
   const resolvedDst = path.resolve(opts.targetDir);
-  const cliHome = resolveCliHome();
+  const env = runtime?.env ?? process.env;
+  const cliHome = resolveCliHome(runtime?.cliHome, env);
   const resolvedSrc = realpathSync(PACKAGE_ROOT);
   assertNotActiveSourceRepo(resolvedSrc, resolvedDst, lstatIfPresentSync(resolvedDst));
-  let lockTarget = pathExists(path.dirname(resolvedDst));
-  let lockCliHome = opts.restoreStatusLine && pathExists(cliHome);
 
-  for (let attempt = 0; attempt < MAX_UNINSTALL_LOCK_RETRIES; attempt += 1) {
-    const locks: string[] = [];
-    if (lockTarget) locks.push(getTargetLockPath(resolvedDst));
-    if (lockCliHome) locks.push(getCliHomeLockPath(cliHome));
-    const outcome = withFileLocksSync(locks, (): 'done' | 'retry' => {
-      const needTarget = !lockTarget && pathExists(path.dirname(resolvedDst));
-      const needCliHome = opts.restoreStatusLine && !lockCliHome && pathExists(cliHome);
-      if (needTarget || needCliHome) {
-        if (needTarget) lockTarget = true;
-        if (needCliHome) lockCliHome = true;
-        return 'retry';
-      }
+  withDynamicInstallerLocks(
+    resolvedDst,
+    cliHome,
+    {
+      includeCliHome: true,
+      binDir: opts.manageShim ? opts.binDir : undefined,
+    },
+    ({ lockTarget, lockCliHome, lockBinDir }) => {
       const dstStat = lockTarget ? lstatIfPresentSync(resolvedDst) : null;
-      const { settingsPath, backupPath } = getSettingsPaths(cliHome);
-      const hudCmd = path.join(resolvedDst, 'dist', 'hud.mjs');
       if (dstStat) {
         assertNotActiveSourceRepo(resolvedSrc, resolvedDst, dstStat);
         assertRemovableTarget(resolvedDst, dstStat, PLUGIN_NAME);
         if (!dstStat.isSymbolicLink()) assertDirectoryTreeRemovable(resolvedDst);
       }
-      if (opts.restoreStatusLine && lockCliHome) {
-        const existingSettings = readJsonObjectSync(settingsPath, true);
-        const curCmd = isPlainObject(existingSettings?.statusLine) ? existingSettings.statusLine.command : undefined;
-        if (isSameCommandPath(curCmd, hudCmd)) readStatusLineBackupStrict(backupPath);
+      const shouldRestoreStatusLine = (opts.restoreStatusLine || opts.purge) && lockCliHome;
+      if (shouldRestoreStatusLine) {
+        preflightStatusLineBackup(cliHome, resolvedDst, 'restore', opts.purge);
       }
-      const stagedRemovalPath = dstStat ? `${resolvedDst}.removing.${makeTempSuffix()}` : null;
+      if (opts.purge && lockCliHome) {
+        preflightPurgeConfig(cliHome);
+      }
+      const useHostPluginUninstall = !opts.isProject && !opts.isCustomTarget && !opts.skipEnable && hasAgyCli();
+      const stagedRemovalPath =
+        dstStat && !useHostPluginUninstall ? `${resolvedDst}.removing.${makeTempSuffix()}` : null;
       let movedToStaging = false;
-      let restored = null;
+      const receipts: TeardownReceipts = { removedShim: null, restored: null, cleanup: null };
       try {
         if (dstStat && stagedRemovalPath !== null) {
           moveVerifiedTarget(resolvedDst, dstStat, stagedRemovalPath);
           movedToStaging = true;
         }
-        if (opts.restoreStatusLine && lockCliHome) {
-          restored = restoreCliStatusLine(cliHome, resolvedDst);
-        }
+        teardownShimAndStatusLine(
+          opts,
+          cliHome,
+          resolvedDst,
+          shouldRestoreStatusLine,
+          receipts,
+          opts.manageShim && lockBinDir,
+        );
       } catch (err) {
-        const steps: RollbackStep[] = [];
+        const steps: RollbackStep[] = [...createShimRemovalRollbackSteps(receipts.removedShim)];
         if (movedToStaging && stagedRemovalPath !== null && dstStat !== null) {
           steps.push([
             'restore plugin target',
@@ -339,16 +322,7 @@ function runUninstall(opts: InstallerOptions): void {
         }
         throw makeRollbackError(err, runRollbackSteps(steps));
       }
-      if (restored?.changed && !opts.quiet) out('Restored prior statusLine configuration.');
-      else if (restored?.skippedReason === 'not-owned' && !opts.quiet) {
-        out('Skipped statusLine restore: current statusLine does not point to this installation.');
-      }
-      if (!dstStat) {
-        if (!opts.quiet) out(`Nothing to remove (${resolvedDst} does not exist).`);
-        return 'done';
-      }
-      toggleAgyPlugin(opts, 'disable');
-      if (movedToStaging && stagedRemovalPath !== null) {
+      if (movedToStaging && stagedRemovalPath !== null && dstStat !== null) {
         try {
           removeVerifiedStagedPath(stagedRemovalPath, dstStat);
         } catch (cleanupErr) {
@@ -358,66 +332,136 @@ function runUninstall(opts: InstallerOptions): void {
           );
         }
       }
-      if (!opts.quiet) out(`Removed ${PLUGIN_NAME} from ${resolvedDst}`);
-      return 'done';
-    });
-    if (outcome === 'done') return;
-  }
+      if (lockCliHome) {
+        receipts.cleanup = runPostTeardownCleanup(cliHome, resolvedDst, opts.purge);
+      }
+      printTeardownResults(receipts, opts.quiet, runtime?.stdout);
+      if (!dstStat) {
+        if (useHostPluginUninstall) {
+          const hostRes = uninstallAgyPlugin(opts, true, env);
+          if (hostRes.ok) {
+            if (!opts.quiet) {
+              writeInstallerLine(
+                `Removed stale ${PLUGIN_NAME} host registration via agy plugin uninstall.`,
+                runtime?.stdout,
+              );
+            }
+            return;
+          }
+          const isAlreadyAbsent = /not installed|not found|no such plugin|does not exist/i.test(hostRes.detail);
+          if (hostRes.attempted && !isAlreadyAbsent) {
+            const detail = hostRes.detail.length > 0 ? `: ${hostRes.detail}` : '';
+            throw new Error(
+              `'agy plugin uninstall ${PLUGIN_NAME}' failed while checking stale host registration${detail}.`,
+            );
+          }
+        }
+        const hadCleanup =
+          (receipts.cleanup?.removedCaches.length ?? 0) > 0 ||
+          (receipts.cleanup?.removedBackups.length ?? 0) > 0 ||
+          Boolean(receipts.cleanup?.removedConfig);
+        if (!opts.quiet && !receipts.removedShim?.removed && !hadCleanup) {
+          writeInstallerLine(`Nothing to remove (${resolvedDst} does not exist).`, runtime?.stdout);
+        }
+        return;
+      }
+      if (useHostPluginUninstall) {
+        const hostRes = uninstallAgyPlugin(opts, true, env);
+        const remainingStat = lstatIfPresentSync(resolvedDst);
+        if (!hostRes.ok) {
+          const detail = hostRes.detail.length > 0 ? `: ${hostRes.detail}` : '';
+          throw new Error(
+            `Detached statusLine/shim/caches, but 'agy plugin uninstall ${PLUGIN_NAME}' failed${detail}. ` +
+              `Run 'agy plugin uninstall ${PLUGIN_NAME}' manually to remove host registration and ${resolvedDst}.`,
+          );
+        }
+        if (remainingStat !== null) {
+          if (!isSameStatIdentity(remainingStat, dstStat)) {
+            throw new Error(`Target changed during host uninstall; refusing to delete ${resolvedDst}.`);
+          }
+          assertRemovableTarget(resolvedDst, remainingStat, PLUGIN_NAME);
+          removeTargetPath(resolvedDst, remainingStat);
+        }
+        if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`, runtime?.stdout);
+        return;
+      }
+      if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`, runtime?.stdout);
+    },
+  );
 }
 
-function runToggle(opts: InstallerOptions, enable: boolean): void {
+function runToggle(opts: InstallerOptions, enable: boolean, runtime?: InstallerRuntimeContext): void {
   const resolvedDst = path.resolve(opts.targetDir);
-  const cliHome = resolveCliHome();
-  const hudCmd = path.join(resolvedDst, 'dist', 'hud.mjs');
+  const env = runtime?.env ?? process.env;
+  const cliHome = resolveCliHome(runtime?.cliHome, env);
+  const hudScriptPath = path.join(resolvedDst, 'dist', 'hud.mjs');
   if (enable && !pathExists(path.dirname(resolvedDst))) {
-    throw new Error(`Missing ${hudCmd}. Run 'pnpm build' and install first.`);
+    throw new Error(`Missing ${hudScriptPath}. Run 'pnpm build' and install first.`);
   }
   const locks = enable ? [getCliHomeLockPath(cliHome), getTargetLockPath(resolvedDst)] : [getCliHomeLockPath(cliHome)];
   withFileLocksSync(locks, () => {
     const { settingsPath } = getSettingsPaths(cliHome);
     if (enable) {
-      if (!pathExists(hudCmd)) throw new Error(`Missing ${hudCmd}. Run 'pnpm build' and install first.`);
+      if (!pathExists(hudScriptPath)) throw new Error(`Missing ${hudScriptPath}. Run 'pnpm build' and install first.`);
       wireCliStatusLine(cliHome, resolvedDst);
-      toggleAgyPlugin(opts, 'enable');
-      if (!opts.quiet) out(`Enabled agy-hud statusLine in ${settingsPath}`);
+      toggleAgyPlugin(opts, 'enable', undefined, runtime);
+      if (!opts.quiet) writeInstallerLine(`Enabled agy-hud statusLine in ${settingsPath}`, runtime?.stdout);
       return;
     }
     const disabled = disableCliStatusLine(cliHome, resolvedDst);
-    toggleAgyPlugin(opts, 'disable');
+    toggleAgyPlugin(opts, 'disable', undefined, runtime);
     if (!opts.quiet) {
-      out(
-        disabled.changed
-          ? `Disabled agy-hud statusLine in ${settingsPath}`
-          : `Skipped statusLine disable: current statusLine does not point to this installation.`,
-      );
+      const msg = disabled.changed
+        ? `Disabled agy-hud statusLine in ${settingsPath}`
+        : disabled.skippedReason === 'not-configured'
+          ? `Skipped statusLine disable: statusLine is not configured in ${settingsPath}.`
+          : `Skipped statusLine disable: current statusLine does not point to this installation.`;
+      writeInstallerLine(msg, runtime?.stdout);
     }
   });
 }
 
-export function runInstallerCli(args: readonly string[]): number {
-  const opts = parseInstallerArgs(args);
+export function runInstallerCli(args: readonly string[], runtime?: InstallerRuntimeContext): number {
+  const opts = parseInstallerArgs(args, runtime?.env);
   if (opts.showHelp) {
-    out(INSTALLER_HELP_TEXT);
+    writeInstallerLine(INSTALLER_HELP_TEXT, runtime?.stdout);
     return 0;
   }
   switch (opts.command) {
+    case 'wire':
+      runWire(opts, PACKAGE_ROOT, runtime);
+      return 0;
+    case 'unwire':
+      runUnwire(opts, runtime);
+      return 0;
     case 'install':
-      runInstall(opts);
+      runInstall(opts, runtime);
       return 0;
     case 'uninstall':
-      runUninstall(opts);
+      runUninstall(opts, runtime);
       return 0;
     case 'on':
     case 'enable':
-      runToggle(opts, true);
+      runToggle(opts, true, runtime);
       return 0;
     case 'off':
     case 'disable':
-      runToggle(opts, false);
+      runToggle(opts, false, runtime);
       return 0;
     case 'status':
     case 'doctor': {
-      const { ok } = runDoctor(opts.targetDir, opts.quiet);
+      const { ok } = runDoctor({
+        targetDir: opts.targetDir,
+        quiet: opts.quiet,
+        packageRoot: PACKAGE_ROOT,
+        binDir: opts.binDir,
+        requireShim: false,
+        noShim: opts.noShim,
+        checkMalformedShim: false,
+        cliHome: runtime?.cliHome,
+        env: runtime?.env,
+        stdout: runtime?.stdout,
+      });
       return ok ? 0 : 1;
     }
   }

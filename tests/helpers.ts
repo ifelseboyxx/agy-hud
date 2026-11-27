@@ -63,14 +63,33 @@ export function createTempDirTracker(): {
   };
 }
 
+function stripHostAgyFromPath(rawPath: string | undefined): string {
+  const nodeDir = path.dirname(process.execPath);
+  if (!rawPath) return nodeDir;
+  const agyNames = process.platform === 'win32' ? ['agy.cmd', 'agy.exe', 'agy'] : ['agy'];
+  const kept = rawPath.split(path.delimiter).filter((dir) => {
+    const trimmed = dir.trim().replace(/^"(.*)"$/, '$1');
+    if (trimmed.length === 0) return false;
+    return !agyNames.some((bin) => existsSync(path.join(trimmed, bin)));
+  });
+  if (!kept.includes(nodeDir)) kept.unshift(nodeDir);
+  return kept.join(path.delimiter);
+}
+
 export function makeIsolatedEnv(root: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     ...process.env,
     HOME: root,
+    USERPROFILE: root,
     GEMINI_HOME: path.join(root, '.gemini'),
     GEMINI_CLI_HOME: root,
+    PATH: stripHostAgyFromPath(process.env.PATH),
     ...extra,
   };
+}
+
+export function makeFastIsolatedEnv(root: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return makeIsolatedEnv(root, extra);
 }
 
 export function writeJson(filePath: string, data: unknown): void {

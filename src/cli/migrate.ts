@@ -7,14 +7,23 @@ import {
   getMcpConfigLockPath,
   withFileLocksSync,
 } from '../core/file-lock.ts';
-import { isPlainObject } from '../core/guards.ts';
-import { hydrateHudConfig } from '../core/hud-config.ts';
-import { expandHome, resolveProfileRoots } from '../core/paths.ts';
 import {
   hasDanglingSymlinkInChainSync as hasDanglingSymlinkInChain,
   lstatIfPresentSync as lstatIfPresent,
   readJsonObjectSync as readJsonObject,
-} from '../fs-utils.ts';
+} from '../core/fs-utils.ts';
+import { isPlainObject, UNSAFE_OBJECT_KEYS as UNSAFE_KEYS } from '../core/guards.ts';
+import { cloneHudConfig, hydrateHudConfig } from '../core/hud-config.ts';
+import { expandHome, resolveProfileRoots } from '../core/paths.ts';
+import type {
+  ExportedPluginEntry,
+  ExportProfileOptions,
+  ExportProfileResult,
+  ImportMcpAction,
+  ImportProfileOptions,
+  ImportProfileResult,
+  PluginsManifest,
+} from '../types.ts';
 import { assertNoExportPathOverlap, commitPlannedOps, type PlannedOp } from './file-transaction.ts';
 import {
   cloneRecord,
@@ -25,58 +34,7 @@ import {
   sanitizeRepoUrl,
   sanitizeSettingsTemplate,
   sanitizeStringValue,
-  UNSAFE_KEYS,
 } from './sanitize.ts';
-
-export { commitPlannedOps, type PlannedOp };
-
-export interface ExportProfileOptions {
-  outDir: string;
-  cliHome?: string;
-  geminiRoot?: string;
-  env?: NodeJS.ProcessEnv;
-}
-
-export interface ExportedPluginEntry {
-  dir: string;
-  name: string;
-  version?: string;
-  repo?: string;
-  enabled?: boolean;
-  marketplace?: string;
-  pluginId?: string;
-}
-
-export interface PluginsManifest {
-  exportedAt: string;
-  plugins: ExportedPluginEntry[];
-}
-
-export interface ExportProfileResult {
-  outDir: string;
-  filesWritten: string[];
-  pluginCount: number;
-  skippedMissing: string[];
-}
-
-export interface ImportProfileOptions {
-  inDir: string;
-  cliHome?: string;
-  geminiRoot?: string;
-  mergeMcp?: boolean;
-  env?: NodeJS.ProcessEnv;
-}
-
-export type ImportMcpAction = 'none' | 'created' | 'merged' | 'skipped-exists';
-
-export interface ImportProfileResult {
-  inDir: string;
-  cliHome: string;
-  geminiRoot: string;
-  filesUpdated: string[];
-  mcpAction: ImportMcpAction;
-  pluginInstructions: string[];
-}
 
 function extractRepoUrl(pluginJson: Record<string, unknown>): string | undefined {
   if (typeof pluginJson.repository === 'string') {
@@ -341,10 +299,13 @@ export function importProfile(options: ImportProfileOptions): ImportProfileResul
 
     if (sanitizedHudIncoming) {
       const targetHudPath = path.join(cliHome, 'hud-config.json');
-      const existingHud = readJsonObject(targetHudPath, true) ?? {};
-      const mergedHud = deepMergeObjects(existingHud, sanitizedHudIncoming);
-      hydrateHudConfig(mergedHud);
-      planned.push({ kind: 'write', filePath: targetHudPath, payload: mergedHud });
+      readJsonObject(targetHudPath, true);
+      const canonicalHud = hydrateHudConfig(sanitizedHudIncoming);
+      planned.push({
+        kind: 'write',
+        filePath: targetHudPath,
+        payload: cloneHudConfig(canonicalHud),
+      });
     }
 
     let mcpAction: ImportMcpAction = 'none';

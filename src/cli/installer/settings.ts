@@ -1,41 +1,45 @@
-import { readFileSync, rmSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-import { isPlainObject } from '../../core/guards.ts';
-import {
-  getSettingsPaths,
-  isSameCommandPath,
-  isValidBackupRecord,
-  type StatusLineBackupPayload,
-} from '../../core/statusline-ownership.ts';
+import { BACKUP_TMP_RE, STATUSLINE_BACKUP_FILE } from '../../core/cache-registry.ts';
 import {
   captureEntrySnapshotSync,
+  decodeStrictUtf8,
   type EntrySnapshotSync,
   lstatIfPresentSync,
+  POSIX_MODE_MASK,
+  PRIVATE_FILE_MODE,
   readJsonObjectSync,
   restoreEntrySnapshotSync,
   restoreOwnedEntrySnapshotSync,
   serializeJsonBuffer,
+  statIfPresentSync,
   writeBufferAtomicSync,
   writeJsonAtomicSync,
-} from '../../fs-utils.ts';
+} from '../../core/fs-utils.ts';
+import { isPlainObject } from '../../core/guards.ts';
+import { resolveTrustedCliDir } from '../../core/safe-path.ts';
+import {
+  formatStatusLineCommand,
+  getSettingsPaths,
+  isSameCommandPath,
+  isValidBackupRecord,
+  type StatusLineBackupPayload,
+  unwrapCommandScriptPath,
+} from '../../core/statusline-ownership.ts';
+import { PLUGIN_NAME } from './args.ts';
 import { makeRollbackError, runRollbackSteps, type RollbackStep } from './fs-ops.ts';
-
-export const NODE_RANGE_LABEL = '^22.20.0 || >=24.0.0';
-
-const NODE_LTS_MAJOR = 22;
-const NODE_LTS_MIN_MINOR = 20;
-const NODE_CURRENT_MIN_MAJOR = 24;
 
 export interface RestoreStatusLineResult {
   changed: boolean;
   skippedReason: 'missing-settings' | 'not-owned' | null;
+  removedBackupPath?: string | null;
 }
 
 export interface DisableStatusLineResult {
   changed: boolean;
-  skippedReason: 'not-owned' | null;
+  skippedReason: 'not-configured' | 'not-owned' | null;
 }
 
 export interface StatusLineInspection {
@@ -66,19 +70,14 @@ export interface WireStatusLineResult {
   writtenBackupContent: Buffer | null;
 }
 
-export function isSupportedNodeVersion(version: string): boolean {
-  const [rawMajor = 0, rawMinor = 0] = String(version)
-    .split('.')
-    .map((p) => Number.parseInt(p, 10));
-  const major = Number.isFinite(rawMajor) ? rawMajor : 0;
-  const minor = Number.isFinite(rawMinor) ? rawMinor : 0;
-  return (major === NODE_LTS_MAJOR && minor >= NODE_LTS_MIN_MINOR) || major >= NODE_CURRENT_MIN_MAJOR;
-}
-
 interface StatusLineRollbackSpec {
   receipt: SettingsRollbackReceipt;
   expectedHasStatusLine: boolean;
   expectedStatusLine: unknown;
+}
+
+function getCapturedFileMode(snap: EntrySnapshotSync): number | undefined {
+  return snap.kind === 'file' ? snap.mode : undefined;
 }
 
 function rollbackStatusLineField(spec: StatusLineRollbackSpec): void {
@@ -93,7 +92,7 @@ function rollbackStatusLineField(spec: StatusLineRollbackSpec): void {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(currentBytes.toString('utf8'));
+    parsed = JSON.parse(decodeStrictUtf8(currentBytes));
   } catch {
     return;
   }
@@ -105,16 +104,125 @@ function rollbackStatusLineField(spec: StatusLineRollbackSpec): void {
   } else {
     delete next.statusLine;
   }
-  writeJsonAtomicSync(settingsSnapshot.filePath, next);
+  writeJsonAtomicSync(
+    settingsSnapshot.filePath,
+    next,
+    process.platform === 'win32' ? undefined : cur.mode & POSIX_MODE_MASK,
+  );
 }
 
-export function readStatusLineBackupStrict(backupPath: string): Record<string, unknown> | null {
+function readStatusLineBackupStrict(backupPath: string): Record<string, unknown> | null {
   const parsed = readJsonObjectSync(backupPath, true);
   if (parsed === null) return null;
   if (!isValidBackupRecord(parsed)) {
     throw new Error(`Invalid statusLine backup format in ${backupPath}`);
   }
   return parsed;
+}
+
+function assertTrustedCacheDir(cliHome: string): string | null {
+  const rawCacheDir = path.join(cliHome, 'cache');
+  const cacheStat = lstatIfPresentSync(rawCacheDir);
+  if (cacheStat === null) return null;
+  const trusted = resolveTrustedCliDir(cliHome, 'cache');
+  if (trusted === null) {
+    throw new Error(
+      `Refusing to access statusLine backup inside untrusted or symlinked cache directory: ${rawCacheDir}`,
+    );
+  }
+  return trusted;
+}
+
+export function preflightStatusLineBackup(
+  cliHome: string,
+  targetDir: string,
+  mode: 'wire' | 'restore',
+  purge = false,
+): void {
+  const { settingsPath, backupPath } = getSettingsPaths(cliHome);
+  const hudCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'));
+  const existingSettings = readJsonObjectSync(settingsPath, true);
+  const curCmd = isPlainObject(existingSettings?.statusLine) ? existingSettings.statusLine.command : undefined;
+  const owned = isSameCommandPath(curCmd, hudCmd);
+  if (purge || (mode === 'wire' ? !owned : owned)) {
+    assertTrustedCacheDir(cliHome);
+    readStatusLineBackupStrict(backupPath);
+  }
+}
+
+export interface PurgeOrphanedBackupResult {
+  readonly removedPaths: readonly string[];
+  readonly skippedReason: 'missing' | 'owned-other-live' | null;
+}
+
+function isOtherLiveAgyHudCommand(curCmd: unknown, targetDir: string, platform: NodeJS.Platform): boolean {
+  if (typeof curCmd !== 'string' || curCmd.trim().length === 0) return false;
+  const ownCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), platform);
+  if (isSameCommandPath(curCmd, ownCmd, process.env, platform)) return false;
+  const candidateHud = unwrapCommandScriptPath(curCmd, process.env, platform);
+  if (candidateHud === null) return false;
+  const normalized = candidateHud.split(path.sep).join('/').toLowerCase();
+  if (!normalized.endsWith('/dist/hud.mjs')) return false;
+  const hudStat = statIfPresentSync(candidateHud);
+  if (hudStat === null || !hudStat.isFile()) return false;
+  const pluginDir = path.dirname(path.dirname(candidateHud));
+  const manifestPath = path.join(pluginDir, 'plugin.json');
+  try {
+    const manifest = readJsonObjectSync(manifestPath, true);
+    return manifest?.name === PLUGIN_NAME;
+  } catch {
+    // Fail closed: if another agy-hud candidate has a corrupt manifest, do not delete its backup.
+    return true;
+  }
+}
+
+export function purgeOrphanedStatusLineBackup(
+  cliHome: string,
+  targetDir: string,
+  platform: NodeJS.Platform = process.platform,
+): PurgeOrphanedBackupResult {
+  const { settingsPath } = getSettingsPaths(cliHome);
+  const trustedCacheDir = assertTrustedCacheDir(cliHome);
+  const existing = readJsonObjectSync(settingsPath, true);
+  if (trustedCacheDir === null) {
+    return { removedPaths: [], skippedReason: 'missing' };
+  }
+  const backupPath = path.join(trustedCacheDir, STATUSLINE_BACKUP_FILE);
+  const backup = readStatusLineBackupStrict(backupPath);
+  const curCmd = isPlainObject(existing?.statusLine) ? existing.statusLine.command : undefined;
+  const ownCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), platform);
+  const stillWiredToBackup =
+    backup !== null &&
+    typeof backup.wiredCommand === 'string' &&
+    isSameCommandPath(curCmd, backup.wiredCommand, process.env, platform);
+  if (
+    isSameCommandPath(curCmd, ownCmd, process.env, platform) ||
+    stillWiredToBackup ||
+    isOtherLiveAgyHudCommand(curCmd, targetDir, platform)
+  ) {
+    return { removedPaths: [], skippedReason: 'owned-other-live' };
+  }
+
+  const removedPaths: string[] = [];
+  const backupStat = lstatIfPresentSync(backupPath);
+  if (backupStat !== null && !backupStat.isSymbolicLink() && backupStat.isFile()) {
+    rmSync(backupPath, { force: true });
+    removedPaths.push(backupPath);
+  }
+  try {
+    for (const name of readdirSync(trustedCacheDir)) {
+      if (!BACKUP_TMP_RE.test(name)) continue;
+      const tmpPath = path.join(trustedCacheDir, name);
+      const st = lstatIfPresentSync(tmpPath);
+      if (st !== null && !st.isSymbolicLink() && st.isFile()) {
+        rmSync(tmpPath, { force: true });
+        removedPaths.push(tmpPath);
+      }
+    }
+  } catch {
+    // Ignore missing cache directory.
+  }
+  return { removedPaths, skippedReason: removedPaths.length === 0 ? 'missing' : null };
 }
 
 function writeBackupPayload(
@@ -129,7 +237,7 @@ function writeBackupPayload(
     savedAt: new Date().toISOString(),
   };
   const content = serializeJsonBuffer(backupPayload);
-  writeBufferAtomicSync(backupPath, content);
+  writeBufferAtomicSync(backupPath, content, PRIVATE_FILE_MODE);
   return content;
 }
 
@@ -186,13 +294,29 @@ function resolveInheritedPriorStatusLine(
   return isPlainObject(cur) ? cur : null;
 }
 
-export function wireCliStatusLine(cliHome: string, targetDir: string): WireStatusLineResult {
+function shouldUseNodePrefix(hudScriptPath: string, platform: NodeJS.Platform): boolean {
+  if (platform === 'win32') return true;
+  const st = statIfPresentSync(hudScriptPath);
+  return st !== null && st.isFile() && (st.mode & 0o111) === 0;
+}
+
+export function wireCliStatusLine(
+  cliHome: string,
+  targetDir: string,
+  platform: NodeJS.Platform = process.platform,
+): WireStatusLineResult {
   const { settingsPath, backupPath } = getSettingsPaths(cliHome);
   const existing = readJsonObjectSync(settingsPath, true) ?? {};
-  const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
+  const hudScriptPath = path.join(targetDir, 'dist', 'hud.mjs');
+  const hudCmd = formatStatusLineCommand(hudScriptPath, platform, {
+    useNode: shouldUseNodePrefix(hudScriptPath, platform),
+  });
   const cur = existing.statusLine;
   const curCmd = isPlainObject(cur) ? cur.command : undefined;
   const needsBackup = !isSameCommandPath(curCmd, hudCmd);
+  if (needsBackup) {
+    assertTrustedCacheDir(cliHome);
+  }
   const existingBackup = needsBackup ? readStatusLineBackupStrict(backupPath) : null;
 
   const nextStatusLine: WiredStatusLineConfig = {
@@ -229,7 +353,7 @@ export function wireCliStatusLine(cliHome: string, targetDir: string): WireStatu
       writtenBackupContent = writeBackupPayload(backupPath, hudCmd, previousToSave);
     }
     writtenSettingsContent = serializeJsonBuffer({ ...existing, statusLine: nextStatusLine });
-    writeBufferAtomicSync(settingsPath, writtenSettingsContent);
+    writeBufferAtomicSync(settingsPath, writtenSettingsContent, getCapturedFileMode(settingsSnap));
   } catch (err) {
     if (writtenBackupContent !== null) {
       rethrowWithRollback(err, 'restore backup', () => restoreOwnedEntrySnapshotSync(backupSnap, writtenBackupContent));
@@ -250,49 +374,50 @@ export function wireCliStatusLine(cliHome: string, targetDir: string): WireStatu
   };
 }
 
-export function disableCliStatusLine(cliHome: string, targetDir: string): DisableStatusLineResult {
-  const { settingsPath, backupPath } = getSettingsPaths(cliHome);
-  const existing = readJsonObjectSync(settingsPath, true) ?? {};
-  const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
-  const rawSl = existing.statusLine;
-  const hasConfiguredSl = rawSl !== undefined && rawSl !== null;
+export function disableCliStatusLine(
+  cliHome: string,
+  targetDir: string,
+  platform: NodeJS.Platform = process.platform,
+): DisableStatusLineResult {
+  const { settingsPath } = getSettingsPaths(cliHome);
+  const existing = readJsonObjectSync(settingsPath, true);
+  if (!existing || existing.statusLine === undefined || existing.statusLine === null) {
+    return { changed: false, skippedReason: 'not-configured' };
+  }
 
-  if (hasConfiguredSl && (!isPlainObject(rawSl) || !isSameCommandPath(rawSl.command, hudCmd))) {
+  const hudCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), platform);
+  const rawSl = existing.statusLine;
+  if (!isPlainObject(rawSl) || !isSameCommandPath(rawSl.command, hudCmd, process.env, platform)) {
     return { changed: false, skippedReason: 'not-owned' };
   }
 
-  const prevSl = isPlainObject(rawSl) ? rawSl : null;
-  if (prevSl === null) readStatusLineBackupStrict(backupPath);
-  const backupSnap = prevSl === null ? captureEntrySnapshotSync(backupPath) : null;
-  let writtenBackupContent: Buffer | null = null;
-  try {
-    if (prevSl === null) {
-      writtenBackupContent = writeBackupPayload(backupPath, hudCmd, null);
-    }
-    const nextSl = prevSl ?? { type: 'command', command: hudCmd, stack_with_default: false };
-    writeJsonAtomicSync(settingsPath, { ...existing, statusLine: { ...nextSl, enabled: false } });
-  } catch (err) {
-    if (writtenBackupContent !== null) {
-      rethrowWithRollback(err, 'restore backup', () => restoreOwnedEntrySnapshotSync(backupSnap, writtenBackupContent));
-    }
-    throw err;
-  }
+  const settingsSnap = captureEntrySnapshotSync(settingsPath);
+  writeJsonAtomicSync(
+    settingsPath,
+    { ...existing, statusLine: { ...rawSl, enabled: false } },
+    getCapturedFileMode(settingsSnap),
+  );
   return { changed: true, skippedReason: null };
 }
 
-export function restoreCliStatusLine(cliHome: string, targetDir: string): RestoreStatusLineResult {
+export function restoreCliStatusLine(
+  cliHome: string,
+  targetDir: string,
+  platform: NodeJS.Platform = process.platform,
+): RestoreStatusLineResult {
   const { settingsPath, backupPath } = getSettingsPaths(cliHome);
   const existing = readJsonObjectSync(settingsPath, true);
   if (!existing) return { changed: false, skippedReason: 'missing-settings' };
 
-  const hudCmd = path.join(targetDir, 'dist', 'hud.mjs');
+  const hudCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), platform);
   const curCmd = isPlainObject(existing.statusLine) ? existing.statusLine.command : undefined;
-  if (!isSameCommandPath(curCmd, hudCmd)) {
+  if (!isSameCommandPath(curCmd, hudCmd, process.env, platform)) {
     return { changed: false, skippedReason: 'not-owned' };
   }
 
+  assertTrustedCacheDir(cliHome);
   const backup = readStatusLineBackupStrict(backupPath);
-  const backupOwned = backup !== null && isSameCommandPath(backup.wiredCommand, hudCmd);
+  const backupOwned = backup !== null && isSameCommandPath(backup.wiredCommand, hudCmd, process.env, platform);
 
   const settingsSnap = captureEntrySnapshotSync(settingsPath);
   const hadPreviousStatusLine = Object.hasOwn(existing, 'statusLine');
@@ -306,11 +431,13 @@ export function restoreCliStatusLine(cliHome: string, targetDir: string): Restor
   }
 
   const writtenSettingsContent = serializeJsonBuffer(nextSettings);
-  writeBufferAtomicSync(settingsPath, writtenSettingsContent);
+  writeBufferAtomicSync(settingsPath, writtenSettingsContent, getCapturedFileMode(settingsSnap));
 
+  let removedBackupPath: string | null = null;
   if (backupOwned) {
     try {
       rmSync(backupPath, { force: true });
+      removedBackupPath = backupPath;
     } catch (err) {
       rethrowWithRollback(err, 'restore settings.json', () =>
         rollbackStatusLineField({
@@ -326,7 +453,7 @@ export function restoreCliStatusLine(cliHome: string, targetDir: string): Restor
       );
     }
   }
-  return { changed: true, skippedReason: null };
+  return { changed: true, skippedReason: null, removedBackupPath };
 }
 
 export function inspectStatusLineState(cliHome: string, targetDir: string): StatusLineInspection {
@@ -340,7 +467,13 @@ export function inspectStatusLineState(cliHome: string, targetDir: string): Stat
   const sl = settings?.statusLine;
   if (!isPlainObject(sl)) return { settingsPath, state: 'not configured', valid: true };
   const cmd = typeof sl.command === 'string' && sl.command.trim().length > 0 ? sl.command.trim() : undefined;
-  const isSelf = isSameCommandPath(cmd, path.join(targetDir, 'dist', 'hud.mjs'));
+  let expectedCmd: string;
+  try {
+    expectedCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'));
+  } catch {
+    expectedCmd = '';
+  }
+  const isSelf = expectedCmd.length > 0 && isSameCommandPath(cmd, expectedCmd);
   if (isSelf && sl.enabled === false) {
     return { settingsPath, state: 'disabled (wired to agy-hud, enabled=false)', valid: true };
   }

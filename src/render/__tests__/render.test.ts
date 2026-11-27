@@ -6,18 +6,16 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { buildPresetConfig, DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
 import { renderHudFromData } from '../../hud-entry.ts';
 import type { AgentsSummary, HudConfig, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
-import { DEFAULT_HUD_CONFIG } from '../../types.ts';
-import { buildPerfSegments, fitPerfCapsule, renderBar, visibleLen } from '../ansi.ts';
-import { buildLine2, buildModeLine, formatToolsLine, resolveEffectiveExceeds200k } from '../lines.ts';
+import { formatToolsLine } from '../activity-lines.ts';
+import { renderBar, stripAnsi, visibleLen } from '../ansi.ts';
+import { formatHudLines, resolveEffectiveExceeds200k } from '../format-hud.ts';
+import { buildModeLine, buildUsageLine } from '../modules.ts';
+import { buildPerfSegments, fitPerfCapsule } from '../telemetry-format.ts';
 
-const ESC_PATTERN = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
-
-function stripAnsi(text: string): string {
-  return text.replace(ESC_PATTERN, '');
-}
 
 void describe('render and hud-entry', () => {
   let tmpRoot = '';
@@ -51,23 +49,47 @@ void describe('render and hud-entry', () => {
     };
     const segs = buildPerfSegments(tel);
     assert.equal(segs.length, 3);
-    assert.ok(stripAnsi(segs.join(' ')).includes('92.4 t/s'));
+    assert.ok(stripAnsi(segs.join(' ')).includes('92.4 token/s'));
+    assert.ok(stripAnsi(segs.join(' ')).includes('TTFT 1.9s'));
+
+    const subSec = stripAnsi(buildPerfSegments({ ...tel, tps: 86.0, ttft: 0.42 }).join(' '));
+    assert.ok(subSec.includes('86 token/s'), subSec);
+    assert.ok(subSec.includes('TTFT 420ms'), subSec);
+
+    const sevenOne = stripAnsi(buildPerfSegments({ ...tel, tps: 86.4, ttft: 7.1 }).join(' '));
+    assert.ok(sevenOne.includes('86.4 token/s'), sevenOne);
+    assert.ok(sevenOne.includes('TTFT 7.1s'), sevenOne);
+    assert.equal(sevenOne.includes('7.10s'), false);
+
+    const exactMin = stripAnsi(buildPerfSegments({ ...tel, tps: 100, ttft: 60 }).join(' '));
+    assert.ok(exactMin.includes('TTFT 1m'), exactMin);
+    assert.equal(exactMin.includes('1m0s'), false);
 
     const base = ' [Carbon]';
     const full = fitPerfCapsule(base, tel, 120);
     assert.ok(stripAnsi(full).includes('Cache 91%'));
 
     const narrow = fitPerfCapsule(base, tel, 26);
-    assert.ok(stripAnsi(narrow).includes('92.4 t/s'));
+    assert.ok(stripAnsi(narrow).includes('92.4 token/s'));
     assert.equal(stripAnsi(narrow).includes('Cache'), false);
 
     const tiny = fitPerfCapsule(base, tel, 12);
     assert.equal(tiny, base);
+
+    // Non-anomalous Cache 0% renders in muted GRAY; active Cache Anomaly renders BRIGHT_RED with trailing !
+    const coldZero = buildPerfSegments({ ...tel, cachePct: 0, latestCacheAnomaly: null });
+    assert.ok(coldZero.some((s) => s.includes('\x1b[90m0%') && !s.includes('0%!')));
+    const anomalyZero = buildPerfSegments({
+      ...tel,
+      cachePct: 0,
+      latestCacheAnomaly: { kind: 'cleared', prevPct: 92, curPct: 0, gapSec: 42 },
+    });
+    assert.ok(anomalyZero.some((s) => s.includes('\x1b[91m0%!')));
   });
 
   void it('renders mode line without pictographic emojis and handles quota priorities', () => {
     const planLine = stripAnsi(
-      buildModeLine(cliHome, { cycle_mode: 'plan', vim: { mode: 'normal' } }, undefined, {
+      buildModeLine({ cycle_mode: 'plan', vim: { mode: 'normal' } }, undefined, {
         bypass: false,
         cliMode: '',
       }),
@@ -76,7 +98,7 @@ void describe('render and hud-entry', () => {
     assert.equal(EMOJI_PATTERN.test(planLine), false);
 
     const bypassLine = stripAnsi(
-      buildModeLine(cliHome, { dangerously_skip_permissions: true, cycle_mode: 'plan' }, undefined, {
+      buildModeLine({ dangerously_skip_permissions: true, cycle_mode: 'plan' }, undefined, {
         bypass: false,
         cliMode: '',
       }),
@@ -84,7 +106,7 @@ void describe('render and hud-entry', () => {
     assert.ok(bypassLine.includes('bypass permissions on [plan]'));
 
     const line2 = stripAnsi(
-      buildLine2(
+      buildUsageLine(
         {
           model: { id: 'claude-opus-4-1' },
           context_window: { used_percentage: 42, context_window_size: 1_000_000 },
@@ -99,11 +121,11 @@ void describe('render and hud-entry', () => {
       ),
     );
     assert.ok(line2.includes('Context ████░░░░░░ 42% (420k/1M)'));
-    assert.ok(line2.includes('3P 5h: 75.00% (1h 0m)'));
-    assert.ok(line2.includes('G 5h: 90.00% (30m)'));
+    assert.ok(line2.includes('Claude/GPT 5h: 75% left (1h)'));
+    assert.ok(line2.includes('Gemini 5h: 90% left (30m)'));
 
     const narrowLine2 = stripAnsi(
-      buildLine2(
+      buildUsageLine(
         {
           model: { id: 'claude-opus-4-1' },
           context_window: { used_percentage: 42, context_window_size: 1_000_000 },
@@ -117,7 +139,8 @@ void describe('render and hud-entry', () => {
         null,
       ),
     );
-    assert.equal(narrowLine2.includes('G 5h:'), false);
+    assert.ok(narrowLine2.includes('Claude/GPT 5h: 75% (1h)'));
+    assert.equal(narrowLine2.includes('Gemini 5h:'), false);
     assert.equal(narrowLine2.includes('(420k/1M)'), false);
 
     const staleCompactData: StatusLineData = {
@@ -134,12 +157,12 @@ void describe('render and hud-entry', () => {
       ctxMax: 512_000,
       compacted: true,
     };
-    const compactedLine2 = stripAnsi(buildLine2(staleCompactData, DEFAULT_HUD_CONFIG, compactedTel));
+    const compactedLine2 = stripAnsi(buildUsageLine(staleCompactData, DEFAULT_HUD_CONFIG, compactedTel));
     assert.ok(compactedLine2.includes('Context █░░░░░░░░░ 5% (~25k/512k)'));
     assert.equal(resolveEffectiveExceeds200k(staleCompactData, compactedTel), false);
 
     const normalTel: SessionTelemetry = { ...compactedTel, ctxUsed: 268_800, compacted: false };
-    const normalLine2 = stripAnsi(buildLine2(staleCompactData, DEFAULT_HUD_CONFIG, normalTel));
+    const normalLine2 = stripAnsi(buildUsageLine(staleCompactData, DEFAULT_HUD_CONFIG, normalTel));
     assert.ok(normalLine2.includes('Context █████░░░░░ 53% (269k/512k)'));
     assert.equal(resolveEffectiveExceeds200k(staleCompactData, normalTel), true);
   });
@@ -202,54 +225,63 @@ void describe('render and hud-entry', () => {
       cliMode: 'accept-edits',
     };
 
-    const fullOut = stripAnsi(renderHudFromData(baseData, opts));
+    const fullOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: buildPresetConfig('full') }));
     assert.equal(EMOJI_PATTERN.test(fullOut), false);
     assert.ok(fullOut.includes('accept edits on'));
-    assert.ok(fullOut.includes('[Orchestrator (Carbon) ◑ high]'));
+    assert.ok(fullOut.includes('[Orchestrator (Carbon) ● high]'));
     assert.ok(fullOut.includes('Cost $0.425'));
-    assert.ok(fullOut.includes('112 t/s'));
+    assert.ok(fullOut.includes('112 token/s'));
     assert.ok(fullOut.includes('Read ×5'));
     assert.ok(fullOut.includes('Skills (1): tdd'));
     assert.ok(fullOut.includes('MCPs (1): github'));
     assert.ok(fullOut.includes('Swarm (2/3):'));
-    assert.ok(fullOut.includes('Build tests (2/4) │ BG 2'));
-    // BG 2 is already shown on todos line, so Line 1 must not duplicate it.
+    assert.ok(fullOut.includes('Build tests (2/4) │ Bg Tasks 2'));
+    // Bg Tasks 2 is already shown on todos line, so Line 1 must not duplicate it.
     const fullLine1 = fullOut.split('\n')[1] ?? '';
-    assert.equal(fullLine1.includes('BG 2'), false);
+    assert.equal(fullLine1.includes('Bg Tasks 2'), false);
 
-    const compactOut = stripAnsi(
-      renderHudFromData(baseData, { ...opts, hudConfig: { preset: 'compact', maxAgentChips: 2 } }),
-    );
+    const compactOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: buildPresetConfig('compact') }));
     assert.ok(compactOut.includes('accept edits on'));
-    assert.ok(compactOut.includes('Swarm (2/3):'));
-    assert.ok(compactOut.includes('+1 more'));
-    assert.equal(compactOut.includes('Read ×5'), false);
+    assert.ok(compactOut.includes('Read ×5'));
+    assert.ok(compactOut.includes('Skills: tdd'));
+    assert.ok(compactOut.includes('MCPs: github'));
+    assert.ok(compactOut.includes('Swarm: ◐ hud-core'));
+    assert.equal(compactOut.includes('Tools 5'), false);
     assert.equal(compactOut.includes('Skills (1):'), false);
+    assert.equal(compactOut.includes('MCPs (1):'), false);
+    assert.equal(compactOut.includes('Swarm (2/3):'), false);
     assert.equal(compactOut.includes('Build tests'), false);
-    // Todos line is hidden in compact mode, so BG 2 returns on Line 1.
-    assert.ok(compactOut.includes('BG 2'));
+    // Todos line is hidden in compact mode, so Bg Tasks 2 returns on Line 1.
+    assert.ok(compactOut.includes('Bg Tasks 2'));
+
+    const swarmOut = stripAnsi(
+      renderHudFromData(baseData, { ...opts, hudConfig: { preset: 'swarm', maxAgentChips: 2 } }),
+    );
+    assert.ok(swarmOut.includes('Swarm (2/3):'));
+    assert.ok(swarmOut.includes('+1 more'));
+    assert.ok(swarmOut.includes('Build tests'));
 
     const minimalOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: { preset: 'minimal' } }));
     const minimalLines = minimalOut.split('\n');
     assert.equal(minimalLines.length, 2);
-    assert.ok(minimalLines[0]?.includes('[Orchestrator (Carbon) ◑ high]'));
+    assert.ok(minimalLines[0]?.includes('[Orchestrator (Carbon) ● high]'));
     assert.ok(minimalLines[1]?.includes('Context'));
     assert.equal(minimalOut.includes('accept edits on'), false);
     assert.equal(minimalOut.includes('Swarm (2/3):'), false);
 
     const customDisabled: Partial<HudConfig> = {
       preset: 'full',
-      showPerfCapsule: false,
-      showQuota: false,
-      showCost: false,
-      showSwarmChips: false,
-      showToolsLine: false,
-      showSkillsMcpLine: false,
-      showTodosLine: false,
+      lines: ['mode', 'identity', 'usage'],
+      segments: {
+        ...DEFAULT_HUD_CONFIG.segments,
+        perf: false,
+        quota: false,
+        cost: false,
+      },
     };
     const strippedOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: customDisabled }));
-    assert.equal(strippedOut.includes('112 t/s'), false);
-    assert.equal(strippedOut.includes('G 5h:'), false);
+    assert.equal(strippedOut.includes('112 token/s'), false);
+    assert.equal(strippedOut.includes('Gemini 5h:'), false);
     assert.equal(strippedOut.includes('Cost'), false);
     assert.equal(strippedOut.includes('Swarm (2/3):'), false);
     assert.equal(strippedOut.includes('Read ×5'), false);
@@ -293,7 +325,140 @@ void describe('render and hud-entry', () => {
     });
     assert.equal(validRes.status, 0);
     const clean = stripAnsi(validRes.stdout);
-    assert.ok(clean.includes('[Orchestrator (Carbon) ◑ high]'));
+    assert.ok(clean.includes('[Orchestrator (Carbon) ● high]'));
     assert.ok(clean.includes('Context ██░░░░░░░░ 20%'));
+  });
+
+  void it('honors explicit termWidth over data.terminal_width for identity line', () => {
+    const data: StatusLineData = {
+      model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
+      terminal_width: 160,
+    };
+    const telemetry: SessionTelemetry = {
+      genCount: 3,
+      tps: 92.4,
+      ttft: 1.85,
+      cachePct: 91.2,
+      ctxUsed: 420_000,
+      ctxMax: 1_000_000,
+    };
+    const lines = formatHudLines({
+      data,
+      config: buildPresetConfig('minimal'),
+      cliSettings: {},
+      telemetry,
+      activity: null,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 68,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+
+    assert.equal(lines[0]?.includes('Cache 91%'), false);
+  });
+
+  void it('honors explicit termWidth over data.terminal_width for usage line', () => {
+    const data: StatusLineData = {
+      model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
+      context_window: { used_percentage: 42, context_window_size: 1_000_000 },
+      quota: {
+        '3p-5h': { remaining_fraction: 0.75, reset_in_seconds: 3600 },
+        'gemini-5h': { remaining_fraction: 0.9, reset_in_seconds: 1800 },
+      },
+      terminal_width: 160,
+    };
+    const narrowLines = formatHudLines({
+      data,
+      config: buildPresetConfig('minimal'),
+      cliSettings: {},
+      telemetry: null,
+      activity: null,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 68,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+    assert.equal(narrowLines[1]?.includes('(420k/1M)'), false);
+    assert.equal(narrowLines[1]?.includes('Gem 5h:'), false);
+    assert.equal(narrowLines[1]?.includes('Gemini 5h:'), false);
+  });
+
+  void it('falls back to data.terminal_width when explicit termWidth is non-positive', () => {
+    const data: StatusLineData = {
+      model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
+      context_window: { used_percentage: 42, context_window_size: 1_000_000 },
+      quota: {
+        '3p-5h': { remaining_fraction: 0.75, reset_in_seconds: 3600 },
+        'gemini-5h': { remaining_fraction: 0.9, reset_in_seconds: 1800 },
+      },
+      terminal_width: 160,
+    };
+    const zeroWidthLines = formatHudLines({
+      data,
+      config: buildPresetConfig('minimal'),
+      cliSettings: {},
+      telemetry: null,
+      activity: null,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 0,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+    assert.ok(zeroWidthLines[1]?.includes('(420k/1M)'));
+  });
+
+  void it('falls back to data.terminal_width for Activity Summary when explicit termWidth is zero', () => {
+    const data: StatusLineData = {
+      model: { id: 'claude-opus-4-1', display_name: 'Claude Opus 4.1' },
+      terminal_width: 160,
+    };
+    const activity: TranscriptActivity = {
+      tools: [
+        { name: 'read_file', disp: 'read_file', target: 'a.ts', running: false, isSkillRead: false },
+        { name: 'edit_file', disp: 'edit_file', target: 'b.ts', running: false, isSkillRead: false },
+        { name: 'run_command', disp: 'run_command', target: 'pnpm verify', running: false, isSkillRead: false },
+      ],
+      skills: ['skill-alpha', 'skill-beta', 'skill-gamma', 'skill-delta', 'skill-epsilon'],
+      mcps: ['mcp-server-one', 'mcp-server-two', 'mcp-server-three'],
+      agents: [],
+    };
+    const cfg: HudConfig = {
+      ...buildPresetConfig('compact'),
+      lines: ['activity'],
+    };
+    const linesAtZero = formatHudLines({
+      data,
+      config: cfg,
+      cliSettings: {},
+      telemetry: null,
+      activity,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 0,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+    const linesAt160 = formatHudLines({
+      data,
+      config: cfg,
+      cliSettings: {},
+      telemetry: null,
+      activity,
+      agentsSummary: null,
+      todos: null,
+      termWidth: 160,
+      nowSec: 1000,
+      modeOptions: { bypass: false, cliMode: '' },
+      identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
+    }).map(stripAnsi);
+    assert.ok((linesAt160[0]?.length ?? 0) > 120, 'fixture must expand past default 120 cols at width 160');
+    assert.equal(linesAtZero[0], linesAt160[0]);
   });
 });

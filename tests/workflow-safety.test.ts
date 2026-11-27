@@ -1,115 +1,28 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import os from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const INSTALL_SCRIPT = path.join(REPO_ROOT, 'scripts', 'install.mjs');
+import {
+  createFakeAgyBin,
+  createTempDirTracker,
+  INSTALL_SCRIPT,
+  makeFastIsolatedEnv as makeIsolatedEnv,
+  readJson,
+  REPO_ROOT,
+  runNodeScript,
+  writeJson,
+} from './helpers.ts';
 
-const tempDirs: string[] = [];
-
-function makeTempDir(prefix: string): string {
-  const dir = mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
-function makeIsolatedEnv(root: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    HOME: root,
-    GEMINI_HOME: path.join(root, '.gemini'),
-    GEMINI_CLI_HOME: root,
-    ...extra,
-  };
-}
-
-function writeJson(filePath: string, data: unknown): void {
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-}
-
-function readJson(filePath: string): Record<string, unknown> {
-  return JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
-}
-
-function runNodeScript(
-  scriptPath: string,
-  args: readonly string[],
-  env: NodeJS.ProcessEnv,
-  stdinText = '',
-): { status: number | null; stdout: string; stderr: string } {
-  const res = spawnSync(process.execPath, [scriptPath, ...args], {
-    cwd: REPO_ROOT,
-    env,
-    input: stdinText,
-    encoding: 'utf8',
-    timeout: 15_000,
-    windowsHide: true,
-  });
-  return {
-    status: res.status,
-    stdout: res.stdout ?? '',
-    stderr: res.stderr ?? '',
-  };
-}
+const tracker = createTempDirTracker();
+const makeTempDir = (prefix: string): string => tracker.makeTempDir(prefix);
 
 function createFakeFailingAgyBin(root: string): string {
-  const binDir = path.join(root, 'fake-bin');
-  mkdirSync(binDir, { recursive: true });
-  const agyBin = path.join(binDir, 'agy');
-  writeFileSync(
-    agyBin,
-    `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo "agy 1.5.14"
-  exit 0
-fi
-if [ "$1" = "plugin" ] && [ "$2" = "validate" ]; then
-  echo "simulated strict validation failure" >&2
-  exit 1
-fi
-exit 0
-`,
-    'utf8',
-  );
-  chmodSync(agyBin, 0o755);
-  return binDir;
-}
-
-function restoreWritableDirs(dirPath: string): void {
-  try {
-    chmodSync(dirPath, 0o755);
-    for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
-      if (entry.isDirectory() && !entry.isSymbolicLink()) {
-        restoreWritableDirs(path.join(dirPath, entry.name));
-      }
-    }
-  } catch {
-    // Ignore missing or transient cleanup errors before rmSync.
-  }
+  return createFakeAgyBin(root, 'fail-strict', '  echo "simulated strict validation failure" >&2\n  exit 1');
 }
 
 afterEach(() => {
-  while (tempDirs.length > 0) {
-    const dir = tempDirs.pop();
-    if (dir) {
-      restoreWritableDirs(dir);
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
+  tracker.cleanup();
 });
 
 void describe('installer configuration safety and rollback', async () => {
@@ -204,6 +117,7 @@ void describe('installer configuration safety and rollback', async () => {
   });
 
   await it('rolls back prior installation and statusLine when post-install doctor fails during upgrade', () => {
+    if (process.platform === 'win32') return;
     const root = makeTempDir('agy-hud-rollback-');
     const targetDir = path.join(root, 'installed-plugin');
     const cliHome = path.join(root, '.gemini', 'antigravity-cli');

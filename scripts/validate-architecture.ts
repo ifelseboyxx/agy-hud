@@ -5,13 +5,36 @@ import { fileURLToPath } from 'node:url';
 import { parseSync, Visitor } from 'oxc-parser';
 import { ResolverFactory } from 'oxc-resolver';
 
-import { isMainEntry } from '../src/core/paths.ts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
+import { toPosixPath } from '../src/core/paths.ts';
+import {
+  classifySrcLayer,
+  findDependencyCycleErrors,
+  findLayerMatrixErrors,
+  findTransitivePurityErrors,
+  FORBIDDEN_PURE_RUNTIME_BUILTINS,
+  PURE_PREVIEW_MODULES,
+  type SrcModuleGraphNode,
+} from './lib/architecture-graph.ts';
+import { createStatusLineFenceTracker, STATUSLINE_SINGLE_WRITER } from './lib/statusline-writer-fence.ts';
+import { createUnusedExportsTracker, type UnusedExportsTracker } from './lib/unused-exports-fence.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
+const DEFAULT_ARCH_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_DESC_MIN = 24;
 const SKILL_DESC_MAX = 240;
-const IGNORED_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage']);
-const AST_EXTS = new Set(['.ts', '.mts', '.mjs']);
+const AST_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
+const FORBIDDEN_RENDER_CALLS = new Set([
+  'writeFileSync',
+  'mkdirSync',
+  'rmSync',
+  'unlinkSync',
+  'renameSync',
+  'copyFileSync',
+  'writeBufferAtomicSync',
+  'writeJsonAtomicSync',
+  'touchRegularFileTimesSync',
+]);
 
 // 跨模块重复顶层函数的棘轮基线：已清零，禁止新增跨模块重复定义。
 export const KNOWN_DUPLICATE_FUNCTIONS: ReadonlySet<string> = new Set();
@@ -32,13 +55,14 @@ const NETWORK_MODULES = new Set([
   'undici',
 ]);
 
-function toPosix(relPath: string): string {
-  return relPath.split(path.sep).join('/');
-}
-
 function isFenceTarget(relPosix: string): boolean {
   return (
-    relPosix.startsWith('src/collectors/') || relPosix.startsWith('src/render/') || relPosix === 'src/hud-entry.ts'
+    relPosix.startsWith('src/core/') ||
+    relPosix.startsWith('src/collectors/') ||
+    relPosix.startsWith('src/render/') ||
+    relPosix === 'src/hud-entry.ts' ||
+    relPosix === 'src/hud-runner.ts' ||
+    relPosix === 'src/hud-snapshot-publish.ts'
   );
 }
 
@@ -119,6 +143,15 @@ function collectTopLevelFunctionNames(program: ReturnType<typeof parseSync>['pro
     const decl = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
     if (decl?.type === 'FunctionDeclaration' && decl.id) {
       seen.add(normalizeFunctionKey(decl.id.name));
+    } else if (decl?.type === 'VariableDeclaration') {
+      for (const item of decl.declarations) {
+        if (
+          item.id.type === 'Identifier' &&
+          (item.init?.type === 'ArrowFunctionExpression' || item.init?.type === 'FunctionExpression')
+        ) {
+          seen.add(normalizeFunctionKey(item.id.name));
+        }
+      }
     }
   }
   return [...seen];
@@ -152,6 +185,8 @@ function inspectTypeScriptAst(
   resolver: ResolverFactory,
   errors: string[],
   functionDefs: Map<string, string[]>,
+  unusedExports: UnusedExportsTracker,
+  srcGraph: Map<string, SrcModuleGraphNode>,
 ): void {
   const parsed = parseSync(fullPath, content);
   if (parsed.errors.length > 0) {
@@ -169,25 +204,61 @@ function inspectTypeScriptAst(
   const checkConsoleLog = relPosix.startsWith('src/');
   const checkNetworkFence = isFenceTarget(relPosix);
   const checkRelativeImports = isResolverTarget(relPosix);
+  const checkStatusLineOwnership = isDuplicateScanTarget(relPosix) && relPosix !== STATUSLINE_SINGLE_WRITER;
   const specifiers = new Set<string>();
+  const runtimeSpecifiers = new Set<string>();
+  const dynamicRelativeSpecifiers = new Set<string>();
 
   for (const imp of parsed.module.staticImports) {
-    specifiers.add(imp.moduleRequest.value);
+    const req = imp.moduleRequest.value;
+    specifiers.add(req);
+    const isTypeOnly = imp.entries.length > 0 && imp.entries.every((entry) => entry.isType);
+    if (!isTypeOnly) {
+      runtimeSpecifiers.add(req);
+    }
   }
   for (const exp of parsed.module.staticExports) {
     for (const entry of exp.entries) {
-      if (entry.moduleRequest?.value) specifiers.add(entry.moduleRequest.value);
+      if (entry.moduleRequest?.value) {
+        specifiers.add(entry.moduleRequest.value);
+        if (!entry.isType) {
+          runtimeSpecifiers.add(entry.moduleRequest.value);
+        }
+      }
     }
   }
 
+  const isRenderModule =
+    (relPosix.startsWith('src/render/') && !relPosix.includes('/__tests__/')) || PURE_PREVIEW_MODULES.has(relPosix);
   let consoleLogCount = 0;
+  const forbiddenGlobalNetworks = new Set<string>();
+  const forbiddenRenderCalls = new Set<string>();
+  const statusLineFence = createStatusLineFenceTracker(checkStatusLineOwnership);
+
   const visitor = new Visitor({
+    ...statusLineFence.handlers,
     ImportExpression(node): void {
       if (node.source.type === 'Literal' && typeof node.source.value === 'string') {
         specifiers.add(node.source.value);
+        runtimeSpecifiers.add(node.source.value);
+        if (node.source.value.startsWith('./') || node.source.value.startsWith('../')) {
+          dynamicRelativeSpecifiers.add(node.source.value);
+        }
+      }
+    },
+    NewExpression(node): void {
+      if (checkNetworkFence && node.callee.type === 'Identifier' && node.callee.name === 'WebSocket') {
+        forbiddenGlobalNetworks.add('WebSocket');
       }
     },
     CallExpression(node): void {
+      if (checkNetworkFence && node.callee.type === 'Identifier' && node.callee.name === 'fetch') {
+        forbiddenGlobalNetworks.add('fetch');
+      }
+      if (isRenderModule && node.callee.type === 'Identifier' && FORBIDDEN_RENDER_CALLS.has(node.callee.name)) {
+        forbiddenRenderCalls.add(node.callee.name);
+      }
+      statusLineFence.onCallExpression(node);
       if (
         node.callee.type === 'Identifier' &&
         node.callee.name === 'require' &&
@@ -196,6 +267,7 @@ function inspectTypeScriptAst(
         typeof node.arguments[0].value === 'string'
       ) {
         specifiers.add(node.arguments[0].value);
+        runtimeSpecifiers.add(node.arguments[0].value);
       }
       if (!checkConsoleLog || node.callee.type !== 'MemberExpression') return;
       if (node.callee.object.type !== 'Identifier' || node.callee.object.name !== 'console') return;
@@ -207,50 +279,95 @@ function inspectTypeScriptAst(
     },
   });
   visitor.visit(parsed.program);
+  unusedExports.recordFile(rootDir, fullPath, relPosix, parsed, dynamicRelativeSpecifiers, resolver);
 
   if (consoleLogCount > 0) errors.push(`${relPosix}: console.log call found in src/ (${consoleLogCount})`);
+  for (const api of forbiddenGlobalNetworks) {
+    errors.push(`${relPosix}: global network API '${api}' is forbidden by AST fence`);
+  }
+  for (const fnName of forbiddenRenderCalls) {
+    errors.push(`${relPosix}: pure src/render/ module may not call filesystem mutator '${fnName}'`);
+  }
+  errors.push(...statusLineFence.collectErrors(relPosix));
+
+  const isTrackedSrc = classifySrcLayer(relPosix) !== null;
+  const graphNode: SrcModuleGraphNode | null = isTrackedSrc
+    ? { allDeps: new Set<string>(), runtimeDeps: new Set<string>(), runtimeBuiltins: new Set<string>() }
+    : null;
+  if (graphNode !== null) {
+    srcGraph.set(relPosix, graphNode);
+  }
 
   for (const spec of specifiers) {
     if (checkNetworkFence && NETWORK_MODULES.has(spec)) {
       errors.push(`${relPosix}: network import '${spec}' is forbidden by AST import fence`);
     }
-    if (checkRelativeImports && (spec.startsWith('./') || spec.startsWith('../'))) {
+    if (isRenderModule && FORBIDDEN_PURE_RUNTIME_BUILTINS.has(spec) && runtimeSpecifiers.has(spec)) {
+      errors.push(`${relPosix}: pure src/render/ module may not import '${spec}'`);
+    }
+    const isRelative = spec.startsWith('./') || spec.startsWith('../');
+    if (!isRelative) {
+      if (graphNode !== null && runtimeSpecifiers.has(spec)) {
+        graphNode.runtimeBuiltins.add(spec);
+      }
+      continue;
+    }
+    if (checkRelativeImports) {
       const resolved = resolver.resolveFileSync(fullPath, spec);
       if (resolved.error || !resolved.path || !resolved.path.startsWith(rootDir)) {
         errors.push(`${relPosix}: unresolved relative import '${spec}' (${resolved.error ?? 'missing target'})`);
+      } else if (graphNode !== null) {
+        const targetRel = toPosixPath(path.relative(rootDir, resolved.path));
+        graphNode.allDeps.add(targetRel);
+        if (runtimeSpecifiers.has(spec)) {
+          graphNode.runtimeDeps.add(targetRel);
+        }
       }
     }
   }
 }
 
-export function runValidation(
-  rootDir: string = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
-): number {
+export function collectArchitectureErrors(
+  rootDir: string = DEFAULT_ARCH_ROOT,
+  options: { checkSkills?: boolean; checkUnusedExports?: boolean } = {},
+): { errors: string[]; fileCount: number; skillCount: number } {
   const errors: string[] = [];
   const files = walkFiles(rootDir, rootDir, {
-    skipDirs: IGNORED_DIRS,
     includeFile: (relPosix, name) => AST_EXTS.has(path.extname(name)) && isResolverTarget(relPosix),
   }).sort();
   const resolver = new ResolverFactory({
-    extensions: ['.ts', '.mts', '.js', '.mjs', '.json'],
+    extensions: ['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs', '.json'],
     conditionNames: ['node', 'import', 'default'],
   });
 
   const functionDefs = new Map<string, string[]>();
+  const unusedExports = createUnusedExportsTracker();
+  const srcGraph = new Map<string, SrcModuleGraphNode>();
   for (const fullPath of files) {
-    const relPosix = toPosix(path.relative(rootDir, fullPath));
+    const relPosix = toPosixPath(path.relative(rootDir, fullPath));
     const content = readFileSync(fullPath, 'utf8');
-    inspectTypeScriptAst(rootDir, fullPath, relPosix, content, resolver, errors, functionDefs);
+    inspectTypeScriptAst(rootDir, fullPath, relPosix, content, resolver, errors, functionDefs, unusedExports, srcGraph);
   }
+  errors.push(...findLayerMatrixErrors(srcGraph));
+  errors.push(...findTransitivePurityErrors(srcGraph));
+  errors.push(...findDependencyCycleErrors(srcGraph));
   errors.push(...findDuplicateFunctionErrors(functionDefs));
+  if (options.checkUnusedExports !== false) {
+    errors.push(...unusedExports.collectErrors());
+  }
 
-  const skillCount = validateSkills(rootDir, errors);
+  const skillCount = options.checkSkills === false ? 0 : validateSkills(rootDir, errors);
+  return { errors, fileCount: files.length, skillCount };
+}
+
+export function runValidation(rootDir: string = DEFAULT_ARCH_ROOT): number {
+  const { errors, fileCount, skillCount } = collectArchitectureErrors(rootDir);
   if (errors.length > 0) {
     console.error(`Architecture validation failed (${errors.length} issue(s)):`);
     for (const err of errors) console.error(`  - ${err}`);
     return 1;
   }
-  console.log(`Architecture validation passed: ${files.length} TS AST checks, ${skillCount} skills.`);
+  console.log(`Architecture validation passed: ${fileCount} TS AST checks, ${skillCount} skills.`);
   return 0;
 }
 

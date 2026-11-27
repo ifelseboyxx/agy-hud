@@ -5,26 +5,22 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
+import { cleanAgentLabel } from '../../core/activity-aggregate.ts';
+import { DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
+import { parseModelAndEffort, resolveOrchestratorDisplay } from '../../core/model-names.ts';
+import { resolveCliHome } from '../../core/paths.ts';
+import { resolveQuotaReset } from '../../core/quota-pace.ts';
+import { formatAgentsBadge, formatRuntimeBadges } from '../../render/agents-render.ts';
+import { stripAnsi } from '../../render/ansi.ts';
+import { formatContextCapacity } from '../../render/telemetry-format.ts';
 import type { StatusLineData } from '../../types.ts';
-import { DEFAULT_HUD_CONFIG } from '../../types.ts';
-import { BUILTIN_SLASH_CMDS, loadTodos, loadTranscriptActivity } from '../activity.ts';
-import {
-  cleanAgentLabel,
-  collectAgentsSummary,
-  formatAgentsBadge,
-  formatRuntimeBadges,
-  syncSwarmFromStdin,
-  transcriptTurnEnded,
-} from '../agents.ts';
-import { cliHomeDir, detectGitBranch, getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../settings.ts';
-import {
-  formatContextCapacity,
-  loadSessionTelemetry,
-  parseGenMetadataBlob,
-  parseModelAndEffort,
-  resolveOrchestratorDisplay,
-  resolveQuotaReset,
-} from '../telemetry.ts';
+import { BUILTIN_SLASH_CMDS } from '../activity-parse.ts';
+import { loadTodos, loadTranscriptActivity } from '../activity.ts';
+import { collectAgentsSummary, syncSwarmFromStdin, transcriptTurnEnded } from '../agents.ts';
+import { detectGitStatus, readGitRepoHeadBranch } from '../git.ts';
+import { parseGenMetadataBlob } from '../proto.ts';
+import { getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../settings.ts';
+import { loadSessionTelemetry } from '../telemetry.ts';
 
 function encodeVarint(value: number): number[] {
   const bytes: number[] = [];
@@ -92,16 +88,18 @@ void describe('collectors', () => {
     }
   });
 
-  void it('resolves cliHomeDir, settings, hud-config defaults, git branch, and elapsed seconds', () => {
+  void it('resolves cliHome from GEMINI_CLI_HOME with HOME fallback', () => {
     assert.equal(
-      cliHomeDir({ GEMINI_CLI_HOME: tmpRoot } as NodeJS.ProcessEnv),
+      resolveCliHome(undefined, { GEMINI_CLI_HOME: tmpRoot } as NodeJS.ProcessEnv),
       path.join(tmpRoot, '.gemini', 'antigravity-cli'),
     );
     assert.equal(
-      cliHomeDir({ GEMINI_CLI_HOME: '   ', HOME: tmpRoot } as NodeJS.ProcessEnv),
+      resolveCliHome(undefined, { GEMINI_CLI_HOME: '   ', HOME: tmpRoot } as NodeJS.ProcessEnv),
       path.join(tmpRoot, '.gemini', 'antigravity-cli'),
     );
+  });
 
+  void it('reads CLI settings from settings.json', () => {
     writeFileSync(
       path.join(cliHome, 'settings.json'),
       JSON.stringify({ agentMode: 'accept-edits', orchestrator: { planner: 'Gemini 4 Carbon (High)' } }),
@@ -109,30 +107,48 @@ void describe('collectors', () => {
     );
     const settings = readCliSettings(cliHome);
     assert.equal(settings.agentMode, 'accept-edits');
+  });
 
+  void it('returns DEFAULT_HUD_CONFIG when hud-config.json is missing', () => {
+    assert.deepEqual(readHudConfig(cliHome), DEFAULT_HUD_CONFIG);
+  });
+
+  void it('merges partial hud-config.json over defaults', () => {
     writeFileSync(
       path.join(cliHome, 'hud-config.json'),
-      JSON.stringify({ preset: 'compact', showCost: false, maxAgentChips: 2, showTodosLine: 'invalid' }),
+      JSON.stringify({ preset: 'compact', maxAgentChips: 2, segments: { cost: false, perf: 'invalid' } }),
       'utf8',
     );
     const hudCfg = readHudConfig(cliHome);
     assert.equal(hudCfg.preset, 'compact');
-    assert.equal(hudCfg.showCost, false);
+    assert.equal(hudCfg.segments.cost, false);
     assert.equal(hudCfg.maxAgentChips, 2);
-    assert.equal(hudCfg.showTodosLine, DEFAULT_HUD_CONFIG.showTodosLine);
+    assert.deepEqual(hudCfg.lines, ['mode', 'identity', 'usage', 'activity']);
+  });
 
+  void it('detects git branch from nested repository directory', () => {
     const repoDir = path.join(tmpRoot, 'repo');
     const nestedDir = path.join(repoDir, 'src', 'nested');
     mkdirSync(path.join(repoDir, '.git'), { recursive: true });
     mkdirSync(nestedDir, { recursive: true });
     writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/feat/agy-hud\n', 'utf8');
-    assert.deepEqual(detectGitBranch(nestedDir), { branch: 'feat/agy-hud', dirty: false });
-    assert.deepEqual(detectGitBranch(nestedDir, { branch: 'main', dirty: true }), {
-      branch: 'main',
-      dirty: true,
-    });
+    assert.equal(readGitRepoHeadBranch(nestedDir), 'feat/agy-hud');
+  });
 
+  void it('prefers stdin vcs metadata over git directory lookup', () => {
+    const repoDir = path.join(tmpRoot, 'repo-vcs');
+    mkdirSync(path.join(repoDir, '.git'), { recursive: true });
+    writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/feat/agy-hud\n', 'utf8');
+    const status = detectGitStatus(cliHome, repoDir, { branch: 'main', dirty: true });
+    assert.equal(status.branch, 'main');
+    assert.equal(status.dirty, true);
+  });
+
+  void it('returns zero elapsed seconds when duration_ms is zero', () => {
     assert.equal(getSessionElapsedSeconds(cliHome, 'conv-0', { duration_ms: 0 }), 0);
+  });
+
+  void it('persists elapsed seconds cache per session', () => {
     const cachedElapsed = getSessionElapsedSeconds(cliHome, 'conv-persisted');
     assert.ok(cachedElapsed !== null && cachedElapsed >= 0);
     assert.ok(readFileSync(path.join(cliHome, 'cache', 'agy_hud_sessions.json'), 'utf8').includes('conv-persisted'));
@@ -142,7 +158,7 @@ void describe('collectors', () => {
     const single = resolveOrchestratorDisplay('Orchestrator (Neon)', '', {
       orchestrator: { planner: 'Gemini 4 Carbon (High)' },
     });
-    assert.deepEqual(single, { name: 'Orchestrator (Carbon)', effort: 'high' });
+    assert.deepEqual(single, { name: 'Orchestrator (Carbon)', effort: 'high', peakFlags: [true] });
 
     const dual = resolveOrchestratorDisplay('Orchestrator (Neon)', '', {
       orchestrator: {
@@ -150,13 +166,13 @@ void describe('collectors', () => {
         executor: 'Gemini 4 Hydrogen (XHigh)',
       },
     });
-    assert.deepEqual(dual, { name: 'Orchestrator (Carbon/Hydrogen)', effort: 'high/xhigh' });
+    assert.deepEqual(dual, { name: 'Orchestrator (Carbon/Hydrogen)', effort: 'high/xhigh', peakFlags: [true, true] });
 
     const parsed = parseModelAndEffort(
       { model: { display_name: 'Claude Opus 4.1 (Max)' } },
       { orchestrator: { planner: 'Gemini 4 Carbon (High)' } },
     );
-    assert.deepEqual(parsed, { name: 'Opus 4.1', effort: 'max' });
+    assert.deepEqual(parsed, { name: 'Opus 4.1', effort: 'max', peakFlags: [true] });
   });
 
   void it('decodes protobuf generator_metadata_blob and reads SQLite incrementally with cache', () => {
@@ -208,7 +224,7 @@ void describe('collectors', () => {
     assert.equal(tel1.ttft, 2.5);
     assert.equal(tel1.cachePct, 80);
     assert.equal(tel1.ctxMax, 1_048_576);
-    assert.ok(formatContextCapacity(data.context_window, tel1).includes('262k/1M'));
+    assert.ok(formatContextCapacity(data.context_window, tel1).includes('32k/1M'));
 
     const cacheFile = path.join(cliHome, 'cache', `agy_hud_telemetry_${convId}.json`);
     assert.equal(JSON.parse(readFileSync(cacheFile, 'utf8')).rows['0'].out, 300);
@@ -320,6 +336,7 @@ void describe('collectors', () => {
       false,
     );
     assert.equal(summary.entries.find((e) => e.name === 'hud-core')?.model, 'gemini-4-hydrogen');
+    assert.equal(summary.entries.find((e) => e.name === 'old-worker')?.state, 'done');
 
     assert.equal(cleanAgentLabel('  `worker-alpha`\nignored line ', ''), 'worker-alpha');
     assert.equal(cleanAgentLabel('a'.repeat(40), '').length, 28);
@@ -334,20 +351,18 @@ void describe('collectors', () => {
     const badge = formatAgentsBadge(summary);
     assert.ok(badge.includes('Swarm') && badge.includes('3') && badge.includes('5'));
 
-    const escRe = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
-    const strip = (s: string): string => s.replace(escRe, '');
-    const badgesWithTodos = formatRuntimeBadges(data, { hasTodosLine: true }).map(strip);
+    const badgesWithTodos = formatRuntimeBadges(data, { hasTodosLine: true }).map(stripAnsi);
     assert.equal(
-      badgesWithTodos.some((b) => b.includes('BG 2')),
+      badgesWithTodos.some((b) => b.includes('Bg Tasks 2')),
       false,
     );
     assert.ok(badgesWithTodos.some((b) => b.includes('@hud-core')));
     assert.ok(badgesWithTodos.some((b) => b.includes('Battle left')));
     assert.ok(badgesWithTodos.some((b) => b.includes('! Approval')));
-    assert.ok(badgesWithTodos.some((b) => b.includes('Q:4')));
+    assert.ok(badgesWithTodos.some((b) => b.includes('Queued 4')));
 
-    const badgesNoTodos = formatRuntimeBadges(data, { hasTodosLine: false }).map(strip);
-    assert.ok(badgesNoTodos.some((b) => b.includes('BG 2')));
+    const badgesNoTodos = formatRuntimeBadges(data, { hasTodosLine: false }).map(stripAnsi);
+    assert.ok(badgesNoTodos.some((b) => b.includes('Bg Tasks 2')));
   });
 
   void it('scans transcript.jsonl incrementally for tools, non-builtin skills, MCPs, and task.md todos', () => {
@@ -474,11 +489,8 @@ void describe('collectors', () => {
     assert.ok(actFirst !== null && actFirst.tools.length === 1);
     const actCachePath = path.join(cacheDir, `agy_hud_activity_${convId}.json`);
     const savedActCache = JSON.parse(readFileSync(actCachePath, 'utf8')) as Record<string, unknown>;
-    writeFileSync(
-      actCachePath,
-      JSON.stringify({ ...savedActCache, data: { tools: [null], skills: 'not-array', mcps: [], agents: [] } }),
-      'utf8',
-    );
+    const badAct = JSON.stringify({ ...savedActCache, data: { tools: [null], skills: 'bad', mcps: [], agents: [] } });
+    writeFileSync(actCachePath, badAct, 'utf8');
     const actRecovered = loadTranscriptActivity(cliHome, { conversation_id: convId });
     assert.ok(actRecovered !== null && actRecovered.tools.length === 1);
   });

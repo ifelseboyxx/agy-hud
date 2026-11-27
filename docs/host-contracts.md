@@ -1,0 +1,57 @@
+# Antigravity Host Contracts
+
+This document records the reverse-engineered and protocol-level host contracts that `agy-hud` depends on. When host formats evolve, update the corresponding module and tests alongside this file.
+
+## 1. Protobuf `gen_metadata` and `steps` Telemetry Schema (`src/collectors/proto.ts`, `proto-steps.ts`, `proto-wire.ts`)
+
+Per-conversation SQLite databases store serialized protobuf blobs in `gen_metadata.data` and `steps.{metadata,step_payload}` (enforcing a `16 MiB` `MAX_PROTO_BLOB_BYTES` wire guard before decoding). `parseGenMetadataBlob` skips heavy prompt/transcript sub-messages (`1.1`, `1.2`, `1.8`, `1.10`, `1.16`) at the wire level and decodes:
+
+- Outer message:
+  - Field `1` (length-delimited) -> `ChatModel`:
+    - Field `4` (length-delimited) -> `Usage`: `2` input (`in`), `3` output (`out`), `4` cache write (`cw`), `5` cache read (`cr`), `9` thinking tokens (`think`), `10` response tokens (`resp`).
+    - Field `9` (length-delimited) -> `ChatStart`:
+      - Field `10` (length-delimited) -> `CtxWindow`: `1` used (`ctxUsed`), `2` `truncation_reason`, `3` `TokenBreakdown` (repeated field `1` named token groups: `System Prompt`, `Rules`, `Skills`, `Tools`, `Mcp Tools`, `Chat Messages`), `4` effective Context Budget (`ctxMax`). (`providerInputTokens` in telemetry is derived from `Usage` `in + cw + cr`.)
+    - Field `11` / `12` (`Duration` `1=seconds`, `2=nanos`): `ttft` and `stream` duration.
+    - Field `14` (varint): retry count; `17` (repeated `RetryInfo`: `2` Usage, `3` error string, `7` wait `Duration`).
+    - Field `18` (varint / packed repeated): `step_indices` mapping generations to `steps.idx`; `19` response model name.
+    - Field `20` (repeated `KeyValue` `1=key`, `2=value`): `last_step_index` -> `stepIdx`, `model_enum` -> enum string.
+    - Field `21` (string): raw model display / enum name (resolved without inventing unknown `MODEL_PLACEHOLDER_M*` labels via `src/core/model-names.ts`).
+  - Field `3` (length-delimited) -> `ModelMeta`: `3.1` model name, `3.60.1` Orchestrator role (`planner` / `executor`).
+  - Field `5` (length-delimited / string) -> outer generation error message (classified by `src/core/telemetry-error.ts`, excluding user cancellations).
+- `steps.metadata`: `1` (`created_at`), `6` (`viewable_at`), `7` (`finished_at`), `8` (`completed_at`), `32` (`started_at`) used by `src/collectors/step-timing.ts` to merge contiguous terminal `Model Time` / `Tool Time` intervals and read in-flight `tailStepPhase`.
+- `steps.step_payload` (`step_type = 23` `CortexStepCheckpoint`): `30.5` summary text, `30.30.1` pre-compaction context used, `30.31.1` post-compaction estimated tokens (with CJK-aware fallback `src/collectors/compaction.ts`).
+
+## 2. SQLite Read-Only WAL and Compaction Contract
+
+### Zero-Mutation Read Policy (`src/collectors/sqlite-readonly.ts`)
+
+Opening a WAL-mode SQLite file with `?mode=ro` in Node can still create or mutate `-wal` and `-shm` sidecar files in the host directory. To uphold strictly read-only access to Antigravity CLI database directories (`<cliHome>/conversations/` and `<cliHome>/conversation_summaries.db`):
+
+1. `node:sqlite` is lazy-loaded via `createRequire` only on first DB read (preventing `ExperimentalWarning: SQLite` when DB telemetry is skipped).
+2. When no non-empty `-wal` sidecar exists, `withReadonlyDb` opens the DB with `file:<path>?immutable=1` (`readOnly: true`).
+3. When a non-empty `-wal` sidecar exists (active writer), `withReadonlyDb` captures pre-copy and post-copy version signatures (stat + SQLite header / WAL header and tail bytes) across `<db>` and `<db>-wal`, copies both into an isolated `mkdtempSync` directory under `os.tmpdir()` (POSIX `0700`) with copied `<db>` / `<db>-wal` files normalized to `0o600`, retries if a checkpoint or WAL rotation occurred mid-copy, reads the consistent snapshot, and removes the temp directory in `finally`.
+
+### Compaction Checkpoints (`src/collectors/compaction.ts`)
+
+- Table `steps`: columns `idx`, `step_type`, `status`, `step_payload`.
+- Constants: `STEP_TYPE_CHECKPOINT = 23`, `STEP_TYPE_PLANNER = 15`, `STEP_STATUS_DONE = 3`.
+- Compaction is considered active when the latest completed checkpoint `idx` exceeds the last `gen_metadata` row's `stepIdx` (or, when `stepIdx < 0`, no completed planner step follows the checkpoint).
+
+### Conversation Summaries, Subagent Rollups, and Storage Checks (`src/collectors/session-discovery.ts`, `session-summary-db.ts`, `subagent-rollup.ts`, `src/cli/installer/storage-check.ts`)
+
+- Database: `<cliHome>/conversation_summaries.db`, table `conversation_summaries` (optional; silently skipped when absent).
+- Columns read: `conversation_id`, `title`, `last_modified_time`, `workspace_uris`, `not_fully_idle`, `status`, `nesting_depth`, `killed`, plus `parent_conversation_id` / `agent_name` for depth-capped (`<= 4`, cycle-guarded) subagent telemetry rollups.
+- Subagents (`nesting_depth > 0`) and killed rows (`killed != 0`) are excluded from top-level session lists. Exited CLI sessions whose recorded `agyPid` is dead are marked non-running and `turnPhase: 'idle'` even if `status = 'CASCADE_RUN_STATUS_RUNNING'` remains stale in the DB. Parsed summary rows are cached in memory per `(dbPath, readSqliteVersionTag)` to avoid redundant `/tmp` WAL snapshot copies.
+- Subagent rollups (`src/collectors/subagent-rollup.ts`) cap cold child SQLite DB opens at `8` per snapshot (prioritizing `working` -> `waiting` -> newest `done`) and bound summary-DB tree traversal at `128` nodes, cache summary-DB parent/child links in `agy_hud_subagents_<id>.json`, short-circuit settled terminal children via `TELEMETRY_CACHE_VERSION = 3` JSON caches, and run strictly `cacheOnly` (`maxColdDbReads: 0`, zero child DB/WAL stat or open) on the `statusLine` hot path.
+- `doctor` CLI storage inspection (`src/cli/installer/storage-check.ts`) uses `lstat` only (skipping symlinks, bounded to `5,000` entries/dir and `250 ms` wall budget), never opens `conversations/*.db`, and surfaces advisory-only notes without failing health checks.
+
+## 3. Transcript JSONL In-Place Rewrite Invariant (`src/collectors/transcript-scanner.ts`)
+
+The host may append lines to a transcript JSONL file or rewrite it in place (including same-inode, same-byte-length rewrites or combined out-of-window rewrites plus appends). Incremental caches store `{ ino, size, mtimeNs, ctimeNs, contentHash, stableOffset, stablePrefixHash, stableToolsCount, stableSkillsCount, stableMcpsCount, stableAgentsCount, stableLastModel }`. `contentHash` uses full streaming SHA-256 up to `512 KiB` and a 24 KiB head/mid/tail sampled SHA-256 above `512 KiB` so hot cache hits stay sub-frame (`< 15 ms` median on 64 MiB synthetic logs in `activity-cache.test.ts`), while incremental prefix reuse always verifies `stablePrefixHash` with full streaming SHA-256 so modified prefixes are never persisted across appends. Post-parse hashes are computed directly from the verified prefix and parsed buffer bytes (never re-reading parsed regions from disk), cache persistence is skipped if `fstat` metadata changes mid-scan or if compact serialized JSON exceeds the `16 MiB` cache budget.
+
+## 4. OSC 8 Hyperlinks, `statusLine` Execution, and Terminal Shortcuts (`src/render/osc8.ts`, `src/hud-snapshot-publish.ts`, `src/core/statusline-ownership.ts`, `src/cli/keybindings.ts`)
+
+- Materialized per-session Markdown snapshots (`agy_hud_snapshot_<id>.md`), `v: 2` session envelopes (`agy_hud_snapshot_<id>.json`, <= 512 KiB, including `agentState`, `toolConfirmationPending`, `modelDisplayName`, `nominalContextWindowSize`, `stdinContextUsedPct`, `cost`, and `quota`), active PID markers (`agy_hud_pid_<pid>.json`), `statusLine` backups (`agy-hud-statusline-backup.json`), cached non-locking Git snapshots (`agy_hud_git_<hash>.json`, 2 s TTL + `HEAD`/`index` stat validation), and sibling JSON caches (`agy_hud_activity_<id>.json` unified `v: 6` transcript cache shared by HUD and snapshot, `agy_hud_{telemetry,subagents}_<id>.json` with `TELEMETRY_CACHE_VERSION = 3`, `agy_hud_proc.json`, `agy_hud_sessions.json`; all registered in `src/core/cache-registry.ts`, which also reclaims legacy `agy_hud_activity_snapshot_*.json` files) live under `<cliHome>/cache/` with POSIX mode `0o600`; crashed `.tmp.<pid>.<ts>.<16hex>` cache orphans older than 1 hour are swept alongside 7-day expired caches; Markdown files and workspace file targets are linked via pure hardened `file:///` URI builders (`src/render/file-link.ts`: checks literal POSIX files before `:line[:col]`, percent-encodes `#`/`?`/`&`/POSIX `:`, rejects UNC paths, missing workspaces, control bytes, and symlink escapes verified at the publish layer via `createWorkspaceRegularFileChecker`).
+- Markdown regeneration is gated on a digest covering model, title, workspace, phase, telemetry, diagnostics, output, context breakdown, formatted cost, quota pace, cached subagent rollup, and activity so metadata-only or currency changes invalidate stale files.
+- Host `statusLine.command` contract: Antigravity CLI executes `settings.json`'s `statusLine.command` via the platform shell (`sh -c` on POSIX, `cmd` on Windows), so `formatStatusLineCommand` keeps safe paths unquoted and quotes special-character paths using POSIX single-quoting (`'\''`) or Windows double-quoting (rejecting control characters, plus `"`, `%`, and `!` on Windows), prefixing `node ` on Windows or when `dist/hud.mjs` lacks execute bits (Marketplace bundles) while `isSameCommandPath` normalizes `node ` and `~/` symmetrically.
+- Terminal keybinding templates for Ghostty use `text:!agy-hud\n`, which types into the focused pane; users should only invoke it at the Antigravity CLI prompt (or prefer OSC 8 `Cmd+Click` / `tmux` popup).

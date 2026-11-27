@@ -49,7 +49,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 *.tgz
 
 # 5. 构建产物、TypeScript、Vite 8 / Rolldown / Oxc 缓存与测试覆盖率
-/dist/
 /dist-ssr/
 *.tsbuildinfo
 .vite/

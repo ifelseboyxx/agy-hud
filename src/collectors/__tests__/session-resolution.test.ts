@@ -1,0 +1,333 @@
+import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { afterEach, beforeEach, describe, it } from 'node:test';
+import { pathToFileURL } from 'node:url';
+
+import { resolveSession, SessionResolutionError } from '../session-index.ts';
+import { writeSnapshotEnvelope } from '../snapshot-envelope.ts';
+
+interface SummaryRowSeed {
+  id: string;
+  title: string;
+  lastModifiedIso: string;
+  workspaces: string[];
+  notFullyIdle?: number;
+}
+
+function writeSummaryDb(rootDir: string, rows: readonly SummaryRowSeed[]): void {
+  mkdirSync(rootDir, { recursive: true });
+  const dbPath = path.join(rootDir, 'conversation_summaries.db');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_summaries (
+      conversation_id TEXT PRIMARY KEY,
+      title TEXT,
+      last_modified_time TEXT,
+      workspace_uris TEXT,
+      source TEXT,
+      not_fully_idle INTEGER DEFAULT 0,
+      status TEXT,
+      nesting_depth INTEGER DEFAULT 0,
+      killed INTEGER DEFAULT 0
+    )
+  `);
+  const stmt = db.prepare('INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)');
+  for (const r of rows) {
+    stmt.run(
+      r.id,
+      r.title,
+      r.lastModifiedIso,
+      JSON.stringify(r.workspaces.map((ws) => pathToFileURL(ws).href)),
+      'CORTEX_TRAJECTORY_SOURCE_CLI',
+      r.notFullyIdle ?? 0,
+      'CASCADE_RUN_STATUS_IDLE',
+    );
+  }
+  db.close();
+}
+
+function writeTranscript(rootDir: string, convId: string, lines: readonly unknown[], mtimeMs?: number): void {
+  const logsDir = path.join(rootDir, 'brain', convId, '.system_generated', 'logs');
+  mkdirSync(logsDir, { recursive: true });
+  const filePath = path.join(logsDir, 'transcript.jsonl');
+  writeFileSync(filePath, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`, 'utf8');
+  if (mtimeMs !== undefined) {
+    const sec = mtimeMs / 1000;
+    utimesSync(filePath, sec, sec);
+  }
+}
+
+void describe('4-tier CLI session resolution', () => {
+  let tmpRoot = '';
+  let cliHome = '';
+  let wsRoot = '';
+  let wsNested = '';
+  let wsOther = '';
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-resolve-'));
+    cliHome = path.join(tmpRoot, '.gemini', 'antigravity-cli');
+    wsRoot = path.join(tmpRoot, 'repo');
+    wsNested = path.join(wsRoot, 'packages', 'sub');
+    wsOther = path.join(tmpRoot, 'other-proj');
+    mkdirSync(cliHome, { recursive: true });
+    mkdirSync(wsNested, { recursive: true });
+    mkdirSync(wsOther, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (tmpRoot.length > 0) rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  void it('resolves Tier 0 exact ID or unique prefix', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeTranscript(cliHome, 'abcd1111-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
+    writeTranscript(cliHome, 'abcd2222-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
+    writeSummaryDb(cliHome, [
+      { id: 'abcd1111-cli', title: 'First', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
+      { id: 'abcd2222-cli', title: 'Second', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
+    ]);
+
+    const exact = resolveSession({ cliHome, session: 'abcd2222-cli', nowMs });
+    assert.equal(exact.tier, 'explicit');
+    assert.equal(exact.session.convId, 'abcd2222-cli');
+
+    const uniquePrefix = resolveSession({ cliHome, session: 'abcd1', nowMs });
+    assert.equal(uniquePrefix.tier, 'explicit');
+    assert.equal(uniquePrefix.session.convId, 'abcd1111-cli');
+  });
+
+  void it('throws SessionResolutionError listing candidates on ambiguous or short prefixes', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeTranscript(cliHome, 'abcd1111-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
+    writeTranscript(cliHome, 'abcd2222-cli', [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }], nowMs);
+    writeSummaryDb(cliHome, [
+      { id: 'abcd1111-cli', title: 'First', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
+      { id: 'abcd2222-cli', title: 'Second', lastModifiedIso: '2026-06-01T12:00:00Z', workspaces: [wsRoot] },
+    ]);
+
+    assert.throws(
+      () => resolveSession({ cliHome, session: 'abcd', nowMs }),
+      (err: unknown) =>
+        err instanceof SessionResolutionError &&
+        err.message.includes('abcd1111-cli') &&
+        err.message.includes('abcd2222-cli'),
+    );
+    assert.throws(() => resolveSession({ cliHome, session: 'abc', nowMs }), SessionResolutionError);
+  });
+
+  void it('resolves Tier 1 by live ancestor agyPid', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'cli-old-same-pid', cwd: wsRoot, conversation_title: 'Before /clear' },
+      2000,
+      { nowMs: nowMs - 20_000 },
+    );
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'cli-new-same-pid', cwd: wsRoot, conversation_title: 'After /clear' },
+      2000,
+      { nowMs: nowMs - 5_000 },
+    );
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'cli-other-tui', cwd: wsRoot, conversation_title: 'Other TUI' },
+      3000,
+      { nowMs: nowMs - 1_000 },
+    );
+
+    const alive = new Set([2000, 3000]);
+    const hit = resolveSession({
+      cliHome,
+      cwd: wsRoot,
+      callerAgyPid: 2000,
+      nowMs,
+      isAlive: (p) => alive.has(p),
+    });
+    assert.equal(hit.tier, 'pid');
+    assert.equal(hit.session.convId, 'cli-new-same-pid');
+  });
+
+  void it('excludes dead CLI PIDs while reporting live workspace siblings in Tier 2', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeSnapshotEnvelope(cliHome, { conversation_id: 'cli-dead-pid', cwd: wsRoot, conversation_title: 'Dead' }, 9999, {
+      nowMs,
+    });
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'cli-live-idle', cwd: wsRoot, conversation_title: 'Idle CLI' },
+      4001,
+      { nowMs: nowMs - 60_000 },
+    );
+    writeTranscript(
+      cliHome,
+      'cli-newer-idle',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 10_000,
+    );
+    writeSummaryDb(cliHome, [
+      { id: 'cli-newer-idle', title: 'Newer CLI', lastModifiedIso: '2026-06-01T11:59:50Z', workspaces: [wsRoot] },
+    ]);
+
+    const atRoot = resolveSession({
+      cliHome,
+      cwd: wsRoot,
+      callerAgyPid: null,
+      nowMs,
+      isAlive: (p) => p === 4001,
+    });
+    assert.equal(atRoot.tier, 'workspace');
+    assert.equal(atRoot.session.convId, 'cli-newer-idle');
+    assert.ok(atRoot.siblings.some((s) => s.convId === 'cli-live-idle'));
+    assert.equal(
+      atRoot.siblings.some((s) => s.convId === 'cli-dead-pid'),
+      false,
+    );
+  });
+
+  void it('prefers deepest matching workspace root in Tier 2', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeTranscript(
+      cliHome,
+      'cli-parent-ws',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 10_000,
+    );
+    writeTranscript(
+      cliHome,
+      'cli-nested-ws',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 600_000,
+    );
+    writeSummaryDb(cliHome, [
+      { id: 'cli-parent-ws', title: 'Parent', lastModifiedIso: '2026-06-01T11:59:50Z', workspaces: [wsRoot] },
+      { id: 'cli-nested-ws', title: 'Nested', lastModifiedIso: '2026-06-01T11:50:00Z', workspaces: [wsNested] },
+    ]);
+
+    const atNested = resolveSession({
+      cliHome,
+      cwd: wsNested,
+      callerAgyPid: null,
+      nowMs,
+      isAlive: () => false,
+    });
+    assert.equal(atNested.tier, 'workspace');
+    assert.equal(atNested.session.convId, 'cli-nested-ws');
+  });
+
+  void it('prefers actively running execution over newer idle sessions in Tier 2', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'cli-active', cwd: wsRoot, conversation_title: 'Active CLI' },
+      4001,
+      { nowMs: nowMs - 30_000 },
+    );
+    writeTranscript(
+      cliHome,
+      'cli-active',
+      [{ type: 'PLANNER_RESPONSE', status: 'RUNNING', tool_calls: [] }],
+      nowMs - 30_000,
+    );
+    writeTranscript(
+      cliHome,
+      'cli-newer-idle',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 5_000,
+    );
+    writeSummaryDb(cliHome, [
+      { id: 'cli-newer-idle', title: 'Newer Idle', lastModifiedIso: '2026-06-01T11:59:55Z', workspaces: [wsRoot] },
+    ]);
+
+    const activeWins = resolveSession({
+      cliHome,
+      cwd: wsRoot,
+      callerAgyPid: null,
+      nowMs,
+      isAlive: (p) => p === 4001,
+    });
+    assert.equal(activeWins.tier, 'workspace');
+    assert.equal(activeWins.session.convId, 'cli-active');
+  });
+
+  void it('falls back to Tier 3 newest non-exited session when cwd matches no workspace', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'cli-dead-1111', cwd: wsRoot, conversation_title: 'Dead' },
+      9991,
+      { nowMs },
+    );
+    writeSnapshotEnvelope(
+      cliHome,
+      { conversation_id: 'cli-live-2222', cwd: wsRoot, conversation_title: 'Live CLI' },
+      5001,
+      { nowMs: nowMs - 30_000 },
+    );
+    writeTranscript(
+      cliHome,
+      'cli-recent-3333',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 5_000,
+    );
+    writeSummaryDb(cliHome, [
+      { id: 'cli-recent-3333', title: 'Recent CLI', lastModifiedIso: '2026-06-01T11:59:55Z', workspaces: [wsRoot] },
+    ]);
+
+    const fallback = resolveSession({
+      cliHome,
+      cwd: wsOther,
+      callerAgyPid: null,
+      nowMs,
+      isAlive: (p) => p === 5001,
+    });
+    assert.equal(fallback.tier, 'fallback');
+    assert.equal(fallback.session.convId, 'cli-recent-3333');
+  });
+
+  void it('picks newer idle session over older running session in Tier 3 fallback', () => {
+    const nowMs = Date.parse('2026-06-01T12:00:00Z');
+    writeTranscript(
+      cliHome,
+      'cli-older-running',
+      [{ type: 'PLANNER_RESPONSE', status: 'RUNNING', tool_calls: [] }],
+      nowMs - 60_000,
+    );
+    writeTranscript(
+      cliHome,
+      'cli-newer-idle',
+      [{ type: 'PLANNER_RESPONSE', status: 'DONE', tool_calls: [] }],
+      nowMs - 5_000,
+    );
+    writeSummaryDb(cliHome, [
+      {
+        id: 'cli-older-running',
+        title: 'Older Running',
+        lastModifiedIso: '2026-06-01T11:59:00Z',
+        workspaces: [wsRoot],
+        notFullyIdle: 1,
+      },
+      {
+        id: 'cli-newer-idle',
+        title: 'Newer Idle',
+        lastModifiedIso: '2026-06-01T11:59:55Z',
+        workspaces: [wsRoot],
+        notFullyIdle: 0,
+      },
+    ]);
+
+    const resolved = resolveSession({
+      cliHome,
+      cwd: wsOther,
+      callerAgyPid: null,
+      nowMs,
+      isAlive: () => false,
+    });
+    assert.equal(resolved.tier, 'fallback');
+    assert.equal(resolved.session.convId, 'cli-newer-idle');
+  });
+});

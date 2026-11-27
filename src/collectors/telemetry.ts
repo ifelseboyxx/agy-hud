@@ -1,131 +1,130 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { pathToFileURL } from 'node:url';
+import { existsSync } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
 
-import { isFiniteNum, isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
-import { fmtTokens, GRAY, RESET } from '../render/ansi.ts';
-import type {
-  CliSettings,
-  GenMetadataRow,
-  QuotaBucketItem,
-  SessionTelemetry,
-  StatusLineContextWindow,
-  StatusLineData,
-} from '../types.ts';
+import { telemetryCacheFileName } from '../core/cache-registry.ts';
+import { readRegularJsonObjectSync, writeBoundedPrivateJsonCache } from '../core/fs-utils.ts';
+import { isFiniteNum, isPlainObject } from '../core/guards.ts';
+import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from '../core/safe-path.ts';
+import type { CliSettings, SessionTelemetry, StatusLineData, TailStepPhase } from '../types.ts';
+import { MAX_ACTIVITY_CACHE_BYTES } from './activity-cache.ts';
+import { fetchLatestCheckpoint, isCompactionCheckpoint, type CompactionCheckpoint } from './compaction.ts';
+import { parseStepTimestampsProto } from './proto-steps.ts';
 import {
-  computeCompactedUsed,
-  fetchLatestCheckpoint,
-  isCompactionActive,
-  isCompactionCheckpoint,
-} from './compaction.ts';
-import type { CompactionCheckpoint } from './compaction.ts';
-import { parseGenMetadataBlob } from './proto.ts';
-import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
+  type ContextBreakdownCounts,
+  type GenMetadataRow,
+  MAX_PROTO_BLOB_BYTES,
+  type TailGenExtras,
+} from './proto-wire.ts';
+import { parseGenMetadataBlob, parseGenMetadataBlobWithTail } from './proto.ts';
+import { readSqliteVersionTag, withReadonlyDb } from './sqlite-readonly.ts';
+import {
+  createEmptyStepTiming,
+  isStepTimingCache,
+  type StepTimingCache,
+  updateStepTimingIncremental,
+} from './step-timing.ts';
+import { evaluateSessionTelemetry } from './telemetry-analysis.ts';
 
-export { parseGenMetadataBlob } from './proto.ts';
+const TELEMETRY_CACHE_VERSION = 3;
+const STEP_IN_BATCH_SIZE = 200;
+const STEP_STATUS_CANCELED = 6;
+const MAX_STEP_METADATA_TOTAL_BYTES = 16 * 1024 * 1024;
 
-const TELEMETRY_CACHE_VERSION = 2;
-const SQLITE_TIMEOUT_MS = 50;
-const MIN_STREAM_WINDOW_SEC = 0.5;
-const MAX_BURST_STREAM_TPS = 400.0;
-
-const EFFORT_SUFFIX_RE = /\s*\((low|medium|high|xhigh|max)\)\s*$/i;
-const ORCHESTRATOR_PREFIX = 'Orchestrator';
-const ORCHESTRATOR_PAREN_RE = /^Orchestrator\s*\(([^)]+)\)\s*$/i;
-
-const MODEL_PREFIX_ALIASES: ReadonlyArray<readonly [string, string]> = [
-  ['Claude Opus ', 'Opus '],
-  ['Claude Sonnet ', 'Sonnet '],
-  ['Claude Haiku ', 'Haiku '],
-  ['Gemini 4 ', 'G4 '],
-  ['Gemini 3.8 ', 'G3.8 '],
-];
-
-const ORCH_ROLE_PREFIX_ALIASES: ReadonlyArray<readonly [string, string]> = [
-  ['Gemini 4 ', ''],
-  ['Gemini 3.8 ', 'G3.8 '],
-  ['Claude Opus ', 'Opus '],
-  ['Claude Sonnet ', 'Sonnet '],
-  ['Claude Haiku ', 'Haiku '],
-];
-
-export interface ResolvedModelDisplay {
-  name: string;
-  effort: string;
-}
-
-export interface QuotaResetInfo {
-  remainingSeconds: number | null;
-  windowExpired: boolean;
+export interface LoadSessionTelemetryOptions {
+  readonly settledHint?: boolean;
+  readonly cacheOnly?: boolean;
+  readonly tryConsumeDbOpen?: () => boolean;
 }
 
 interface DbLoadResult {
   rows: Record<string, GenMetadataRow>;
+  tail: TailGenExtras | null;
   ckpt: CompactionCheckpoint | null;
-}
-
-function statSignature(filePath: string): [number, number] {
-  try {
-    const st = statSync(filePath, { bigint: true });
-    return [Number(st.mtimeNs), Number(st.size)];
-  } catch {
-    return [0, 0];
-  }
-}
-
-function sigMatches(a: readonly number[], b: readonly number[]): boolean {
-  return a.length === b.length && a.every((v, idx) => v === b[idx]);
-}
-
-function openReadonlyDb(dbPath: string): DatabaseSync | null {
-  const baseUri = pathToFileURL(dbPath).href;
-  const targets = [`${baseUri}?mode=ro`, `${baseUri}?immutable=1`];
-  for (const uri of targets) {
-    let db: DatabaseSync | null = null;
-    try {
-      db = new DatabaseSync(uri, { readOnly: true, timeout: SQLITE_TIMEOUT_MS });
-      db.prepare('PRAGMA schema_version').get();
-      return db;
-    } catch {
-      if (db !== null) {
-        try {
-          db.close();
-        } catch {
-          // Ignore close error on failed probe.
-        }
-      }
-    }
-  }
-  return null;
+  stepTiming: StepTimingCache;
+  tailStepPhase: TailStepPhase | null;
 }
 
 function toNumber(val: unknown): number {
-  if (typeof val === 'number') {
-    return val;
-  }
-  if (typeof val === 'bigint') {
-    return Number(val);
-  }
+  if (typeof val === 'number') return val;
+  if (typeof val === 'bigint') return Number(val);
   return 0;
+}
+
+function hydrateRowStepTimestamps(
+  db: DatabaseSync,
+  rows: Record<string, GenMetadataRow>,
+  dirtyKeys: readonly string[],
+): void {
+  const stepToRowKeys = new Map<number, string[]>();
+  for (const key of dirtyKeys) {
+    const row = rows[key];
+    if (!row || row.atSec !== undefined) continue;
+    const stepTarget = row.minStepIdx ?? (row.stepIdx !== undefined && row.stepIdx >= 0 ? row.stepIdx + 1 : -1);
+    if (stepTarget < 0) continue;
+    const list = stepToRowKeys.get(stepTarget);
+    if (list) list.push(key);
+    else stepToRowKeys.set(stepTarget, [key]);
+  }
+  if (stepToRowKeys.size === 0) return;
+
+  const stepIndices = [...stepToRowKeys.keys()];
+  let totalMetaBytes = 0;
+  try {
+    for (let offset = 0; offset < stepIndices.length; offset += STEP_IN_BATCH_SIZE) {
+      const batch = stepIndices.slice(offset, offset + STEP_IN_BATCH_SIZE);
+      const placeholders = batch.map(() => '?').join(',');
+      const stmt = db.prepare(
+        `SELECT idx, status, CASE WHEN typeof(metadata) = 'blob' AND length(metadata) <= ? THEN metadata ELSE NULL END AS metadata FROM steps WHERE idx IN (${placeholders})`,
+      );
+      const iter = stmt.iterate(MAX_PROTO_BLOB_BYTES, ...batch);
+      for (const item of iter) {
+        if (!isPlainObject(item)) continue;
+        const idx = toNumber(item.idx);
+        const status = toNumber(item.status);
+        const targets = stepToRowKeys.get(idx) ?? [];
+        if (status === STEP_STATUS_CANCELED) {
+          for (const rowKey of targets) {
+            const target = rows[rowKey];
+            if (target) {
+              target.canceled = true;
+              delete target.errorCode;
+            }
+          }
+        }
+        const meta = item.metadata instanceof Uint8Array ? item.metadata : null;
+        if (meta === null) continue;
+        if (totalMetaBytes + meta.byteLength > MAX_STEP_METADATA_TOTAL_BYTES) continue;
+        totalMetaBytes += meta.byteLength;
+        const created = parseStepTimestampsProto(meta).createdAtSec;
+        if (created === null) continue;
+        const atSec = Math.round(created);
+        for (const rowKey of targets) {
+          const target = rows[rowKey];
+          if (target) target.atSec = atSec;
+        }
+      }
+    }
+  } catch {
+    // Steps table may be absent in minimal unit fixtures; leave atSec undefined cleanly.
+  }
 }
 
 function fetchUpdatedRows(
   dbPath: string,
   cachedRows: Record<string, GenMetadataRow>,
-  cachedCkpt: CompactionCheckpoint | null,
-): DbLoadResult {
-  const db = openReadonlyDb(dbPath);
-  if (db === null) {
-    return { rows: cachedRows, ckpt: cachedCkpt };
-  }
-  try {
+  cachedTail: TailGenExtras | null,
+  cachedStepTiming: StepTimingCache | null,
+): DbLoadResult | null {
+  return withReadonlyDb<DbLoadResult>(dbPath, (db) => {
     const ckpt = fetchLatestCheckpoint(db);
+    const { stepTiming, tailStepPhase } = updateStepTimingIncremental(db, cachedStepTiming);
     const statsRow = db.prepare('SELECT COUNT(*) AS cnt, COALESCE(MAX(idx), -1) AS max_idx FROM gen_metadata').get();
     const count = isPlainObject(statsRow) ? toNumber(statsRow.cnt) : 0;
+    const maxIdx = isPlainObject(statsRow) ? toNumber(statsRow.max_idx) : -1;
     if (count === 0) {
-      return { rows: {}, ckpt };
+      return { rows: {}, tail: null, ckpt, stepTiming, tailStepPhase };
     }
+
     let seed = cachedRows;
     if (count < Object.keys(cachedRows).length) {
       seed = {};
@@ -136,28 +135,76 @@ function fetchUpdatedRows(
     const startIdx = keys.length > 0 ? Math.max(...keys) : 0;
 
     const updated: Record<string, GenMetadataRow> = { ...seed };
-    const rows = db.prepare('SELECT idx, data FROM gen_metadata WHERE idx >= ? ORDER BY idx').all(startIdx);
+    let tail: TailGenExtras | null = cachedTail;
+    const dirtyKeys: string[] = [];
+
+    const rows = db
+      .prepare(
+        "SELECT idx, CASE WHEN typeof(data) = 'blob' AND length(data) <= ? THEN data ELSE NULL END AS data FROM gen_metadata WHERE idx >= ? ORDER BY idx",
+      )
+      .iterate(MAX_PROTO_BLOB_BYTES, startIdx);
+
     for (const row of rows) {
-      if (!isPlainObject(row)) {
-        continue;
-      }
+      if (!isPlainObject(row)) continue;
       const idx = toNumber(row.idx);
+      const key = String(idx);
       const blob = row.data instanceof Uint8Array ? row.data : null;
-      const parsed = parseGenMetadataBlob(blob);
-      if (parsed !== null) {
-        updated[String(idx)] = parsed;
+      if (idx === maxIdx) {
+        const parsed = parseGenMetadataBlobWithTail(blob, true);
+        if (parsed !== null) {
+          updated[key] = parsed.row;
+          tail = parsed.tail;
+          dirtyKeys.push(key);
+        } else {
+          delete updated[key];
+          tail = null;
+        }
+      } else {
+        const parsed = parseGenMetadataBlob(blob);
+        if (parsed !== null) {
+          updated[key] = parsed;
+          dirtyKeys.push(key);
+        } else {
+          delete updated[key];
+        }
       }
     }
-    return { rows: updated, ckpt };
-  } finally {
-    db.close();
-  }
+
+    hydrateRowStepTimestamps(db, updated, dirtyKeys);
+    return { rows: updated, tail, ckpt, stepTiming, tailStepPhase };
+  });
 }
 
 interface CachedTelemetryLookup {
   hit: boolean;
+  settled: boolean;
   rows: Record<string, GenMetadataRow>;
+  tail: TailGenExtras | null;
   ckpt: CompactionCheckpoint | null;
+  stepTiming: StepTimingCache | null;
+  tailStepPhase: TailStepPhase | null;
+}
+
+function isBreakdownCounts(val: unknown): val is ContextBreakdownCounts {
+  return (
+    isPlainObject(val) &&
+    isFiniteNum(val.system) &&
+    isFiniteNum(val.rules) &&
+    isFiniteNum(val.skills) &&
+    isFiniteNum(val.tools) &&
+    isFiniteNum(val.mcp) &&
+    isFiniteNum(val.messages)
+  );
+}
+
+function isTailGenExtras(val: unknown): val is TailGenExtras {
+  return (
+    isPlainObject(val) &&
+    (val.breakdown === null || isBreakdownCounts(val.breakdown)) &&
+    isFiniteNum(val.truncationReason) &&
+    isFiniteNum(val.planModelEnum) &&
+    isFiniteNum(val.execModelEnum)
+  );
 }
 
 function isGenMetadataRow(value: unknown): value is GenMetadataRow {
@@ -171,18 +218,9 @@ function isGenMetadataRow(value: unknown): value is GenMetadataRow {
     isFiniteNum(value.stream) &&
     isFiniteNum(value.ctxUsed) &&
     isFiniteNum(value.ctxMax) &&
-    (value.stepIdx === undefined || isFiniteNum(value.stepIdx))
+    (value.stepIdx === undefined || isFiniteNum(value.stepIdx)) &&
+    (value.canceled === undefined || typeof value.canceled === 'boolean')
   );
-}
-
-function parseCachedSig(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const sig: number[] = [];
-  for (const item of value) {
-    if (!isFiniteNum(item)) return null;
-    sig.push(item);
-  }
-  return sig;
 }
 
 function parseCachedRows(value: unknown): Record<string, GenMetadataRow> | null {
@@ -195,277 +233,206 @@ function parseCachedRows(value: unknown): Record<string, GenMetadataRow> | null 
   return rows;
 }
 
-function readTelemetryCache(cacheFile: string, expectedSig: readonly number[]): CachedTelemetryLookup {
-  if (!existsSync(cacheFile)) {
-    return { hit: false, rows: {}, ckpt: null };
-  }
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(cacheFile, 'utf8'));
-    if (!isPlainObject(parsed) || parsed.v !== TELEMETRY_CACHE_VERSION) {
-      return { hit: false, rows: {}, ckpt: null };
-    }
-    const sig = parseCachedSig(parsed.sig);
-    const rows = parseCachedRows(parsed.rows);
-    if (sig === null || rows === null) {
-      return { hit: false, rows: {}, ckpt: null };
-    }
-    const validCkpt = isCompactionCheckpoint(parsed.ckpt) ? parsed.ckpt : null;
-    return { hit: sigMatches(sig, expectedSig), rows, ckpt: validCkpt };
-  } catch {
-    return { hit: false, rows: {}, ckpt: null };
-  }
+function parseTailStepPhase(val: unknown): TailStepPhase | null {
+  return val === 'working' || val === 'tool_use' || val === 'error' ? val : null;
 }
 
-function loadDbRows(cliHome: string, convId: string): DbLoadResult {
+function readTelemetryCache(
+  cacheFile: string,
+  expectedVersionTag: string | null,
+  acceptAnyValid: boolean = false,
+): CachedTelemetryLookup {
+  const empty: CachedTelemetryLookup = {
+    hit: false,
+    settled: false,
+    rows: {},
+    tail: null,
+    ckpt: null,
+    stepTiming: null,
+    tailStepPhase: null,
+  };
+  const parsed = readRegularJsonObjectSync(cacheFile, MAX_ACTIVITY_CACHE_BYTES, { requirePrivateMode: true });
+  if (parsed === null || parsed.v !== TELEMETRY_CACHE_VERSION) return empty;
+  const versionTag = typeof parsed.versionTag === 'string' && parsed.versionTag.length > 0 ? parsed.versionTag : null;
+  const rows = parseCachedRows(parsed.rows);
+  if (versionTag === null || rows === null) return empty;
+  const tail = isTailGenExtras(parsed.tail) ? parsed.tail : null;
+  const ckpt = isCompactionCheckpoint(parsed.ckpt) ? parsed.ckpt : null;
+  const stepTiming = isStepTimingCache(parsed.stepTiming) ? parsed.stepTiming : null;
+  const tailStepPhase = parseTailStepPhase(parsed.tailStepPhase);
+  const settled = parsed.settled === true;
+  const hit = acceptAnyValid ? true : expectedVersionTag !== null ? versionTag === expectedVersionTag : settled;
+  return { hit, settled, rows, tail, ckpt, stepTiming, tailStepPhase };
+}
+
+function loadDbRows(
+  dataRoot: string,
+  cacheCliHome: string,
+  convId: string,
+  settledHint: boolean = false,
+  cacheOnly: boolean = false,
+  tryConsumeDbOpen?: () => boolean,
+): DbLoadResult {
+  const empty: DbLoadResult = {
+    rows: {},
+    tail: null,
+    ckpt: null,
+    stepTiming: createEmptyStepTiming(),
+    tailStepPhase: null,
+  };
   const safeId = sanitizeSessionId(convId);
-  if (safeId === null) {
-    return { rows: {}, ckpt: null };
-  }
-  const dbPath = resolveCliSubdirFile(cliHome, 'conversations', `${safeId}.db`);
-  const walPath = resolveCliSubdirFile(cliHome, 'conversations', `${safeId}.db-wal`);
-  const shmPath = resolveCliSubdirFile(cliHome, 'conversations', `${safeId}.db-shm`);
-  if (dbPath === null || walPath === null || shmPath === null || !existsSync(dbPath)) {
-    return { rows: {}, ckpt: null };
-  }
-  const sig = [...statSignature(dbPath), ...statSignature(walPath)];
-  const cacheFile = resolveCliSubdirFile(cliHome, 'cache', `agy_hud_telemetry_${safeId}.json`);
-  if (cacheFile === null) {
-    return { rows: {}, ckpt: null };
+  if (safeId === null) return empty;
+  const cacheFile = resolveCliSubdirFile(cacheCliHome, 'cache', telemetryCacheFileName(safeId));
+  if (cacheFile === null) return empty;
+
+  if (cacheOnly) {
+    const cachedOnly = readTelemetryCache(cacheFile, null, true);
+    if (!cachedOnly.hit) return empty;
+    return {
+      rows: cachedOnly.rows,
+      tail: cachedOnly.tail,
+      ckpt: cachedOnly.ckpt,
+      stepTiming: cachedOnly.stepTiming ?? createEmptyStepTiming(),
+      tailStepPhase: cachedOnly.tailStepPhase,
+    };
   }
 
-  const cached = readTelemetryCache(cacheFile, sig);
+  if (settledHint) {
+    const settledCached = readTelemetryCache(cacheFile, null);
+    if (settledCached.settled) {
+      return {
+        rows: settledCached.rows,
+        tail: settledCached.tail,
+        ckpt: settledCached.ckpt,
+        stepTiming: settledCached.stepTiming ?? createEmptyStepTiming(),
+        tailStepPhase: settledCached.tailStepPhase,
+      };
+    }
+  }
+
+  const dbPath = resolveCliSubdirFile(dataRoot, 'conversations', `${safeId}.db`);
+  if (dbPath === null || !existsSync(dbPath)) return empty;
+  const versionTag = readSqliteVersionTag(dbPath);
+  if (versionTag.length === 0) return empty;
+
+  const cached = readTelemetryCache(cacheFile, versionTag);
   if (cached.hit) {
-    return { rows: cached.rows, ckpt: cached.ckpt };
+    if (settledHint && !cached.settled) {
+      writeBoundedPrivateJsonCache(
+        cacheFile,
+        {
+          v: TELEMETRY_CACHE_VERSION,
+          versionTag,
+          rows: cached.rows,
+          tail: cached.tail,
+          ckpt: cached.ckpt,
+          stepTiming: cached.stepTiming ?? createEmptyStepTiming(),
+          tailStepPhase: cached.tailStepPhase,
+          settled: true,
+        },
+        MAX_ACTIVITY_CACHE_BYTES,
+      );
+    }
+    return {
+      rows: cached.rows,
+      tail: cached.tail,
+      ckpt: cached.ckpt,
+      stepTiming: cached.stepTiming ?? createEmptyStepTiming(),
+      tailStepPhase: cached.tailStepPhase,
+    };
   }
-  const cachedRows = cached.rows;
-  const cachedCkpt = cached.ckpt;
 
-  let loaded: DbLoadResult;
+  if (tryConsumeDbOpen !== undefined && !tryConsumeDbOpen()) {
+    return {
+      rows: cached.rows,
+      tail: cached.tail,
+      ckpt: cached.ckpt,
+      stepTiming: cached.stepTiming ?? createEmptyStepTiming(),
+      tailStepPhase: cached.tailStepPhase,
+    };
+  }
+
+  let loaded: DbLoadResult | null;
   try {
-    loaded = fetchUpdatedRows(dbPath, cachedRows, cachedCkpt);
+    loaded = fetchUpdatedRows(dbPath, cached.rows, cached.tail, cached.stepTiming);
   } catch {
-    return { rows: cachedRows, ckpt: cachedCkpt };
+    return {
+      rows: cached.rows,
+      tail: cached.tail,
+      ckpt: cached.ckpt,
+      stepTiming: cached.stepTiming ?? createEmptyStepTiming(),
+      tailStepPhase: cached.tailStepPhase,
+    };
+  }
+  if (loaded === null) {
+    return {
+      rows: cached.rows,
+      tail: cached.tail,
+      ckpt: cached.ckpt,
+      stepTiming: cached.stepTiming ?? createEmptyStepTiming(),
+      tailStepPhase: cached.tailStepPhase,
+    };
   }
 
-  try {
-    mkdirSync(path.dirname(cacheFile), { recursive: true });
-    writeFileSync(
+  if (readSqliteVersionTag(dbPath) === versionTag) {
+    writeBoundedPrivateJsonCache(
       cacheFile,
-      JSON.stringify({ v: TELEMETRY_CACHE_VERSION, sig, rows: loaded.rows, ckpt: loaded.ckpt }),
-      'utf8',
+      {
+        v: TELEMETRY_CACHE_VERSION,
+        versionTag,
+        rows: loaded.rows,
+        tail: loaded.tail,
+        ckpt: loaded.ckpt,
+        stepTiming: loaded.stepTiming,
+        tailStepPhase: loaded.tailStepPhase,
+        ...(settledHint ? { settled: true } : {}),
+      },
+      MAX_ACTIVITY_CACHE_BYTES,
     );
-  } catch {
-    // Best-effort telemetry cache write.
   }
   return loaded;
 }
 
-function hasStepMetrics(row: GenMetadataRow): boolean {
-  return row.out > 0 || row.ttft > 0 || row.in + row.cr + row.cw > 0;
-}
+export function loadSessionTelemetryFromRoot(
+  dataRoot: string,
+  cacheCliHome: string,
+  convId: string | null,
+  data: StatusLineData = {},
+  cliSettings?: CliSettings,
+  options?: LoadSessionTelemetryOptions,
+): SessionTelemetry {
+  const loaded =
+    convId !== null
+      ? loadDbRows(
+          dataRoot,
+          cacheCliHome,
+          convId,
+          options?.settledHint === true,
+          options?.cacheOnly === true,
+          options?.tryConsumeDbOpen,
+        )
+      : { rows: {}, tail: null, ckpt: null, stepTiming: createEmptyStepTiming(), tailStepPhase: null };
 
-function fallbackStdinCachePct(ctxObj: StatusLineContextWindow | undefined): number | null {
-  const cur = ctxObj?.current_usage;
-  if (!cur) {
-    return null;
-  }
-  const inTok = isFiniteNum(cur.input_tokens) ? cur.input_tokens : 0;
-  const cwTok = isFiniteNum(cur.cache_creation_input_tokens) ? cur.cache_creation_input_tokens : 0;
-  const crTok = isFiniteNum(cur.cache_read_input_tokens) ? cur.cache_read_input_tokens : 0;
-  const total = inTok + cwTok + crTok;
-  return total > 0 ? (crTok / total) * 100 : null;
-}
-
-function computeEffectiveTps(outTok: number, ttftSec: number, streamSec: number): number | null {
-  if (outTok <= 0) {
-    return null;
-  }
-  const totalSec = ttftSec + streamSec;
-  if (streamSec <= 0) {
-    return totalSec > 0 ? outTok / totalSec : null;
-  }
-  const rawTps = outTok / streamSec;
-  const isBufferedBurst = ttftSec > streamSec && (streamSec < MIN_STREAM_WINDOW_SEC || rawTps > MAX_BURST_STREAM_TPS);
-  if (isBufferedBurst && totalSec > 0) {
-    return outTok / totalSec;
-  }
-  return rawTps;
-}
-
-export function loadSessionTelemetry(cliHome: string, data: StatusLineData): SessionTelemetry {
-  const ctxObj = data.context_window;
-  const convId = resolveConversationId(data);
-  const { rows, ckpt } = convId !== null ? loadDbRows(cliHome, convId) : { rows: {}, ckpt: null };
-
-  const ordered = Object.keys(rows)
+  const ordered = Object.keys(loaded.rows)
     .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
-    .map((k) => rows[k])
+    .map((k) => loaded.rows[k])
     .filter((r): r is GenMetadataRow => r !== undefined);
 
-  const valid = ordered.filter(hasStepMetrics);
-  const compacted = isCompactionActive(valid, ckpt);
-  const last = valid[valid.length - 1];
-  if (!last) {
-    return {
-      genCount: 0,
-      tps: null,
-      ttft: null,
-      cachePct: fallbackStdinCachePct(ctxObj),
-      ctxUsed: compacted && ckpt !== null ? computeCompactedUsed(valid, ckpt) : null,
-      ctxMax: null,
-      compacted,
-    };
-  }
-
-  const tps = computeEffectiveTps(last.out, last.ttft, last.stream);
-  const stepIn = last.in + last.cw + last.cr;
-  const cachePct = stepIn > 0 ? (last.cr / stepIn) * 100 : fallbackStdinCachePct(ctxObj);
-
-  let ctxMax: number | null = null;
-  for (let i = valid.length - 1; i >= 0; i -= 1) {
-    const candidate = valid[i];
-    if (candidate && candidate.ctxMax > 0) {
-      ctxMax = candidate.ctxMax;
-      break;
-    }
-  }
-
-  const ctxUsed =
-    compacted && ckpt !== null ? computeCompactedUsed(valid, ckpt) : last.ctxUsed > 0 ? last.ctxUsed : null;
-
-  return {
-    genCount: valid.length,
-    tps,
-    ttft: last.ttft > 0 ? last.ttft : null,
-    cachePct,
-    ctxUsed,
-    ctxMax,
-    compacted,
-  };
+  return evaluateSessionTelemetry({
+    rows: ordered,
+    tail: loaded.tail,
+    ckpt: loaded.ckpt,
+    data,
+    cliSettings,
+    stepTiming: loaded.stepTiming,
+    tailStepPhase: loaded.tailStepPhase,
+  });
 }
 
-export function formatContextCapacity(
-  ctxObj: StatusLineContextWindow | undefined,
-  telemetry: SessionTelemetry | null | undefined,
-): string {
-  const winSize = ctxObj?.context_window_size;
-  const maxTok = isFiniteNum(winSize) && winSize > 0 ? Math.trunc(winSize) : (telemetry?.ctxMax ?? null);
-  if (!isFiniteNum(maxTok) || maxTok <= 0) {
-    return '';
-  }
-
-  if (telemetry?.compacted === true && isFiniteNum(telemetry.ctxUsed)) {
-    return `${GRAY}(~${fmtTokens(Math.trunc(telemetry.ctxUsed))}/${fmtTokens(maxTok)})${RESET}`;
-  }
-
-  let usedTok: number;
-  const ctxPct = ctxObj?.used_percentage;
-  if (isFiniteNum(ctxPct)) {
-    usedTok = Math.round((Math.max(0, ctxPct) / 100) * maxTok);
-  } else if (isFiniteNum(telemetry?.ctxUsed)) {
-    usedTok = Math.trunc(telemetry.ctxUsed);
-  } else {
-    return '';
-  }
-
-  return `${GRAY}(${fmtTokens(usedTok)}/${fmtTokens(maxTok)})${RESET}`;
-}
-
-export function resolveQuotaReset(entry: QuotaBucketItem, nowSec: number = Date.now() / 1000): QuotaResetInfo {
-  const resetTs = parseIsoTimestampSec(entry.reset_time);
-  if (isFiniteNum(resetTs)) {
-    const remSec = resetTs - nowSec;
-    return { remainingSeconds: remSec, windowExpired: remSec <= 0 };
-  }
-  const rawSec = entry.reset_in_seconds;
-  return {
-    remainingSeconds: isFiniteNum(rawSec) ? rawSec : null,
-    windowExpired: false,
-  };
-}
-
-function shortenOrchRole(rawRole: unknown): readonly [string, string] {
-  let name = typeof rawRole === 'string' ? rawRole.trim() : '';
-  if (name.length === 0) {
-    return ['', ''];
-  }
-  let effort = '';
-  const match = EFFORT_SUFFIX_RE.exec(name);
-  if (match?.[1]) {
-    effort = match[1].toLowerCase();
-    name = name.replace(EFFORT_SUFFIX_RE, '').trim();
-  }
-  for (const [prefix, short] of ORCH_ROLE_PREFIX_ALIASES) {
-    if (name.startsWith(prefix)) {
-      name = short + name.slice(prefix.length);
-      break;
-    }
-  }
-  return [name, effort];
-}
-
-export function resolveOrchestratorDisplay(
-  rawName: string,
-  rawEffort: string,
+export function loadSessionTelemetry(
+  cliHome: string,
+  data: StatusLineData,
   cliSettings?: CliSettings,
-): ResolvedModelDisplay | null {
-  if (rawName !== ORCHESTRATOR_PREFIX && !rawName.startsWith(`${ORCHESTRATOR_PREFIX} (`)) {
-    return null;
-  }
-  const orch = cliSettings?.orchestrator;
-  if (!isPlainObject(orch)) {
-    return null;
-  }
-
-  let [plannerName, plannerEff] = shortenOrchRole(orch.planner);
-  const [executorName, executorEff] = shortenOrchRole(orch.executor);
-  if (plannerName.length === 0 && executorName.length === 0) {
-    return null;
-  }
-  if (plannerName.length === 0) {
-    const parenMatch = ORCHESTRATOR_PAREN_RE.exec(rawName);
-    plannerName = parenMatch?.[1] ? parenMatch[1].trim() : '';
-  }
-
-  const roles = [plannerName, executorName].filter((r) => r.length > 0);
-  const name = roles.length > 0 ? `${ORCHESTRATOR_PREFIX} (${roles.join('/')})` : ORCHESTRATOR_PREFIX;
-
-  const trimmedRawEffort = rawEffort.trim().toLowerCase();
-  if (trimmedRawEffort.length > 0) {
-    return { name, effort: trimmedRawEffort };
-  }
-  const efforts = [plannerEff, executorEff].filter((e) => e.length > 0);
-  const effort = efforts.length === 2 && efforts[0] === efforts[1] ? (efforts[0] ?? '') : efforts.join('/');
-  return { name, effort };
-}
-
-export function parseModelAndEffort(data: StatusLineData, cliSettings?: CliSettings): ResolvedModelDisplay {
-  const modelObj = data.model;
-  let rawName = nonEmptyStr(modelObj?.display_name) ?? nonEmptyStr(modelObj?.id) ?? '';
-  let effort = nonEmptyStr(modelObj?.effort) ?? '';
-
-  const orch = resolveOrchestratorDisplay(rawName, effort, cliSettings);
-  if (orch !== null) {
-    return orch;
-  }
-
-  const match = EFFORT_SUFFIX_RE.exec(rawName);
-  if (match?.[1]) {
-    if (effort.length === 0) {
-      effort = match[1].toLowerCase();
-    }
-    rawName = rawName.replace(EFFORT_SUFFIX_RE, '').trim();
-  }
-
-  for (const [prefix, short] of MODEL_PREFIX_ALIASES) {
-    if (rawName.startsWith(prefix)) {
-      rawName = short + rawName.slice(prefix.length);
-      break;
-    }
-  }
-
-  return {
-    name: rawName.length > 0 ? rawName : 'agy',
-    effort: effort.toLowerCase(),
-  };
+): SessionTelemetry {
+  return loadSessionTelemetryFromRoot(cliHome, cliHome, resolveConversationId(data), data, cliSettings);
 }

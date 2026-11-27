@@ -1,9 +1,9 @@
 import { closeSync, openSync, readdirSync, readSync } from 'node:fs';
 import path from 'node:path';
 
-import { resolveSafeSkillFile, resolveTrustedCliDir } from './safe-path.ts';
+import { resolveSafeSkillFile, resolveTrustedCliDir } from '../core/safe-path.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 
-const MAX_TARGET_LEN = 20;
 const SKILL_HEAD_MAX_BYTES = 512;
 
 const SKILL_PATH_RE = /^(.*?\/skills\/([^/]+))\/(?:SKILL\.md$|references\/)/;
@@ -11,6 +11,14 @@ const INVOKED_SKILL_RE = /<SKILL>The user has explicitly invoked the \(([^)\n]+)
 const USER_REQ_RE = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/;
 const FRONTMATTER_NAME_RE = /^name:\s*['"]?([^'"\n]+)['"]?\s*$/m;
 const SLASH_CMD_NAME_RE = /^[a-z0-9_-]+$/;
+
+export const RUNNING_STEP_STATUSES: ReadonlySet<string> = new Set([
+  'RUNNING',
+  'PENDING',
+  'IN_PROGRESS',
+  'GENERATING',
+  'WAITING',
+]);
 
 export const BUILTIN_SLASH_CMDS: ReadonlySet<string> = new Set([
   'agent',
@@ -78,15 +86,8 @@ const FILE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'view_code_item',
 ]);
 
-function stripControlChars(text: string): string {
-  let out = '';
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    if (code >= 32 && code !== 127) {
-      out += text[i];
-    }
-  }
-  return out;
+export function sanitizeFullTarget(text: string): string {
+  return sanitizeTerminalLabel(text);
 }
 
 export function unwrapArg(val: unknown): string {
@@ -113,32 +114,17 @@ export function unwrapArg(val: unknown): string {
   return JSON.stringify(val);
 }
 
-export function shortenTarget(text: string, maxLen: number = MAX_TARGET_LEN): string {
-  let clean = stripControlChars(text).replaceAll('\\', '/').trim();
-  if (clean.length === 0) {
-    return '';
-  }
-  if (clean.includes('/')) {
-    const trimmed = clean.replace(/\/+$/, '');
-    const parts = trimmed.split('/');
-    const tail = parts[parts.length - 1];
-    if (tail !== undefined && tail.length > 0) {
-      clean = tail;
-    }
-  }
-  return clean.length <= maxLen ? clean : `${clean.slice(0, maxLen - 1)}…`;
-}
-
 function cleanMcpServerName(raw: string): string {
-  const idx = raw.lastIndexOf('_');
+  const clean = sanitizeTerminalLabel(raw);
+  const idx = clean.lastIndexOf('_');
   if (idx > 0) {
-    const prefix = raw.slice(0, idx);
-    const suffix = raw.slice(idx + 1);
+    const prefix = clean.slice(0, idx);
+    const suffix = clean.slice(idx + 1);
     if (prefix === suffix || prefix.endsWith(`-${suffix}`)) {
       return prefix;
     }
   }
-  return raw;
+  return clean;
 }
 
 export function listMcpServers(cliHome: string): string[] {
@@ -157,40 +143,44 @@ export function listMcpServers(cliHome: string): string[] {
   }
 }
 
+function buildMcpToolPair(rawServer: string, rawSubtool: string): [string, string] | null {
+  const srv = cleanMcpServerName(rawServer);
+  const sub = sanitizeTerminalLabel(rawSubtool);
+  return srv.length > 0 && sub.length > 0 ? [srv, sub] : null;
+}
+
 export function parseMcpTool(
   toolName: string,
   args: Record<string, unknown> | undefined,
   mcpServers: readonly string[] = [],
 ): [string, string] | null {
   if ((toolName === 'call_mcp_tool' || toolName === 'list_resources' || toolName === 'read_resource') && args) {
-    const srv = unwrapArg(args.ServerName ?? args.server_name).trim();
-    const rawSub = unwrapArg(args.ToolName ?? args.tool_name ?? args.Uri ?? toolName).trim();
-    if (srv.length > 0) {
-      return [cleanMcpServerName(srv), rawSub.length > 0 ? rawSub : toolName];
-    }
+    const rawSrv = unwrapArg(args.ServerName ?? args.server_name);
+    const rawSub = sanitizeTerminalLabel(unwrapArg(args.ToolName ?? args.tool_name ?? args.Uri ?? toolName));
+    return buildMcpToolPair(rawSrv, rawSub.length > 0 ? rawSub : toolName);
   }
   if (toolName.startsWith('mcp:')) {
     const parts = toolName.split(':', 3);
     if (parts.length === 3 && parts[1] && parts[2] !== undefined) {
-      return [cleanMcpServerName(parts[1]), parts[2]];
+      return buildMcpToolPair(parts[1], parts[2]);
     }
   }
   if (toolName.startsWith('mcp__')) {
     const parts = toolName.split('__', 3);
     if (parts.length === 3 && parts[1] && parts[2] !== undefined) {
-      return [cleanMcpServerName(parts[1]), parts[2]];
+      return buildMcpToolPair(parts[1], parts[2]);
     }
   }
   if (toolName.startsWith('mcp_')) {
     const rest = toolName.slice(4);
     for (const srv of mcpServers) {
       if (rest.startsWith(`${srv}_`) && rest.length > srv.length + 1) {
-        return [cleanMcpServerName(srv), rest.slice(srv.length + 1)];
+        return buildMcpToolPair(srv, rest.slice(srv.length + 1));
       }
     }
     const idx = rest.indexOf('_');
     if (idx > 0 && idx + 1 < rest.length) {
-      return [cleanMcpServerName(rest.slice(0, idx)), rest.slice(idx + 1)];
+      return buildMcpToolPair(rest.slice(0, idx), rest.slice(idx + 1));
     }
   }
   return null;
@@ -213,13 +203,14 @@ export function resolveSkillName(pathStr: string, cliHome?: string, workspaceDir
     return null;
   }
   const skillDir = match[1];
-  const folderName = match[2];
+  const folderName = sanitizeTerminalLabel(match[2]);
+  const fallback = folderName.length > 0 ? folderName : null;
   if (cliHome === undefined) {
-    return folderName;
+    return fallback;
   }
   const safeSkillFile = resolveSafeSkillFile(cliHome, path.join(skillDir, 'SKILL.md'), workspaceDir);
   if (safeSkillFile === null) {
-    return folderName;
+    return fallback;
   }
   try {
     const head = readFileHeadUtf8(safeSkillFile, SKILL_HEAD_MAX_BYTES);
@@ -228,13 +219,16 @@ export function resolveSkillName(pathStr: string, cliHome?: string, workspaceDir
       const block = endIdx !== -1 ? head.slice(0, endIdx) : head;
       const nameMatch = FRONTMATTER_NAME_RE.exec(block);
       if (nameMatch?.[1]) {
-        return nameMatch[1].trim();
+        const cleanName = sanitizeTerminalLabel(nameMatch[1]);
+        if (cleanName.length > 0) {
+          return cleanName;
+        }
       }
     }
   } catch {
     // Fall back to skill folder name if SKILL.md cannot be read.
   }
-  return folderName;
+  return fallback;
 }
 
 export function extractToolTarget(name: string, args: Record<string, unknown> | undefined): string {
@@ -281,9 +275,9 @@ export function extractUserInputSkills(content: string): string[] {
   let match = INVOKED_SKILL_RE.exec(content);
   while (match !== null) {
     if (match[1]) {
-      const trimmed = match[1].trim();
-      if (trimmed.length > 0) {
-        found.push(trimmed);
+      const cleaned = sanitizeTerminalLabel(match[1]);
+      if (cleaned.length > 0) {
+        found.push(cleaned);
       }
     }
     match = INVOKED_SKILL_RE.exec(content);

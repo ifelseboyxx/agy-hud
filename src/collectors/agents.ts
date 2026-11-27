@@ -1,18 +1,10 @@
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readSync } from 'node:fs';
 
-import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
-import {
-  BRIGHT_CYAN,
-  BRIGHT_RED,
-  BRIGHT_WHITE,
-  BRIGHT_YELLOW,
-  CYAN,
-  GRAY,
-  GREEN,
-  MAGENTA,
-  RESET,
-  YELLOW,
-} from '../render/ansi.ts';
+import { cleanAgentLabel } from '../core/activity-aggregate.ts';
+import { readRegularJsonObjectSync } from '../core/fs-utils.ts';
+import { isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
+import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from '../core/safe-path.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type {
   ActivityAgentEntry,
   AgentEntry,
@@ -22,12 +14,9 @@ import type {
   StatusLineData,
   SubagentStdinItem,
 } from '../types.ts';
-import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
 
-const AGENT_RETENTION_SECONDS = 60;
 const TAIL_READ_BYTES = 16384;
-const MAX_VISIBLE_AGENTS = 4;
-const MAX_AGENT_LABEL_LEN = 28;
+const MAX_SWARM_ROSTER_BYTES = 1024 * 1024;
 
 const WORKING_STATES: ReadonlySet<string> = new Set([
   '',
@@ -46,10 +35,6 @@ export interface ParsedStdinSubagent extends AgentEntry {
   altKey: string;
 }
 
-export interface RuntimeBadgesOptions {
-  hasTodosLine?: boolean;
-}
-
 function classifyStatus(rawStatus: unknown): AgentState {
   const status = typeof rawStatus === 'string' ? rawStatus.trim().toUpperCase() : '';
   if (WORKING_STATES.has(status)) {
@@ -59,40 +44,6 @@ function classifyStatus(rawStatus: unknown): AgentState {
     return 'waiting';
   }
   return 'done';
-}
-
-export function cleanAgentLabel(rawName: unknown, rawRole: unknown, rawType: unknown = ''): string {
-  const strip = (val: unknown): string => {
-    if (typeof val !== 'string') {
-      return '';
-    }
-    const firstLine = val.trim().split(/\r?\n/, 1)[0] ?? '';
-    return firstLine.replace(/^[` ]+|[` ]+$/g, '');
-  };
-
-  const name = strip(rawName);
-  const role = strip(rawRole);
-  const agentType = strip(rawType);
-
-  let chosen: string;
-  if (role.length > 0 && role.length <= MAX_AGENT_LABEL_LEN) {
-    chosen = role;
-  } else if (name.length > 0 && name.length <= MAX_AGENT_LABEL_LEN) {
-    chosen = name;
-  } else if (role.length > 0) {
-    chosen = role;
-  } else if (name.length > 0) {
-    chosen = name;
-  } else if (agentType.length > 0) {
-    chosen = agentType;
-  } else {
-    chosen = 'subagent';
-  }
-
-  if (chosen.length > MAX_AGENT_LABEL_LEN) {
-    return `${chosen.slice(0, MAX_AGENT_LABEL_LEN - 1).trimEnd()}…`;
-  }
-  return chosen;
 }
 
 export function readTailLines(filePath: string, maxBytes: number = TAIL_READ_BYTES): string[] {
@@ -195,16 +146,11 @@ function loadSwarmEntries(cliHome: string, data: StatusLineData): AgentEntry[] |
     return null;
   }
   const rosterPath = resolveCliSubdirFile(cliHome, 'brain', convId, '.system_generated', 'swarm', 'members.json');
-  if (rosterPath === null || !existsSync(rosterPath)) {
+  if (rosterPath === null) {
     return null;
   }
-  let roster: unknown;
-  try {
-    roster = JSON.parse(readFileSync(rosterPath, 'utf8'));
-  } catch {
-    return null;
-  }
-  if (!isPlainObject(roster) || !isPlainObject(roster.members)) {
+  const roster = readRegularJsonObjectSync(rosterPath, MAX_SWARM_ROSTER_BYTES);
+  if (roster === null || !isPlainObject(roster.members)) {
     return null;
   }
 
@@ -213,22 +159,25 @@ function loadSwarmEntries(cliHome: string, data: StatusLineData): AgentEntry[] |
     if (!isPlainObject(member)) {
       continue;
     }
-    const role = typeof member.role === 'string' ? member.role.trim().toLowerCase() : '';
-    if (name === 'coordinator' || role === 'coordinator' || member.killed === true) {
+    const cleanName = sanitizeTerminalLabel(name);
+    const role = typeof member.role === 'string' ? sanitizeTerminalLabel(member.role).toLowerCase() : '';
+    if (cleanName.length === 0 || cleanName === 'coordinator' || role === 'coordinator') {
       continue;
     }
+    const isKilled = member.killed === true;
+    const stoppedTs = isKilled ? parseIsoTimestampSec(member.killed_at ?? member.stopped_at) : null;
     entries.push({
-      name,
+      name: cleanName,
       type: role.length > 0 && role !== 'worker' ? role : '',
-      model: typeof member.model === 'string' ? member.model.trim() : '',
-      state: memberSwarmState(cliHome, member),
-      ts: null,
+      model: typeof member.model === 'string' ? sanitizeTerminalLabel(member.model) : '',
+      state: isKilled ? 'done' : memberSwarmState(cliHome, member),
+      ts: stoppedTs,
     });
   }
   return entries;
 }
 
-export function parseStdinSubagents(stdinSubagents: readonly SubagentStdinItem[] | undefined): ParsedStdinSubagent[] {
+function parseStdinSubagents(stdinSubagents: readonly SubagentStdinItem[] | undefined): ParsedStdinSubagent[] {
   if (!Array.isArray(stdinSubagents)) {
     return [];
   }
@@ -237,16 +186,16 @@ export function parseStdinSubagents(stdinSubagents: readonly SubagentStdinItem[]
     if (!isPlainObject(sa)) {
       continue;
     }
-    const rawName = typeof sa.name === 'string' ? sa.name.trim() : '';
-    const rawRole = typeof sa.role === 'string' ? sa.role.trim() : '';
-    const rawType = typeof sa.type_name === 'string' ? sa.type_name.trim() : '';
+    const rawName = typeof sa.name === 'string' ? sanitizeTerminalLabel(sa.name) : '';
+    const rawRole = typeof sa.role === 'string' ? sanitizeTerminalLabel(sa.role) : '';
+    const rawType = typeof sa.type_name === 'string' ? sanitizeTerminalLabel(sa.type_name) : '';
     const label = cleanAgentLabel(rawName, rawRole, rawType);
     entries.push({
       name: label,
       key: rawName.toLowerCase(),
       altKey: label.toLowerCase(),
       type: rawType,
-      model: typeof sa.model === 'string' ? sa.model.trim() : '',
+      model: typeof sa.model === 'string' ? sanitizeTerminalLabel(sa.model) : '',
       state: classifyStatus(sa.status ?? sa.state),
       ts: null,
     });
@@ -264,7 +213,7 @@ export function syncSwarmFromStdin(
   }
   for (const sa of stdinEntries) {
     const target = byName.get(sa.key) ?? byName.get(sa.altKey);
-    if (!target) {
+    if (!target || target.state === 'done') {
       continue;
     }
     if (sa.state === 'working' || sa.state === 'waiting') {
@@ -283,8 +232,8 @@ function convertActivityAgents(activityAgents: readonly ActivityAgentEntry[] | u
   }
   return activityAgents.map((agent) => ({
     name: cleanAgentLabel(agent.name, '', agent.type),
-    type: agent.type,
-    model: agent.model,
+    type: sanitizeTerminalLabel(agent.type),
+    model: sanitizeTerminalLabel(agent.model),
     state: agent.running ? 'working' : 'done',
     ts: agent.ts,
   }));
@@ -329,101 +278,4 @@ export function collectAgentsSummary(
     total: kind === 'swarm' ? alive : entries.length,
     entries,
   };
-}
-
-export function formatRuntimeBadges(data: StatusLineData, options?: RuntimeBadgesOptions): string[] {
-  const badges: string[] = [];
-  const aname = nonEmptyStr(data.agent?.name);
-  if (aname !== undefined) {
-    badges.push(`${BRIGHT_CYAN}@${aname.slice(0, 20)}${RESET}`);
-  }
-
-  const battle = data.battle;
-  if (battle) {
-    const bstatus = nonEmptyStr(battle.status)?.toLowerCase() ?? '';
-    if (
-      bstatus.length > 0 &&
-      bstatus !== 'none' &&
-      bstatus !== 'inactive' &&
-      bstatus !== 'ended' &&
-      bstatus !== 'idle'
-    ) {
-      const arm = nonEmptyStr(battle.focused_arm);
-      const armStr = arm !== undefined ? ` ${arm}` : '';
-      badges.push(`${BRIGHT_YELLOW}Battle${armStr}${RESET}`);
-    }
-  }
-
-  if (options?.hasTodosLine !== true && typeof data.task_count === 'number' && data.task_count > 0) {
-    badges.push(`${CYAN}BG ${BRIGHT_WHITE}${data.task_count}${RESET}`);
-  }
-
-  if (data.tool_confirmation_pending === true) {
-    badges.push(`${BRIGHT_RED}! Approval${RESET}`);
-  }
-
-  if (typeof data.pending_input_count === 'number' && data.pending_input_count > 0) {
-    badges.push(`${YELLOW}Q:${data.pending_input_count}${RESET}`);
-  }
-
-  return badges;
-}
-
-export function formatAgentsBadge(summary: AgentsSummary | null | undefined): string {
-  if (!summary || summary.alive <= 0) {
-    return '';
-  }
-  const { kind, working, alive, total } = summary;
-  if (kind === 'swarm') {
-    const wColor = working > 0 ? BRIGHT_YELLOW : GRAY;
-    return `${MAGENTA}Swarm ${wColor}${working}${GRAY}/${BRIGHT_WHITE}${alive}${RESET}`;
-  }
-  if (total > alive) {
-    return `${MAGENTA}Agents ${BRIGHT_YELLOW}${alive}${GRAY}/${BRIGHT_WHITE}${total}${RESET}`;
-  }
-  return `${MAGENTA}Agents ${BRIGHT_YELLOW}${alive}${RESET}`;
-}
-
-function formatMemberChip(entry: AgentEntry): string {
-  const icon = entry.state === 'working' ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`;
-  return `${icon} ${MAGENTA}${entry.name}${RESET}`;
-}
-
-export function formatAgentsSection(
-  summary: AgentsSummary | null | undefined,
-  maxAgentChips: number = MAX_VISIBLE_AGENTS,
-  nowSec: number = Date.now() / 1000,
-): string {
-  if (!summary || summary.entries.length === 0 || maxAgentChips <= 0) {
-    return '';
-  }
-  const { kind, working, alive, total, entries } = summary;
-
-  if (alive > 0) {
-    const ordered = [...entries.filter((e) => e.state === 'working'), ...entries.filter((e) => e.state === 'waiting')];
-    const shown = ordered.slice(0, maxAgentChips).map(formatMemberChip);
-    if (ordered.length > maxAgentChips) {
-      shown.push(`${GRAY}+${ordered.length - maxAgentChips} more${RESET}`);
-    }
-    if (kind === 'swarm') {
-      const icon = working > 0 ? `${YELLOW}◐${RESET}` : `${CYAN}◌${RESET}`;
-      const countText = working === 0 ? `0/${alive} waiting` : `${working}/${alive}`;
-      return `  ${icon} Swarm ${GRAY}(${countText}):${RESET} ${shown.join(', ')}`;
-    }
-    const countText = total > alive ? `${alive}/${total}` : String(alive);
-    return `  ${YELLOW}◐${RESET} Agents ${GRAY}(${countText}):${RESET} ${shown.join(', ')}`;
-  }
-
-  const recent = entries.filter(
-    (e) => e.state === 'done' && isFiniteNum(e.ts) && nowSec - e.ts <= AGENT_RETENTION_SECONDS,
-  );
-  if (recent.length === 0) {
-    return '';
-  }
-  const doneLimit = Math.min(3, maxAgentChips);
-  const shown = recent.slice(-doneLimit).map((e) => `${MAGENTA}${e.name}${RESET}`);
-  if (recent.length > doneLimit) {
-    shown.push(`${GRAY}+${recent.length - doneLimit} more${RESET}`);
-  }
-  return `  ${GREEN}✓${RESET} Agents ${GRAY}(${recent.length} done):${RESET} ${shown.join(', ')}`;
 }

@@ -1,4 +1,4 @@
-const scopes = ['root', 'hud', 'collectors', 'render', 'cli', 'skills', 'scripts', 'tests', 'docs', 'deps'];
+const scopes = ['root', 'hud', 'core', 'collectors', 'render', 'cli', 'skills', 'scripts', 'tests', 'docs', 'deps'];
 
 module.exports = {
   rules: {

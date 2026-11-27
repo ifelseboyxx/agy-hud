@@ -1,19 +1,20 @@
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isMainEntry } from '../src/core/paths.ts';
-import { walkFiles } from './lib/walk-files.mts';
+import ts from 'typescript';
+
+import { isMainEntry } from '../src/core/fs-utils.ts';
+import { DEFAULT_SKIP_DIRS, walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_ROOTS = ['src', 'scripts', 'tests'] as const;
-const SKIP_DIRS = new Set(['node_modules', 'vendor', 'cache', 'dist', '__pycache__', '.git', 'coverage']);
-const SOURCE_EXTENSIONS = new Set(['.mts', '.ts', '.cts', '.tsx', '.vue']);
+const SKIP_DIRS = new Set([...DEFAULT_SKIP_DIRS, 'vendor', '__pycache__']);
+const SOURCE_EXTENSIONS = new Set(['.mts', '.ts', '.cts', '.tsx']);
 
 export interface TypecheckProject {
   readonly config: string;
-  readonly compiler: string;
+  readonly compiler?: string;
 }
 
 export interface IdeOrphanFinding {
@@ -21,14 +22,7 @@ export interface IdeOrphanFinding {
   nearestConfig: string | null;
 }
 
-export const TYPECHECK_PROJECTS: readonly TypecheckProject[] = [
-  { config: 'tsconfig.json', compiler: 'typescript/lib/tsc.js' },
-];
-
-interface ParsedTsConfigMeta {
-  hasVueCompilerOptions: boolean;
-  references: string[];
-}
+export const TYPECHECK_PROJECTS: readonly TypecheckProject[] = [{ config: 'tsconfig.json' }];
 
 function collectTypedSourceFiles(projectRoot: string): string[] {
   const files: string[] = [];
@@ -48,41 +42,17 @@ function collectTypedSourceFiles(projectRoot: string): string[] {
   return files.map((file) => path.relative(projectRoot, file).split(path.sep).join('/')).sort();
 }
 
-function listProjectFiles(configRel: string, compilerRel: string, projectRoot: string): string[] {
-  const compiler = path.join(projectRoot, 'node_modules', compilerRel);
-  const result = spawnSync(process.execPath, [compiler, '--listFilesOnly', '-p', configRel], {
-    cwd: projectRoot,
-    encoding: 'utf8',
-  });
-  if (result.status !== 0) {
-    throw new Error(`${compilerRel} --listFilesOnly -p ${configRel} failed: ${result.stderr || result.stdout}`);
+function parseProjectConfig(absConfig: string, projectRoot: string): { files: string[]; references: string[] } {
+  const read = ts.readConfigFile(absConfig, (p) => fs.readFileSync(p, 'utf8'));
+  if (read.error) {
+    throw new Error(`Failed to read ${absConfig}: ${ts.flattenDiagnosticMessageText(read.error.messageText, '\n')}`);
   }
-  return result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((file) => path.relative(projectRoot, path.resolve(projectRoot, file)).split(path.sep).join('/'));
-}
-
-function parseTsConfigMeta(absConfig: string): ParsedTsConfigMeta {
-  try {
-    const raw: unknown = JSON.parse(fs.readFileSync(absConfig, 'utf8'));
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-      return { hasVueCompilerOptions: false, references: [] };
-    }
-    const obj = raw as Record<string, unknown>;
-    const hasVueCompilerOptions = typeof obj.vueCompilerOptions === 'object' && obj.vueCompilerOptions !== null;
-    const references: string[] = [];
-    for (const item of Array.isArray(obj.references) ? obj.references : []) {
-      if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
-        const refPath = (item as Record<string, unknown>).path;
-        if (typeof refPath === 'string' && refPath.trim() !== '') references.push(refPath.trim());
-      }
-    }
-    return { hasVueCompilerOptions, references };
-  } catch {
-    return { hasVueCompilerOptions: false, references: [] };
-  }
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, path.dirname(absConfig), undefined, absConfig);
+  const files = parsed.fileNames.map((file) =>
+    path.relative(projectRoot, path.resolve(file)).split(path.sep).join('/'),
+  );
+  const references = (parsed.projectReferences ?? []).map((ref) => ref.path);
+  return { files, references };
 }
 
 function findNearestTsConfig(absFile: string, resolvedRoot: string): string | null {
@@ -108,11 +78,10 @@ function collectConfigFilesRecursive(
   if (visiting.has(configRel)) return new Set();
   visiting.add(configRel);
 
-  const meta = parseTsConfigMeta(absConfig);
-  const compilerRel = meta.hasVueCompilerOptions ? 'vue-tsc/bin/vue-tsc.js' : 'typescript/lib/tsc.js';
-  const covered = new Set<string>(listProjectFiles(configRel, compilerRel, resolvedRoot));
+  const { files, references } = parseProjectConfig(absConfig, resolvedRoot);
+  const covered = new Set<string>(files);
 
-  for (const refPath of meta.references) {
+  for (const refPath of references) {
     const target = path.resolve(path.dirname(absConfig), refPath);
     const refConfig =
       fs.existsSync(target) && fs.statSync(target).isDirectory() ? path.join(target, 'tsconfig.json') : target;
@@ -128,18 +97,22 @@ function collectConfigFilesRecursive(
 export function findUncoveredTypedSourceFiles(
   projectRoot: string = root,
   projects: readonly TypecheckProject[] = TYPECHECK_PROJECTS,
+  cache: Map<string, Set<string>> = new Map(),
 ): string[] {
   const resolvedRoot = fs.realpathSync(projectRoot);
   const covered = new Set<string>();
   for (const project of projects) {
-    for (const file of listProjectFiles(project.config, project.compiler, resolvedRoot)) covered.add(file);
+    const absConfig = path.resolve(resolvedRoot, project.config);
+    for (const file of collectConfigFilesRecursive(absConfig, resolvedRoot, cache, new Set())) covered.add(file);
   }
   return collectTypedSourceFiles(resolvedRoot).filter((file) => !covered.has(file));
 }
 
-export function findIdeOrphanedTypedSourceFiles(projectRoot: string = root): IdeOrphanFinding[] {
+export function findIdeOrphanedTypedSourceFiles(
+  projectRoot: string = root,
+  cache: Map<string, Set<string>> = new Map(),
+): IdeOrphanFinding[] {
   const resolvedRoot = fs.realpathSync(projectRoot);
-  const cache = new Map<string, Set<string>>();
   const findings: IdeOrphanFinding[] = [];
   for (const relFile of collectTypedSourceFiles(resolvedRoot)) {
     const nearestAbs = findNearestTsConfig(path.join(resolvedRoot, relFile), resolvedRoot);
@@ -156,8 +129,9 @@ export function findIdeOrphanedTypedSourceFiles(projectRoot: string = root): Ide
 }
 
 if (isMainEntry(import.meta.url)) {
-  const orphans = findUncoveredTypedSourceFiles(root);
-  const ideOrphans = findIdeOrphanedTypedSourceFiles(root);
+  const sharedCache = new Map<string, Set<string>>();
+  const orphans = findUncoveredTypedSourceFiles(root, TYPECHECK_PROJECTS, sharedCache);
+  const ideOrphans = findIdeOrphanedTypedSourceFiles(root, sharedCache);
   if (orphans.length > 0 || ideOrphans.length > 0) {
     for (const f of orphans) console.error(`[FAIL] ${f}: 未被 CLI typecheck 工程收录`);
     for (const item of ideOrphans) {

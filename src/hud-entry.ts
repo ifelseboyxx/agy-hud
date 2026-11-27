@@ -1,11 +1,9 @@
 #!/usr/bin/env node
+import { isMainEntry } from './core/fs-utils.ts';
 import { isPlainObject, UNSAFE_OBJECT_KEYS } from './core/guards.ts';
-import { isMainEntry, resolveCliHome } from './core/paths.ts';
-import { renderHudLines } from './render/lines.ts';
-import type { RenderHudOptions } from './render/lines.ts';
-import type { StatusLineData } from './types.ts';
-
-export type { RenderHudOptions } from './render/lines.ts';
+import { resolveCliHome } from './core/paths.ts';
+import { runHudRender } from './hud-runner.ts';
+import type { RenderHudOptions, StatusLineData } from './types.ts';
 
 function stripUnsafeKeys(raw: Record<string, unknown>): Record<string, unknown> {
   const clean: Record<string, unknown> = {};
@@ -43,7 +41,7 @@ export function parseStatusLineData(raw: unknown): StatusLineData | null {
 
 export function renderHudFromData(data: StatusLineData, options?: RenderHudOptions): string {
   const cliHome = options?.cliHome ?? resolveCliHome();
-  return renderHudLines(cliHome, data, options).join('\n');
+  return runHudRender(cliHome, data, options).join('\n');
 }
 
 function readAllStdin(): Promise<string> {

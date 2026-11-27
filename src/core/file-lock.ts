@@ -2,14 +2,21 @@ import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, unlinkSync, wr
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 
-import { lstatIfPresentSync, makeTempSuffix } from '../fs-utils.ts';
+import {
+  CLI_SETTINGS_LOCK_FILE,
+  MCP_CONFIG_LOCK_FILE,
+  SHIM_BIN_LOCK_FILE,
+  targetLockFileName,
+} from './cache-registry.ts';
+import { lstatIfPresentSync, makeTempSuffix, realpathExistingPrefixSync } from './fs-utils.ts';
 import { getErrCode, isPlainObject } from './guards.ts';
-import { realpathExistingPrefixSync, toComparePath } from './paths.ts';
+import { toComparePath } from './paths.ts';
 
-const CLI_LOCK_NAME = '.agy-hud-settings.lock';
-const MCP_LOCK_NAME = '.agy-hud-mcp.lock';
 const LOCK_POLL_MIN_MS = 25;
 const LOCK_POLL_JITTER_MS = 35;
+const SHORT_LOCK_TIMEOUT_THRESHOLD_MS = 100;
+const SHORT_LOCK_POLL_MIN_MS = 5;
+const SHORT_LOCK_POLL_JITTER_MS = 7;
 const STALE_LOCK_GRACE_MS = 150;
 const CORRUPT_LOCK_GRACE_MS = 5000;
 const LOCK_FILE_MODE = 0o600;
@@ -41,19 +48,22 @@ export function getTargetLockPath(targetDir: string): string {
   const parent = path.dirname(resolved);
   const canonicalParent = parent === resolved ? resolved : realpathExistingPrefixSync(parent);
   const baseName = path.basename(resolved);
-  const lockName = baseName.length > 0 ? `.${baseName}.agy-hud.lock` : '.agy-hud-target.lock';
-  return path.join(canonicalParent, lockName);
+  return path.join(canonicalParent, targetLockFileName(baseName));
 }
 
 export function getCliHomeLockPath(cliHome: string): string {
-  return path.join(realpathExistingPrefixSync(cliHome), CLI_LOCK_NAME);
+  return path.join(realpathExistingPrefixSync(cliHome), CLI_SETTINGS_LOCK_FILE);
 }
 
 export function getMcpConfigLockPath(geminiRoot: string): string {
-  return path.join(realpathExistingPrefixSync(geminiRoot), MCP_LOCK_NAME);
+  return path.join(realpathExistingPrefixSync(geminiRoot), MCP_CONFIG_LOCK_FILE);
 }
 
-function isPidAlive(pid: number): boolean {
+export function getShimBinLockPath(binDir: string): string {
+  return path.join(realpathExistingPrefixSync(binDir), SHIM_BIN_LOCK_FILE);
+}
+
+export function isPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -98,7 +108,7 @@ function cleanupStalePriorReclaims(reclaimPrefix: string, count: number): void {
   }
 }
 
-function tryReclaimStaleLock(lockPath: string): boolean {
+export function tryReclaimStaleLock(lockPath: string): boolean {
   const stale = readStaleLockSnapshot(lockPath);
   if (!stale) return false;
   const reclaimPrefix = `${lockPath}.reclaim.${stale.dev}.${stale.ino}`;
@@ -176,6 +186,10 @@ function tryAcquireOnce(lockPath: string, token: string, payload: string): Acqui
     writeFileSync(fd, payload, 'utf8');
     closeSync(fd);
     fd = undefined;
+    const curStat = lstatIfPresentSync(lockPath);
+    if (curStat === null || curStat.dev !== createdStat.dev || curStat.ino !== createdStat.ino) {
+      return null;
+    }
     return { lockPath, token };
   } catch (err) {
     if (fd !== undefined) {
@@ -201,10 +215,13 @@ function tryAcquireOnce(lockPath: string, token: string, payload: string): Acqui
   }
 }
 
-function acquireSingleLockSync(lockPath: string, deadline: number): AcquiredLock {
+function acquireSingleLockSync(lockPath: string, deadline: number, timeoutMs: number): AcquiredLock {
   mkdirSync(path.dirname(lockPath), { recursive: true });
   const token = makeTempSuffix();
   const payload = `${JSON.stringify({ pid: process.pid, token, lockPath })}\n`;
+  const shortPoll = timeoutMs <= SHORT_LOCK_TIMEOUT_THRESHOLD_MS;
+  const pollMin = shortPoll ? SHORT_LOCK_POLL_MIN_MS : LOCK_POLL_MIN_MS;
+  const pollJitter = shortPoll ? SHORT_LOCK_POLL_JITTER_MS : LOCK_POLL_JITTER_MS;
 
   while (true) {
     const acquired = tryAcquireOnce(lockPath, token, payload);
@@ -213,7 +230,7 @@ function acquireSingleLockSync(lockPath: string, deadline: number): AcquiredLock
     if (tryReclaimStaleLock(lockPath)) continue;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new FileLockTimeoutError(lockPath);
-    const delay = Math.min(remaining, LOCK_POLL_MIN_MS + Math.floor(Math.random() * LOCK_POLL_JITTER_MS));
+    const delay = Math.min(remaining, pollMin + Math.floor(Math.random() * pollJitter));
     Atomics.wait(SLEEP_CELL, 0, 0, delay);
   }
 }
@@ -242,7 +259,7 @@ export function withFileLocksSync<T>(
   const acquired: AcquiredLock[] = [];
   try {
     for (const lockPath of ordered) {
-      acquired.push(acquireSingleLockSync(lockPath, deadline));
+      acquired.push(acquireSingleLockSync(lockPath, deadline, timeoutMs));
     }
     return action();
   } finally {

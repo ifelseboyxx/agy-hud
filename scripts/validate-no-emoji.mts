@@ -2,11 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isMainEntry } from '../src/core/paths.ts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage', '.cache']);
 const SKIP_REL_DIRS = new Set(['.husky/_']);
 const CHECK_EXTS = new Set([
   '.ts',
@@ -19,6 +18,8 @@ const CHECK_EXTS = new Set([
   '.json',
   '.md',
   '.svg',
+  '.html',
+  '.css',
   '.yml',
   '.yaml',
   '.sh',
@@ -34,7 +35,6 @@ export interface EmojiViolation {
 function shouldCheckFile(rel: string, name: string): boolean {
   if (name === 'pnpm-lock.yaml') return false;
   if (rel === 'scripts/validate-no-emoji.mts') return false;
-  if (/\.test\.(?:mts|ts)$/.test(name)) return false;
   if (rel.startsWith('.husky/') && !rel.startsWith('.husky/_/')) return true;
   return CHECK_EXTS.has(path.extname(name));
 }
@@ -42,7 +42,6 @@ function shouldCheckFile(rel: string, name: string): boolean {
 export function findEmojiViolations(projectRoot: string = root): EmojiViolation[] {
   const resolvedRoot = fs.realpathSync(projectRoot);
   const files = walkFiles(resolvedRoot, resolvedRoot, {
-    skipDirs: SKIP_DIRS,
     skipRelDirs: SKIP_REL_DIRS,
     includeFile: shouldCheckFile,
   }).sort();
