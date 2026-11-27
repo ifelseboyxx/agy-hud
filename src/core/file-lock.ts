@@ -106,7 +106,7 @@ function cleanupStalePriorReclaims(reclaimPrefix: string, count: number): void {
   }
 }
 
-function tryReclaimStaleLock(lockPath: string): boolean {
+export function tryReclaimStaleLock(lockPath: string): boolean {
   const stale = readStaleLockSnapshot(lockPath);
   if (!stale) return false;
   const reclaimPrefix = `${lockPath}.reclaim.${stale.dev}.${stale.ino}`;

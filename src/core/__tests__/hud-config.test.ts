@@ -18,6 +18,8 @@ void describe('HudConfig schema and presets', async () => {
       preset: 'full',
       maxAgentChips: 8,
       osc8Links: true,
+      costCurrency: 'usd',
+      usdToCnyRate: 7.25,
       lines: ['mode', 'identity', 'usage', 'tools', 'skills', 'mcps', 'agents', 'todos'],
       segments: {
         model: true,

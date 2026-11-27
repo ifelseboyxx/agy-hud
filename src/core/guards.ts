@@ -46,3 +46,19 @@ export function selectNewestFirst<T>(items: readonly T[], maxCount?: number): T[
   const slice = maxCount !== undefined ? (maxCount <= 0 ? [] : items.slice(-maxCount)) : items.slice();
   return slice.reverse();
 }
+
+export function formatRelativeAge(deltaMs: number): string {
+  const sec = Math.max(0, Math.floor(deltaMs / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
+}
+
+export function formatSurfaceBadge(surface: 'cli' | 'app' | 'ide'): string {
+  if (surface === 'cli') return 'CLI';
+  if (surface === 'ide') return 'IDE';
+  return 'APP';
+}

@@ -1,7 +1,9 @@
 import {
   DEFAULT_HUD_CONFIG,
   type HudConfig,
+  type HudCostCurrency,
   type HudLineId,
+  type HudNarrowOverride,
   type HudPreset,
   type HudSegmentId,
   type HudSegments,
@@ -9,6 +11,13 @@ import {
 import { isFiniteNum, isPlainObject, UNSAFE_OBJECT_KEYS } from './guards.ts';
 
 export const VALID_HUD_PRESETS: readonly HudPreset[] = ['zen', 'minimal', 'compact', 'swarm', 'full'];
+
+export const VALID_COST_CURRENCIES: readonly HudCostCurrency[] = ['usd', 'cny', 'both'];
+
+export const DEFAULT_USD_TO_CNY_RATE: number = DEFAULT_HUD_CONFIG.usdToCnyRate;
+export const MIN_USD_TO_CNY_RATE: number = 0.01;
+export const MAX_USD_TO_CNY_RATE: number = 1000;
+export const NARROW_PANE_WIDTH_THRESHOLD: number = 100;
 
 export const HUD_LINE_IDS: readonly HudLineId[] = [
   'mode',
@@ -86,12 +95,21 @@ export const PRESET_TEMPLATES: Readonly<Record<HudPreset, HudPresetTemplate>> = 
 };
 
 const HUD_PRESET_SET: ReadonlySet<string> = new Set(VALID_HUD_PRESETS);
+const HUD_COST_CURRENCY_SET: ReadonlySet<string> = new Set(VALID_COST_CURRENCIES);
 const HUD_LINE_ID_SET: ReadonlySet<string> = new Set(HUD_LINE_IDS);
 const HUD_SEGMENT_ID_SET: ReadonlySet<string> = new Set(HUD_SEGMENT_IDS);
 const LINE_RANK: ReadonlyMap<HudLineId, number> = new Map(HUD_LINE_IDS.map((id, idx) => [id, idx]));
 
 export function isHudPreset(value: unknown): value is HudPreset {
   return typeof value === 'string' && HUD_PRESET_SET.has(value);
+}
+
+export function isHudCostCurrency(value: unknown): value is HudCostCurrency {
+  return typeof value === 'string' && HUD_COST_CURRENCY_SET.has(value);
+}
+
+export function isValidUsdToCnyRate(value: unknown): value is number {
+  return isFiniteNum(value) && value >= MIN_USD_TO_CNY_RATE && value <= MAX_USD_TO_CNY_RATE;
 }
 
 export function isHudLineId(value: unknown): value is HudLineId {
@@ -106,27 +124,64 @@ function isValidMaxAgentChips(value: unknown): value is number {
   return isFiniteNum(value) && Number.isInteger(value) && value >= 0 && value <= MAX_AGENT_CHIPS_LIMIT;
 }
 
+export function cloneNarrowOverride(narrow: HudNarrowOverride | undefined): HudNarrowOverride | undefined {
+  if (!narrow) return undefined;
+  const out: HudNarrowOverride = {};
+  if (narrow.lines !== undefined) {
+    out.lines = [...narrow.lines];
+  }
+  if (narrow.segments !== undefined && Object.keys(narrow.segments).length > 0) {
+    out.segments = { ...narrow.segments };
+  }
+  return out.lines !== undefined || out.segments !== undefined ? out : undefined;
+}
+
 export function cloneHudConfig(config: HudConfig): HudConfig {
+  const narrow = cloneNarrowOverride(config.narrow);
   return {
     preset: config.preset,
     maxAgentChips: config.maxAgentChips,
     osc8Links: config.osc8Links,
+    costCurrency: config.costCurrency,
+    usdToCnyRate: config.usdToCnyRate,
     lines: [...config.lines],
     segments: { ...config.segments },
+    ...(narrow !== undefined ? { narrow } : {}),
   };
 }
 
-export function buildPresetConfig(
-  preset: HudPreset,
-  overrides?: Partial<Pick<HudConfig, 'maxAgentChips' | 'osc8Links'>>,
-): HudConfig {
+export type PresetConfigOverrides = Partial<
+  Pick<HudConfig, 'maxAgentChips' | 'osc8Links' | 'costCurrency' | 'usdToCnyRate' | 'narrow'>
+>;
+
+export function buildPresetConfig(preset: HudPreset, overrides?: PresetConfigOverrides): HudConfig {
   const tpl = PRESET_TEMPLATES[preset];
+  const narrow = cloneNarrowOverride(overrides?.narrow);
   return {
     preset,
     maxAgentChips: overrides?.maxAgentChips ?? DEFAULT_HUD_CONFIG.maxAgentChips,
     osc8Links: overrides?.osc8Links ?? DEFAULT_HUD_CONFIG.osc8Links,
+    costCurrency: overrides?.costCurrency ?? DEFAULT_HUD_CONFIG.costCurrency,
+    usdToCnyRate: overrides?.usdToCnyRate ?? DEFAULT_HUD_CONFIG.usdToCnyRate,
     lines: [...tpl.lines],
     segments: { ...tpl.segments },
+    ...(narrow !== undefined ? { narrow } : {}),
+  };
+}
+
+export function resolveEffectiveHudConfig(config: HudConfig, termWidth: number): HudConfig {
+  if (termWidth >= NARROW_PANE_WIDTH_THRESHOLD || config.narrow === undefined) {
+    return config;
+  }
+  const narrow = config.narrow;
+  return {
+    preset: config.preset,
+    maxAgentChips: config.maxAgentChips,
+    osc8Links: config.osc8Links,
+    costCurrency: config.costCurrency,
+    usdToCnyRate: config.usdToCnyRate,
+    lines: narrow.lines !== undefined ? [...narrow.lines] : [...config.lines],
+    segments: narrow.segments !== undefined ? { ...config.segments, ...narrow.segments } : { ...config.segments },
   };
 }
 
@@ -195,6 +250,76 @@ function applySegmentsField(rawSegments: unknown, target: HudSegments, strict: b
   }
 }
 
+function parseNarrowField(rawNarrow: unknown, strict: boolean): HudNarrowOverride | undefined {
+  if (!isPlainObject(rawNarrow)) {
+    if (strict) {
+      throw new Error("Invalid 'narrow' in hud-config.json (expected object with optional 'lines' and 'segments')");
+    }
+    return undefined;
+  }
+  const out: HudNarrowOverride = {};
+  for (const key of Object.keys(rawNarrow)) {
+    if (UNSAFE_OBJECT_KEYS.has(key)) continue;
+    if (key !== 'lines' && key !== 'segments' && strict) {
+      throw new Error(`Unknown key 'narrow.${key}' in hud-config.json (expected: lines | segments)`);
+    }
+  }
+  if (rawNarrow.lines !== undefined) {
+    if (!Array.isArray(rawNarrow.lines)) {
+      if (strict) {
+        throw new Error("Invalid 'narrow.lines' in hud-config.json (expected array of line IDs)");
+      }
+    } else {
+      const deduped: HudLineId[] = [];
+      const seen = new Set<HudLineId>();
+      for (const item of rawNarrow.lines) {
+        if (!isHudLineId(item)) {
+          if (strict) {
+            throw new Error(
+              `Invalid line ID '${String(item)}' in hud-config.json 'narrow.lines' (expected: ${HUD_LINE_IDS.join(' | ')})`,
+            );
+          }
+          continue;
+        }
+        if (!seen.has(item)) {
+          seen.add(item);
+          deduped.push(item);
+        }
+      }
+      out.lines = deduped;
+    }
+  }
+  if (rawNarrow.segments !== undefined) {
+    if (!isPlainObject(rawNarrow.segments)) {
+      if (strict) {
+        throw new Error("Invalid 'narrow.segments' in hud-config.json (expected object of segment booleans)");
+      }
+    } else {
+      const cleanSegs: Partial<HudSegments> = {};
+      for (const [segKey, segVal] of Object.entries(rawNarrow.segments)) {
+        if (UNSAFE_OBJECT_KEYS.has(segKey)) continue;
+        if (!isHudSegmentId(segKey)) {
+          if (strict) {
+            throw new Error(
+              `Unknown segment ID '${segKey}' in hud-config.json 'narrow.segments' (expected: ${HUD_SEGMENT_IDS.join(' | ')})`,
+            );
+          }
+          continue;
+        }
+        if (typeof segVal === 'boolean') {
+          cleanSegs[segKey] = segVal;
+        } else if (strict) {
+          throw new Error(`Invalid boolean 'narrow.segments.${segKey}' in hud-config.json`);
+        }
+      }
+      if (Object.keys(cleanSegs).length > 0) {
+        out.segments = cleanSegs;
+      }
+    }
+  }
+  return out.lines !== undefined || out.segments !== undefined ? out : undefined;
+}
+
 export function parseHudConfig(raw: Record<string, unknown> | null | undefined, strict: boolean): HudConfig {
   if (!raw) {
     return buildPresetConfig(DEFAULT_HUD_CONFIG.preset);
@@ -227,12 +352,37 @@ export function parseHudConfig(raw: Record<string, unknown> | null | undefined, 
     }
   }
 
+  if (raw.costCurrency !== undefined) {
+    if (isHudCostCurrency(raw.costCurrency)) {
+      next.costCurrency = raw.costCurrency;
+    } else if (strict) {
+      throw new Error(`Invalid 'costCurrency' in hud-config.json (expected: ${VALID_COST_CURRENCIES.join(' | ')})`);
+    }
+  }
+
+  if (raw.usdToCnyRate !== undefined) {
+    if (isValidUsdToCnyRate(raw.usdToCnyRate)) {
+      next.usdToCnyRate = raw.usdToCnyRate;
+    } else if (strict) {
+      throw new Error(
+        `Invalid 'usdToCnyRate' in hud-config.json (expected number ${MIN_USD_TO_CNY_RATE}..${MAX_USD_TO_CNY_RATE})`,
+      );
+    }
+  }
+
   if (raw.lines !== undefined) {
     next.lines = parseLinesField(raw.lines, next.lines, strict);
   }
 
   if (raw.segments !== undefined) {
     applySegmentsField(raw.segments, next.segments, strict);
+  }
+
+  if (raw.narrow !== undefined) {
+    const parsedNarrow = parseNarrowField(raw.narrow, strict);
+    if (parsedNarrow !== undefined) {
+      next.narrow = parsedNarrow;
+    }
   }
 
   return next;

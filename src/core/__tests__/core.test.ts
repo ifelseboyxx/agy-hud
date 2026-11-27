@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -181,7 +181,9 @@ void describe('core paths, config schema, ownership, and stdin boundary', async 
       const cliHome = path.join(tmpDir, 'cli-home');
       const targetDir = path.join(tmpDir, "dir with spaces;id;#'q");
       mkdirSync(path.join(targetDir, 'dist'), { recursive: true });
-      writeFileSync(path.join(targetDir, 'dist', 'hud.mjs'), '#!/usr/bin/env node\n', 'utf8');
+      const hudPath = path.join(targetDir, 'dist', 'hud.mjs');
+      writeFileSync(hudPath, '#!/usr/bin/env node\n', 'utf8');
+      chmodSync(hudPath, 0o755);
 
       const wired = wireCliStatusLine(cliHome, targetDir);
       assert.ok(wired.writtenStatusLine.command.startsWith("'"), 'special POSIX target path must be single-quoted');

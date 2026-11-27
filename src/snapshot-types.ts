@@ -8,6 +8,12 @@ export type SnapshotResolutionTier = 'explicit' | 'pid' | 'workspace' | 'fallbac
 
 export type SnapshotSection = 'tools' | 'skills' | 'mcps' | 'agents';
 
+export interface SnapshotCost {
+  totalUsd: number;
+  subagentUsd: number | null;
+  estimated: boolean;
+}
+
 export interface SnapshotEnvelope {
   v: 1;
   convId: string;
@@ -18,6 +24,7 @@ export interface SnapshotEnvelope {
   workspaceProjectDir: string;
   subagents: SubagentStdinItem[];
   taskCount: number | null;
+  cost?: SnapshotCost | null;
   mdDigest: string | null;
   updatedAtMs: number;
   heartbeatAtMs: number;
@@ -105,6 +112,7 @@ export interface ActivitySnapshot {
   siblingCandidates: SiblingSessionHint[];
   siblingHint: string;
   telemetry: SessionTelemetry;
+  cost?: SnapshotCost | null;
   runningTools: SnapshotRunningTool[];
   completedTools: SnapshotCompletedTool[];
   totalToolCalls: number;

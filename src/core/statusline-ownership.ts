@@ -41,21 +41,31 @@ function hasDisallowedControlChars(value: string): boolean {
   return false;
 }
 
-export function formatStatusLineCommand(hudScriptPath: string, platform: NodeJS.Platform = process.platform): string {
+export function formatStatusLineCommand(
+  hudScriptPath: string,
+  platform: NodeJS.Platform = process.platform,
+  options?: { readonly useNode?: boolean },
+): string {
   if (hudScriptPath.length === 0 || hasDisallowedControlChars(hudScriptPath)) {
     throw new Error('Invalid statusLine target path: path must not be empty or contain control/newline characters.');
   }
+  let formatted: string;
   if (platform === 'win32') {
-    if (SAFE_WIN_SHELL_PATH_RE.test(hudScriptPath)) return hudScriptPath;
-    if (hudScriptPath.includes('"') || hudScriptPath.includes('%') || hudScriptPath.includes('!')) {
+    if (SAFE_WIN_SHELL_PATH_RE.test(hudScriptPath)) {
+      formatted = hudScriptPath;
+    } else if (hudScriptPath.includes('"') || hudScriptPath.includes('%') || hudScriptPath.includes('!')) {
       throw new Error(
         'Invalid Windows statusLine target path: path must not contain double quotes, percent signs, or exclamation marks.',
       );
+    } else {
+      formatted = `"${hudScriptPath}"`;
     }
-    return `"${hudScriptPath}"`;
+  } else if (SAFE_POSIX_SHELL_PATH_RE.test(hudScriptPath)) {
+    formatted = hudScriptPath;
+  } else {
+    formatted = `'${hudScriptPath.replaceAll("'", "'\\''")}'`;
   }
-  if (SAFE_POSIX_SHELL_PATH_RE.test(hudScriptPath)) return hudScriptPath;
-  return `'${hudScriptPath.replaceAll("'", "'\\''")}'`;
+  return options?.useNode === true ? `node ${formatted}` : formatted;
 }
 
 interface ParsedCommandToken {
@@ -117,7 +127,11 @@ function hasDisallowedUnquotedMeta(token: string, platform: NodeJS.Platform): bo
   return unquotedMetaRe.test(token) || token.includes('"') || token.includes("'");
 }
 
-function unwrapCommandScriptPath(rawCmd: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
+export function unwrapCommandScriptPath(
+  rawCmd: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string | null {
   const trimmed = rawCmd.trim();
   if (trimmed.length === 0) return null;
   const first = parseCommandToken(trimmed, platform);
