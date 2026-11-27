@@ -92,7 +92,7 @@ void describe('enhanced cached git status collector', () => {
     writeFileSync(path.join(repo, 'extra.ts'), 'untracked\n', 'utf8');
 
     const t0 = 1_780_000_000_000;
-    const first = detectGitStatus(cliHome, repo, undefined, { nowMs: t0 });
+    const first = detectGitStatus(cliHome, repo, undefined, { nowMs: t0, timeoutMs: 5_000 });
     assert.equal(first.branch, 'main');
     assert.equal(first.dirty, true);
     assert.equal(first.modified, 1);
@@ -106,18 +106,21 @@ void describe('enhanced cached git status collector', () => {
 
     // Within TTL and unchanged HEAD/index -> cache hit returns prior snapshot even if a new untracked file appears.
     writeFileSync(path.join(repo, 'extra2.ts'), 'cached\n', 'utf8');
-    const warmHit = detectGitStatus(cliHome, repo, undefined, { nowMs: t0 + 500 });
+    const warmHit = detectGitStatus(cliHome, repo, undefined, { nowMs: t0 + 500, timeoutMs: 5_000 });
     assert.equal(warmHit.untracked, 1);
 
     // Staging mutates .git/index -> invalidates immediately even within TTL.
     runGit(repo, ['add', 'extra.ts']);
-    const afterStage = detectGitStatus(cliHome, repo, undefined, { nowMs: t0 + 600 });
+    const afterStage = detectGitStatus(cliHome, repo, undefined, { nowMs: t0 + 600, timeoutMs: 5_000 });
     assert.equal(afterStage.staged, 1);
     assert.equal(afterStage.untracked, 1);
 
     // Advancing past TTL refreshes again.
     writeFileSync(path.join(repo, 'extra3.ts'), 'after-ttl\n', 'utf8');
-    const afterTtl = detectGitStatus(cliHome, repo, undefined, { nowMs: t0 + 600 + GIT_CACHE_TTL_MS + 100 });
+    const afterTtl = detectGitStatus(cliHome, repo, undefined, {
+      nowMs: t0 + 600 + GIT_CACHE_TTL_MS + 100,
+      timeoutMs: 5_000,
+    });
     assert.equal(afterTtl.untracked, 2);
   });
 
@@ -169,7 +172,7 @@ void describe('enhanced cached git status collector', () => {
     writeFileSync(path.join(repo, 'init.ts'), 'a\nb\nc\n', 'utf8');
     runGit(repo, ['add', 'init.ts']);
     writeFileSync(path.join(repo, 'init.ts'), 'a\nb\nc\nd\n', 'utf8');
-    const unbornInfo = detectGitStatus(cliHome, repo, undefined, { nowMs: 1_780_000_000_000 });
+    const unbornInfo = detectGitStatus(cliHome, repo, undefined, { nowMs: 1_780_000_000_000, timeoutMs: 5_000 });
     assert.equal(unbornInfo.staged, 1);
     assert.equal(unbornInfo.modified, 1);
     assert.equal(unbornInfo.diffAdded, 4);
@@ -179,7 +182,7 @@ void describe('enhanced cached git status collector', () => {
     runGit(repo, ['commit', '-m', 'init']);
     writeFileSync(path.join(repo, 'HEAD'), 'not-a-ref\n', 'utf8');
     writeFileSync(path.join(repo, 'init.ts'), 'a\nb\nc\nd\ne\n', 'utf8');
-    const headFileInfo = detectGitStatus(cliHome, repo, undefined, { nowMs: 1_780_000_010_000 });
+    const headFileInfo = detectGitStatus(cliHome, repo, undefined, { nowMs: 1_780_000_010_000, timeoutMs: 5_000 });
     assert.equal(headFileInfo.diffAdded, 1);
 
     // Oversized HEAD metadata degrades gracefully without throwing.

@@ -190,7 +190,7 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 if [ "$1" = "plugin" ] && [ "$2" = "validate" ]; then
-  rm -rf "$3"
+  mv "$3" "$3.replaced"
   mkdir -p "$3"
   echo '{"name":"agy-hud","version":"9.9.9"}' > "$3/plugin.json"
   echo "concurrent-winner" > "$3/winner.txt"
