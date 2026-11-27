@@ -157,7 +157,12 @@ writeFileSync(${JSON.stringify(backupPath2)}, JSON.stringify(${JSON.stringify(ex
     );
 
     const wiredA = readJson(settingsPath).statusLine as Record<string, unknown>;
-    assert.equal(wiredA.command, formatStatusLineCommand(path.join(linkA, 'dist', 'hud.mjs')));
+    assert.equal(
+      wiredA.command,
+      formatStatusLineCommand(path.join(linkA, 'dist', 'hud.mjs'), process.platform, {
+        useNode: process.platform === 'win32',
+      }),
+    );
     const backupRawBefore = readFileSync(backupPath, 'utf8');
 
     // `off --target B` must NOT disable A.

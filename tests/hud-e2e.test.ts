@@ -186,7 +186,9 @@ void describe('agy-hud built artifacts e2e', async () => {
     assert.equal(existsSync(path.join(targetDir, 'mcp_config.json')), false);
     assert.equal(
       (readJson(settingsPath).statusLine as Record<string, unknown>).command,
-      formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs')),
+      formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), process.platform, {
+        useNode: process.platform === 'win32',
+      }),
     );
 
     const doctorRes = runNodeScript(INSTALL_SCRIPT, ['doctor', '--target', targetDir], env);

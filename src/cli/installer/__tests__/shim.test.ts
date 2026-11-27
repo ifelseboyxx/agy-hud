@@ -203,7 +203,9 @@ void describe('CLI shim inspection, preflight, atomic write/rollback, removal, a
     const selfInfo = inspectCliShim(binDir, targetA, { HOME: root, PATH: binDir }, 'darwin');
     assert.equal(selfInfo.status, 'owned-self');
     assert.equal(selfInfo.claimsSelf, true);
-    assert.equal(selfInfo.executable, true);
+    if (process.platform !== 'win32') {
+      assert.equal(selfInfo.executable, true);
+    }
     assert.equal(selfInfo.onPath, true);
     assert.equal(inspectCliShim(binDir, targetB, { HOME: root }, 'darwin').status, 'owned-other');
 
