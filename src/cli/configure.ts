@@ -2,15 +2,12 @@ import path from 'node:path';
 
 import { DEFAULT_CLI_LOCK_TIMEOUT_MS, withCliHomeLockSync } from '../core/file-lock.ts';
 import {
-  applyHudLineToggle,
   buildPresetConfig,
   cloneHudConfig,
   HUD_LINE_IDS,
   HUD_SEGMENT_IDS,
   hydrateHudConfig,
-  isHudLineId,
   isHudPreset,
-  isHudSegmentId,
   MAX_AGENT_CHIPS_LIMIT,
   PRESET_TEMPLATES,
   VALID_HUD_PRESETS,
@@ -22,7 +19,14 @@ import {
   readJsonObjectWithHashSync,
   writeJsonAtomicSync,
 } from '../fs-utils.ts';
-import { DEFAULT_HUD_CONFIG, type HudConfig, type HudLineId, type HudPreset } from '../types.ts';
+import {
+  DEFAULT_HUD_CONFIG,
+  type ConfigureHudOptions,
+  type ConfigureHudResult,
+  type HudConfig,
+  type HudPreset,
+} from '../types.ts';
+import { applyConfigureMutations } from './configure-mutations.ts';
 
 export {
   HUD_LINE_IDS,
@@ -32,161 +36,15 @@ export {
   MAX_AGENT_CHIPS_LIMIT,
   PRESET_TEMPLATES,
   VALID_HUD_PRESETS,
+  type ConfigureHudOptions,
+  type ConfigureHudResult,
 };
-
-export interface ConfigureHudOptions {
-  cliHome?: string;
-  show?: boolean;
-  interactive?: boolean;
-  preset?: HudPreset;
-  enable?: readonly string[];
-  disable?: readonly string[];
-  order?: readonly string[];
-  sets?: readonly string[];
-  reset?: boolean;
-  env?: NodeJS.ProcessEnv;
-}
-
-export interface ConfigureHudResult {
-  configPath: string;
-  config: HudConfig;
-  changed: boolean;
-  action: 'show' | 'reset' | 'update';
-}
 
 export interface ConfigureCliArgs {
   help: boolean;
   json: boolean;
   interactive: boolean;
   options: ConfigureHudOptions;
-}
-
-function parseBooleanValue(key: string, rawVal: string): boolean {
-  if (rawVal === 'true') return true;
-  if (rawVal === 'false') return false;
-  throw new Error(`Invalid boolean value '${rawVal}' for '${key}' (expected: true | false)`);
-}
-
-function parseMaxAgentChips(rawVal: string): number {
-  if (!/^\d+$/.test(rawVal)) {
-    throw new Error(`Invalid integer value '${rawVal}' for 'maxAgentChips' (expected: 0..${MAX_AGENT_CHIPS_LIMIT})`);
-  }
-  const parsed = Number.parseInt(rawVal, 10);
-  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > MAX_AGENT_CHIPS_LIMIT) {
-    throw new Error(`Out-of-range value '${rawVal}' for 'maxAgentChips' (expected: 0..${MAX_AGENT_CHIPS_LIMIT})`);
-  }
-  return parsed;
-}
-
-function applyPresetSeed(config: HudConfig, preset: HudPreset): void {
-  const tpl = PRESET_TEMPLATES[preset];
-  config.preset = preset;
-  config.lines = [...tpl.lines];
-  config.segments = { ...tpl.segments };
-}
-
-function applyOrderList(config: HudConfig, orderIds: readonly string[]): void {
-  if (orderIds.length === 0) {
-    throw new Error(`Empty --order list (expected line IDs: ${HUD_LINE_IDS.join(', ')})`);
-  }
-  const nextLines: HudLineId[] = [];
-  const seen = new Set<HudLineId>();
-  for (const rawId of orderIds) {
-    const id = rawId.trim();
-    if (!isHudLineId(id)) {
-      throw new Error(`Invalid line ID '${id}' for --order (expected: ${HUD_LINE_IDS.join(' | ')})`);
-    }
-    if (!seen.has(id)) {
-      seen.add(id);
-      nextLines.push(id);
-    }
-  }
-  config.lines = nextLines;
-}
-
-function applyModuleToggle(config: HudConfig, rawId: string, enabled: boolean): void {
-  const id = rawId.trim();
-  if (isHudLineId(id)) {
-    config.lines = applyHudLineToggle(config.lines, id, enabled);
-    return;
-  }
-  const segId = id.startsWith('segments.') ? id.slice('segments.'.length) : id;
-  if (isHudSegmentId(segId)) {
-    config.segments[segId] = enabled;
-    return;
-  }
-  throw new Error(
-    `Unknown module or segment '${id}'. Valid lines: ${HUD_LINE_IDS.join(', ')}; valid segments: ${HUD_SEGMENT_IDS.join(', ')}`,
-  );
-}
-
-function applySetAssignment(config: HudConfig, expr: string): void {
-  const eqIdx = expr.indexOf('=');
-  if (eqIdx <= 0 || eqIdx === expr.length - 1) {
-    throw new Error(`Invalid --set expression '${expr}' (expected <key>=<value>)`);
-  }
-  const key = expr.slice(0, eqIdx).trim();
-  const rawVal = expr.slice(eqIdx + 1).trim();
-  if (key.length === 0 || rawVal.length === 0) {
-    throw new Error(`Invalid --set expression '${expr}' (expected non-empty <key>=<value>)`);
-  }
-
-  if (key === 'preset') {
-    if (!isHudPreset(rawVal)) {
-      throw new Error(`Invalid preset '${rawVal}' (expected: ${VALID_HUD_PRESETS.join(' | ')})`);
-    }
-    applyPresetSeed(config, rawVal);
-    return;
-  }
-
-  if (key === 'maxAgentChips') {
-    config.maxAgentChips = parseMaxAgentChips(rawVal);
-    return;
-  }
-
-  if (key === 'osc8Links') {
-    config.osc8Links = parseBooleanValue(key, rawVal);
-    return;
-  }
-
-  if (key.startsWith('segments.')) {
-    const segKey = key.slice('segments.'.length);
-    if (isHudSegmentId(segKey)) {
-      config.segments[segKey] = parseBooleanValue(key, rawVal);
-      return;
-    }
-  }
-
-  if (isHudSegmentId(key)) {
-    config.segments[key] = parseBooleanValue(key, rawVal);
-    return;
-  }
-
-  const validKeys = ['preset', 'maxAgentChips', 'osc8Links', ...HUD_SEGMENT_IDS.map((id) => `segments.${id}`)].join(
-    ', ',
-  );
-  throw new Error(`Unknown configuration key '${key}'. Valid keys: ${validKeys}`);
-}
-
-function applyConfigureMutations(config: HudConfig, options: ConfigureHudOptions): void {
-  if (options.preset !== undefined) {
-    if (!isHudPreset(options.preset)) {
-      throw new Error(`Invalid preset '${String(options.preset)}' (expected: ${VALID_HUD_PRESETS.join(' | ')})`);
-    }
-    applyPresetSeed(config, options.preset);
-  }
-  if (options.order !== undefined) {
-    applyOrderList(config, options.order);
-  }
-  for (const id of options.enable ?? []) {
-    applyModuleToggle(config, id, true);
-  }
-  for (const id of options.disable ?? []) {
-    applyModuleToggle(config, id, false);
-  }
-  for (const expr of options.sets ?? []) {
-    applySetAssignment(config, expr);
-  }
 }
 
 export const MISSING_HUD_CONFIG_VERSION = 'missing';
@@ -267,11 +125,23 @@ export function configureHud(options: ConfigureHudOptions = {}): ConfigureHudRes
 
   const enable = options.enable ?? [];
   const disable = options.disable ?? [];
+  const narrowEnable = options.narrowEnable ?? [];
+  const narrowDisable = options.narrowDisable ?? [];
   const sets = options.sets ?? [];
   const hasPreset = options.preset !== undefined;
   const hasOrder = options.order !== undefined;
+  const hasNarrowOrder = options.narrowOrder !== undefined;
   const hasMutations =
-    Boolean(options.reset) || hasPreset || hasOrder || enable.length > 0 || disable.length > 0 || sets.length > 0;
+    Boolean(options.reset) ||
+    Boolean(options.narrowReset) ||
+    hasPreset ||
+    hasOrder ||
+    hasNarrowOrder ||
+    enable.length > 0 ||
+    disable.length > 0 ||
+    narrowEnable.length > 0 ||
+    narrowDisable.length > 0 ||
+    sets.length > 0;
 
   if (!hasMutations) {
     const current = hydrateHudConfig(readJsonObjectSync(configPath, true));
@@ -335,6 +205,10 @@ export function parseConfigureArgs(argv: readonly string[]): ConfigureCliArgs {
   const enable: string[] = [];
   const disable: string[] = [];
   let order: string[] | undefined;
+  const narrowEnable: string[] = [];
+  const narrowDisable: string[] = [];
+  let narrowOrder: string[] | undefined;
+  let narrowReset = false;
   const sets: string[] = [];
 
   const setPresetValue = (raw: string): void => {
@@ -379,6 +253,23 @@ export function parseConfigureArgs(argv: readonly string[]): ConfigureCliArgs {
       i += 1;
     } else if (arg.startsWith('--order=')) {
       order = parseCsvIdList(arg.slice('--order='.length), '--order=');
+    } else if (arg === '--narrow-enable') {
+      narrowEnable.push(...parseCsvIdList(readOptionValue(argv, i, '--narrow-enable'), '--narrow-enable'));
+      i += 1;
+    } else if (arg.startsWith('--narrow-enable=')) {
+      narrowEnable.push(...parseCsvIdList(arg.slice('--narrow-enable='.length), '--narrow-enable='));
+    } else if (arg === '--narrow-disable') {
+      narrowDisable.push(...parseCsvIdList(readOptionValue(argv, i, '--narrow-disable'), '--narrow-disable'));
+      i += 1;
+    } else if (arg.startsWith('--narrow-disable=')) {
+      narrowDisable.push(...parseCsvIdList(arg.slice('--narrow-disable='.length), '--narrow-disable='));
+    } else if (arg === '--narrow-order') {
+      narrowOrder = parseCsvIdList(readOptionValue(argv, i, '--narrow-order'), '--narrow-order');
+      i += 1;
+    } else if (arg.startsWith('--narrow-order=')) {
+      narrowOrder = parseCsvIdList(arg.slice('--narrow-order='.length), '--narrow-order=');
+    } else if (arg === '--narrow-reset') {
+      narrowReset = true;
     } else if (arg === '--set') {
       sets.push(readOptionValue(argv, i, '--set'));
       i += 1;
@@ -406,6 +297,18 @@ export function parseConfigureArgs(argv: readonly string[]): ConfigureCliArgs {
   }
   if (order !== undefined) {
     options.order = order;
+  }
+  if (narrowEnable.length > 0) {
+    options.narrowEnable = narrowEnable;
+  }
+  if (narrowDisable.length > 0) {
+    options.narrowDisable = narrowDisable;
+  }
+  if (narrowOrder !== undefined) {
+    options.narrowOrder = narrowOrder;
+  }
+  if (narrowReset) {
+    options.narrowReset = true;
   }
   return { help, json, interactive, options };
 }

@@ -1,4 +1,10 @@
-import { applyHudLineToggle, buildPresetConfig, cloneHudConfig, VALID_HUD_PRESETS } from '../core/hud-config.ts';
+import {
+  applyHudLineToggle,
+  buildPresetConfig,
+  cloneHudConfig,
+  VALID_COST_CURRENCIES,
+  VALID_HUD_PRESETS,
+} from '../core/hud-config.ts';
 import type { HudConfig } from '../types.ts';
 import {
   buildConfigurePreviewLines,
@@ -128,6 +134,9 @@ export function applyConfigureTuiKey(state: ConfigureTuiState, seq: string): Con
       state.draft = buildPresetConfig(nextPreset, {
         maxAgentChips: state.draft.maxAgentChips,
         osc8Links: state.draft.osc8Links,
+        costCurrency: state.draft.costCurrency,
+        usdToCnyRate: state.draft.usdToCnyRate,
+        narrow: state.draft.narrow,
       });
       return 'redraw';
     }
@@ -140,6 +149,9 @@ export function applyConfigureTuiKey(state: ConfigureTuiState, seq: string): Con
       state.draft = buildPresetConfig(nextPreset, {
         maxAgentChips: state.draft.maxAgentChips,
         osc8Links: state.draft.osc8Links,
+        costCurrency: state.draft.costCurrency,
+        usdToCnyRate: state.draft.usdToCnyRate,
+        narrow: state.draft.narrow,
       });
       return 'redraw';
     }
@@ -179,7 +191,12 @@ export function applyConfigureTuiKey(state: ConfigureTuiState, seq: string): Con
       state.draft.segments[active.id] = !active.enabled;
       return 'redraw';
     }
-    state.draft.osc8Links = !state.draft.osc8Links;
+    if (active.kind === 'option') {
+      state.draft.osc8Links = !state.draft.osc8Links;
+      return 'redraw';
+    }
+    const idx = VALID_COST_CURRENCIES.indexOf(state.draft.costCurrency);
+    state.draft.costCurrency = VALID_COST_CURRENCIES[(idx + 1) % VALID_COST_CURRENCIES.length] ?? 'usd';
     return 'redraw';
   }
   if (isReorderUpKey(seq)) {

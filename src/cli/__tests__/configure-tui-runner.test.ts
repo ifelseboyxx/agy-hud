@@ -243,7 +243,7 @@ void describe('runConfigureInteractive TTY runner', () => {
 
     const promise = runConfigureInteractive({ cliHome, stdin, stdout, stderr: stderr.stream, color: false });
     stdin.emit('data', Buffer.from('\t'));
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 17; i += 1) {
       stdin.emit('data', Buffer.from('j'));
     }
     stdin.emit('data', Buffer.from(' '));

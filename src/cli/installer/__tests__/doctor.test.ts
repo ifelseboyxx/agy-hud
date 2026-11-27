@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,8 +14,24 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { runDoctor, runHudStdinSmoke } from '../doctor.ts';
+import { runAgyPluginValidate, runDoctor, runHudStdinSmoke } from '../doctor.ts';
 import { runInstallerCli } from '../index.ts';
+import { installCliShim } from '../shim.ts';
+
+function captureDoctorStdout(run: () => { ok: boolean }): { ok: boolean; stdout: string } {
+  let stdout = '';
+  const origWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: string | Uint8Array): boolean => {
+    stdout += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    const res = run();
+    return { ok: res.ok, stdout };
+  } finally {
+    process.stdout.write = origWrite;
+  }
+}
 
 function seedMockPlugin(dir: string): void {
   mkdirSync(path.join(dir, 'dist'), { recursive: true });
@@ -38,6 +55,9 @@ void describe('doctor malformed CLI shim handling', () => {
     prevPath = process.env.PATH;
     process.env.GEMINI_CLI_HOME = tmpRoot;
     delete process.env.GEMINI_HOME;
+    if (process.platform !== 'win32') {
+      process.env.PATH = `${path.dirname(process.execPath)}:/usr/bin:/bin`;
+    }
   });
 
   afterEach(() => {
@@ -235,5 +255,175 @@ void describe('doctor malformed CLI shim handling', () => {
     assert.equal(smoke.ok, true);
     assert.equal(existsSync(path.join(userCliHome, 'cache', 'agy_hud_snapshot_doctor-smoke.json')), false);
     assert.deepEqual(readdirSync(userCliHome), []);
+  });
+});
+
+void describe('doctor symlink-following artifact checks', () => {
+  let tmpRoot = '';
+  let prevCliHome: string | undefined;
+  let prevGeminiHome: string | undefined;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'agy-hud-doc-stat-'));
+    prevCliHome = process.env.GEMINI_CLI_HOME;
+    prevGeminiHome = process.env.GEMINI_HOME;
+    process.env.GEMINI_CLI_HOME = tmpRoot;
+    delete process.env.GEMINI_HOME;
+  });
+
+  afterEach(() => {
+    if (prevCliHome === undefined) delete process.env.GEMINI_CLI_HOME;
+    else process.env.GEMINI_CLI_HOME = prevCliHome;
+    if (prevGeminiHome === undefined) delete process.env.GEMINI_HOME;
+    else process.env.GEMINI_HOME = prevGeminiHome;
+    if (tmpRoot.length > 0) rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  void it('short-circuits doctor as missing dist/hud.mjs when hudPath becomes a dangling symlink', () => {
+    if (process.platform === 'win32') return;
+    const targetDir = path.join(tmpRoot, 'plugin-dangling-hud');
+    const binDir = path.join(tmpRoot, 'bin');
+    seedMockPlugin(targetDir);
+
+    const baseline = runDoctor({
+      targetDir,
+      quiet: true,
+      packageRoot: targetDir,
+      binDir,
+      requireShim: false,
+      noShim: true,
+      checkMalformedShim: false,
+      agyAvailable: false,
+    });
+    assert.equal(baseline.ok, true);
+
+    rmSync(path.join(targetDir, 'dist', 'hud.mjs'));
+    symlinkSync(path.join(tmpRoot, 'missing-hud.mjs'), path.join(targetDir, 'dist', 'hud.mjs'));
+
+    const res = captureDoctorStdout(() =>
+      runDoctor({
+        targetDir,
+        quiet: false,
+        packageRoot: targetDir,
+        binDir,
+        requireShim: false,
+        noShim: true,
+        checkMalformedShim: false,
+        agyAvailable: false,
+      }),
+    );
+    assert.equal(res.ok, false);
+    assert.ok(res.stdout.includes('FAILED (missing dist/hud.mjs)'), res.stdout);
+  });
+
+  void it('short-circuits doctor as missing dist/hud.mjs when hudPath is replaced by a directory', () => {
+    const targetDir = path.join(tmpRoot, 'plugin-dir-hud');
+    const binDir = path.join(tmpRoot, 'bin');
+    seedMockPlugin(targetDir);
+
+    const baseline = runDoctor({
+      targetDir,
+      quiet: true,
+      packageRoot: targetDir,
+      binDir,
+      requireShim: false,
+      noShim: true,
+      checkMalformedShim: false,
+      agyAvailable: false,
+    });
+    assert.equal(baseline.ok, true);
+
+    rmSync(path.join(targetDir, 'dist', 'hud.mjs'));
+    mkdirSync(path.join(targetDir, 'dist', 'hud.mjs'));
+
+    const res = captureDoctorStdout(() =>
+      runDoctor({
+        targetDir,
+        quiet: false,
+        packageRoot: targetDir,
+        binDir,
+        requireShim: false,
+        noShim: true,
+        checkMalformedShim: false,
+        agyAvailable: false,
+      }),
+    );
+    assert.equal(res.ok, false);
+    assert.ok(res.stdout.includes('FAILED (missing dist/hud.mjs)'), res.stdout);
+  });
+
+  void it('short-circuits shim doctor as missing dist/cli.mjs when expectedTarget becomes a dangling symlink', () => {
+    if (process.platform === 'win32') return;
+    const targetDir = path.join(tmpRoot, 'plugin-dangling-cli');
+    const binDir = path.join(tmpRoot, 'bin-cli');
+    seedMockPlugin(targetDir);
+    installCliShim(binDir, targetDir);
+
+    const baseline = runDoctor({
+      targetDir,
+      quiet: true,
+      packageRoot: targetDir,
+      binDir,
+      requireShim: true,
+      noShim: false,
+      checkMalformedShim: true,
+      agyAvailable: false,
+    });
+    assert.equal(baseline.ok, true);
+
+    const cliPath = path.join(targetDir, 'dist', 'cli.mjs');
+    rmSync(cliPath);
+    symlinkSync(path.join(tmpRoot, 'missing-cli.mjs'), cliPath);
+
+    const res = captureDoctorStdout(() =>
+      runDoctor({
+        targetDir,
+        quiet: false,
+        packageRoot: targetDir,
+        binDir,
+        requireShim: true,
+        noShim: false,
+        checkMalformedShim: true,
+        agyAvailable: false,
+      }),
+    );
+    assert.equal(res.ok, false);
+    assert.ok(res.stdout.includes(`FAILED (missing ${cliPath})`), res.stdout);
+  });
+
+  void it('tolerates copied root AGENTS.md warning on Plugin Install target distinct from repoRoot', () => {
+    if (process.platform === 'win32') return;
+    const pluginInstallDir = path.join(tmpRoot, 'installed-plugin-copy');
+    const separateRepoRoot = path.join(tmpRoot, 'separate-checkout');
+    const fakeBin = path.join(tmpRoot, 'fake-agy-bin');
+    seedMockPlugin(pluginInstallDir);
+    writeFileSync(path.join(pluginInstallDir, 'AGENTS.md'), '# Repo rules copied by agy plugin install\n', 'utf8');
+    mkdirSync(separateRepoRoot, { recursive: true });
+    mkdirSync(fakeBin, { recursive: true });
+
+    const fakeAgy = path.join(fakeBin, 'agy');
+    writeFileSync(
+      fakeAgy,
+      [
+        '#!/bin/sh',
+        'if [ "$4" = "--strict" ]; then',
+        '  echo "AGENTS.md: never loaded (1 warning)" >&2',
+        '  exit 1',
+        'fi',
+        'exit 0',
+      ].join('\n'),
+      'utf8',
+    );
+    chmodSync(fakeAgy, 0o755);
+    process.env.PATH = `${fakeBin}:${path.dirname(process.execPath)}:/usr/bin:/bin`;
+
+    // Positive control: copied AGENTS.md warning falls back to non-strict and passes even when pluginBase !== repoRoot.
+    const okRes = runAgyPluginValidate(pluginInstallDir, separateRepoRoot, 5_000);
+    assert.equal(okRes.ok, true);
+
+    // Negative control: when AGENTS.md is absent, --strict failure is surfaced without fallback.
+    rmSync(path.join(pluginInstallDir, 'AGENTS.md'));
+    const failRes = runAgyPluginValidate(pluginInstallDir, separateRepoRoot, 5_000);
+    assert.equal(failRes.ok, false);
   });
 });

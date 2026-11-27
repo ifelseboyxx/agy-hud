@@ -4,6 +4,7 @@ import { getCliHomeLockPath, getShimBinLockPath, getTargetLockPath, withFileLock
 import { resolveCliHome } from '../../core/paths.ts';
 import { lstatIfPresentSync, statIfPresentSync } from '../../fs-utils.ts';
 import type { InstallerOptions } from './args.ts';
+import { preflightPurgeConfig, runPostTeardownCleanup, type CleanupReceipt } from './cleanup.ts';
 import { hasAgyCli, runDoctor, toggleAgyPlugin, writeInstallerLine } from './doctor.ts';
 import { makeRollbackError, runRollbackSteps, type RollbackStep } from './fs-ops.ts';
 import {
@@ -55,6 +56,7 @@ export interface ApplyWireShimDoctorOptions {
 export interface TeardownReceipts {
   removedShim: RemoveCliShimResult | null;
   restored: RestoreStatusLineResult | null;
+  cleanup?: CleanupReceipt | null;
 }
 
 export function applyWireShimAndDoctor(input: ApplyWireShimDoctorOptions): void {
@@ -101,6 +103,8 @@ function isExistingDirectory(dirPath: string): boolean {
   return statIfPresentSync(dirPath)?.isDirectory() === true;
 }
 
+// Teardown commands must never mkdir missing host/bin directories solely to place `.lock` files,
+// so re-check inside acquired locks and retry if a concurrent install/wire created a directory mid-flight.
 export function withDynamicInstallerLocks(
   resolvedDst: string,
   cliHome: string,
@@ -155,10 +159,33 @@ export function teardownShimAndStatusLine(
 export function printTeardownResults(receipts: TeardownReceipts, quiet: boolean): void {
   if (receipts.restored?.changed && !quiet) {
     writeInstallerLine('Restored prior statusLine configuration.');
+    if (receipts.restored.removedBackupPath) {
+      writeInstallerLine(`Removed statusLine backup at ${receipts.restored.removedBackupPath}`);
+    }
   } else if (receipts.restored?.skippedReason === 'not-owned' && !quiet) {
     writeInstallerLine('Skipped statusLine restore: current statusLine does not point to this installation.');
   }
   printShimRemovalResult(receipts.removedShim, quiet);
+  const cleanup = receipts.cleanup;
+  if (!quiet && cleanup) {
+    if (cleanup.removedCaches.length > 0) {
+      const names = cleanup.removedCaches.map((p) => path.basename(p));
+      writeInstallerLine(
+        `Removed ${cleanup.removedCaches.length} transient agy-hud cache file(s) (${names.join(', ')}).`,
+      );
+    }
+    for (const bkp of cleanup.removedBackups) {
+      writeInstallerLine(`Removed orphaned statusLine backup at ${bkp}`);
+    }
+    if (cleanup.skippedBackupReason === 'owned-other-live') {
+      writeInstallerLine('Skipped statusLine backup purge: settings.json is wired to another active agy-hud install.');
+    }
+    if (cleanup.removedConfig !== null) {
+      writeInstallerLine(`Removed ${cleanup.removedConfig}`);
+    } else if (cleanup.configPreserved) {
+      writeInstallerLine('Preserved hud-config.json (pass --purge to remove user HUD preferences).');
+    }
+  }
 }
 
 function assertInstalledPluginReady(resolvedDst: string): void {
@@ -235,19 +262,27 @@ export function runUnwire(opts: InstallerOptions): void {
     { includeCliHome: true, binDir: opts.manageShim ? opts.binDir : undefined },
     ({ lockCliHome, lockBinDir }) => {
       if (lockCliHome) {
-        preflightStatusLineBackup(cliHome, resolvedDst, 'restore');
+        preflightStatusLineBackup(cliHome, resolvedDst, 'restore', opts.purge);
+        if (opts.purge) preflightPurgeConfig(cliHome);
       }
 
-      const receipts: TeardownReceipts = { removedShim: null, restored: null };
+      const receipts: TeardownReceipts = { removedShim: null, restored: null, cleanup: null };
       try {
         teardownShimAndStatusLine(opts, cliHome, resolvedDst, lockCliHome, receipts, opts.manageShim && lockBinDir);
       } catch (err) {
         const steps = createShimRemovalRollbackSteps(receipts.removedShim);
         throw makeRollbackError(err, runRollbackSteps(steps));
       }
+      if (lockCliHome) {
+        receipts.cleanup = runPostTeardownCleanup(cliHome, resolvedDst, opts.purge);
+      }
 
       printTeardownResults(receipts, opts.quiet);
-      if (!opts.quiet && !receipts.restored?.changed && !receipts.removedShim?.removed) {
+      const hadCleanup =
+        (receipts.cleanup?.removedCaches.length ?? 0) > 0 ||
+        (receipts.cleanup?.removedBackups.length ?? 0) > 0 ||
+        Boolean(receipts.cleanup?.removedConfig);
+      if (!opts.quiet && !receipts.restored?.changed && !receipts.removedShim?.removed && !hadCleanup) {
         writeInstallerLine('Nothing to unwire.');
       }
     },

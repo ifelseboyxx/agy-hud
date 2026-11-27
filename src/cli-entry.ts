@@ -4,6 +4,7 @@ import { type ConfigureCliArgs, configureHud, parseConfigureArgs } from './cli/c
 import { isInstallerCommand } from './cli/installer/args.ts';
 import { runInstallerCli } from './cli/installer/index.ts';
 import { exportProfile, importProfile } from './cli/migrate.ts';
+import { runPreviewCommand } from './cli/preview.ts';
 import type { PopupInputStream, PopupOutputStream } from './cli/snapshot-popup.ts';
 import {
   executeParsedSnapshotCommand,
@@ -59,6 +60,7 @@ Usage:
 
 Commands:
   snapshot (snap) Inspect full Activity Snapshot across CLI/App/IDE (default)
+  preview [width] Preview HUD status bar offline with sample telemetry
   configure       Inspect or update <cliHome>/hud-config.json
   export-profile  Export sanitized Antigravity CLI profile bundle
   import-profile  Import sanitized profile bundle without touching config.json
@@ -97,7 +99,11 @@ Options:
   --enable <id,...>            Enable Line Module(s) or Inline Segment(s) (repeatable)
   --disable <id,...>           Disable Line Module(s) or Inline Segment(s) (repeatable)
   --order <lineId,...>         Set explicit ordered Line Modules list
-  --set <key>=<value>          Set preset, osc8Links, maxAgentChips, or segments.<id>
+  --narrow-enable <id,...>     Enable module(s) or segment(s) when width < 100
+  --narrow-disable <id,...>    Disable module(s) or segment(s) when width < 100
+  --narrow-order <lineId,...>  Set narrow-pane Line Modules order (< 100 cols)
+  --narrow-reset               Clear all narrow-pane overrides
+  --set <key>=<value>          Set preset, osc8Links, maxAgentChips, costCurrency, usdToCnyRate, segments.<id>, narrow.*
   --reset                      Reset hud-config.json to full defaults
   --json                       Emit JSON output
   -i, --interactive            Launch interactive configuration editor
@@ -275,6 +281,16 @@ export function runCliEntry(argv: readonly string[] = process.argv.slice(2), opt
       case 'snapshot':
       case 'snap':
         writeOut(runSnapshotCommand(rest, toSnapshotOptions(options)).output, options);
+        return 0;
+      case 'preview':
+        writeOut(
+          runPreviewCommand(rest, {
+            cliHome: options.cliHome,
+            env: options.env,
+            stdoutColumns: (options.stdout as { columns?: number } | undefined)?.columns ?? process.stdout.columns,
+          }),
+          options,
+        );
         return 0;
       case 'configure':
         return runConfigureCommand(rest, options);

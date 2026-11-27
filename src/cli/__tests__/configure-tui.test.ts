@@ -91,7 +91,7 @@ void describe('configure TUI state machine', () => {
     applyConfigureTuiKey(state, '\t');
 
     const initialItems = getConfigureTier2Items(state.draft);
-    assert.equal(initialItems.length, 18);
+    assert.equal(initialItems.length, 19);
     assert.deepEqual(
       initialItems.slice(0, 4).map((item) => item.id),
       ['mode', 'identity', 'usage', 'activity'],
@@ -117,12 +117,25 @@ void describe('configure TUI state machine', () => {
     assert.equal(applyConfigureTuiKey(state, ' '), 'redraw');
     assert.equal(state.draft.segments.cost, false);
 
-    const lastIdx = getConfigureTier2Items(state.draft).length - 1;
-    state.tier2Cursor = lastIdx;
+    const oscIdx = getConfigureTier2Items(state.draft).findIndex(
+      (item) => item.kind === 'option' && item.id === 'osc8Links',
+    );
+    state.tier2Cursor = oscIdx;
     assert.equal(getConfigureTier2Items(state.draft)[state.tier2Cursor]?.kind, 'option');
     assert.equal(state.draft.osc8Links, true);
     assert.equal(applyConfigureTuiKey(state, ' '), 'redraw');
     assert.equal(state.draft.osc8Links, false);
+
+    const lastIdx = getConfigureTier2Items(state.draft).length - 1;
+    state.tier2Cursor = lastIdx;
+    assert.equal(getConfigureTier2Items(state.draft)[state.tier2Cursor]?.kind, 'currency');
+    assert.equal(state.draft.costCurrency, 'usd');
+    assert.equal(applyConfigureTuiKey(state, ' '), 'redraw');
+    assert.equal(state.draft.costCurrency, 'cny');
+    assert.equal(applyConfigureTuiKey(state, ' '), 'redraw');
+    assert.equal(state.draft.costCurrency, 'both');
+    assert.equal(applyConfigureTuiKey(state, ' '), 'redraw');
+    assert.equal(state.draft.costCurrency, 'usd');
 
     assert.equal(applyConfigureTuiKey(state, 'j'), 'noop');
     assert.equal(state.tier2Cursor, lastIdx);
@@ -191,8 +204,11 @@ void describe('configure TUI live preview and frame rendering', () => {
     assert.equal(reorderedLines.length, 2);
     assert.ok(reorderedLines[0]?.includes('Context'));
     assert.ok(reorderedLines[1]?.includes('Carbon'));
-    assert.ok(reorderedLines[1]?.includes('git:(main*)'));
+    assert.ok(reorderedLines[1]?.includes('git:(main +!? ↑1) +48 -12'));
     assert.equal(reorderedLines[1]?.includes('Cost'), false);
+
+    const narrowReordered = buildConfigurePreviewLines(reordered, 80, false);
+    assert.ok(narrowReordered[1]?.includes('git:(main*)'));
   });
 
   void it('renders Tier 1 Preset Picker with all 5 presets, descriptions, and live preview', () => {

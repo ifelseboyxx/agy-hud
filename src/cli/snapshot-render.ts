@@ -19,7 +19,9 @@ import {
   visibleLen,
   YELLOW,
 } from '../render/ansi.ts';
+import { formatSessionCostText, formatSubagentCostText } from '../render/cost.ts';
 import type { ActivitySnapshot, SnapshotCompletedTool, SnapshotSection } from '../snapshot-types.ts';
+import type { HudCostCurrency } from '../types.ts';
 
 export const DEFAULT_INSPECTOR_WIDTH: number = 100;
 
@@ -66,6 +68,8 @@ export interface StructuredInspectorOptions {
   readonly color?: boolean;
   readonly noColor?: boolean;
   readonly env?: NodeJS.ProcessEnv;
+  readonly costCurrency?: HudCostCurrency;
+  readonly usdToCnyRate?: number;
 }
 
 export function shouldUseSnapshotColor(noColorFlag: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -127,14 +131,17 @@ function wrapInspectorChips(chips: readonly string[], sep: string, maxCols: numb
 
 function formatTelemetryStripLine(
   snapshot: ActivitySnapshot,
+  cols: number,
   maxCols: number,
   palette: InspectorPalette,
   useColor: boolean,
+  options: Pick<StructuredInspectorOptions, 'costCurrency' | 'usdToCnyRate'>,
 ): string {
   const tel = snapshot.telemetry;
   const hasMetadata =
     tel.genCount > 0 || tel.ctxUsed !== null || tel.tps !== null || tel.ttft !== null || tel.cachePct !== null;
-  if (!hasMetadata) return '';
+  const cost = snapshot.cost ?? null;
+  if (!hasMetadata && cost === null) return '';
 
   const parts: string[] = [];
   if (snapshot.model.length > 0) {
@@ -153,6 +160,13 @@ function formatTelemetryStripLine(
   }
   if (fields.cacheText !== null) {
     parts.push(`Cache ${fields.cacheText}`);
+  }
+  if (cost !== null) {
+    const costOpts = { currency: options.costCurrency, usdToCnyRate: options.usdToCnyRate, termWidth: cols };
+    const totalStr = formatSessionCostText(cost, costOpts);
+    const subStr = formatSubagentCostText(cost, costOpts);
+    const subPart = subStr !== null ? ` ${palette.dim}(subagents ${subStr})${palette.reset}` : '';
+    parts.push(`Cost ${palette.yellow}${totalStr}${palette.reset}${subPart}`);
   }
   if (parts.length === 0) return '';
 
@@ -356,7 +370,7 @@ export function renderStructuredInspectorLines(
     bannerLine1,
   ];
 
-  const telemetryLine = formatTelemetryStripLine(snapshot, maxCols, palette, useColor);
+  const telemetryLine = formatTelemetryStripLine(snapshot, cols, maxCols, palette, useColor, options);
   if (telemetryLine.length > 0) {
     lines.push(telemetryLine);
   }

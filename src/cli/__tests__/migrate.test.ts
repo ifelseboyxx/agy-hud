@@ -432,4 +432,29 @@ void describe('importProfile', async () => {
       'hud-config.json must remain untouched when later MCP template fails validation',
     );
   });
+
+  await it('preserves costCurrency, usdToCnyRate, and narrow overrides during importProfile', () => {
+    const root = makeTempDir('agy-hud-imp-full-hud-');
+    const inDir = path.join(root, 'bundle');
+    const geminiRoot = path.join(root, 'target', '.gemini');
+    const cliHome = path.join(geminiRoot, 'antigravity-cli');
+
+    writeJson(path.join(inDir, 'hud-config.json'), {
+      preset: 'compact',
+      maxAgentChips: 6,
+      osc8Links: false,
+      costCurrency: 'both',
+      usdToCnyRate: 7.35,
+      lines: ['identity', 'usage'],
+      segments: { ...DEFAULT_HUD_CONFIG.segments, cost: true },
+      narrow: { lines: ['identity'], segments: { perf: false } },
+    });
+
+    const result = importProfile({ inDir, cliHome, geminiRoot });
+    assert.equal(result.filesUpdated.length, 1);
+    const written = readJson(path.join(cliHome, 'hud-config.json'));
+    assert.equal(written.costCurrency, 'both');
+    assert.equal(written.usdToCnyRate, 7.35);
+    assert.deepEqual(written.narrow, { lines: ['identity'], segments: { perf: false } });
+  });
 });

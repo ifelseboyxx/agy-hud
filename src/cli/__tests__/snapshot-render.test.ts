@@ -113,7 +113,7 @@ void describe('Structured Inspector terminal renderer', () => {
     const lines = renderStructuredInspectorLines(snap, { color: false, width: 110 });
     assert.equal(lines[0], '[APP] Activity Snapshot  conv-abc  "Inspect overflow layout"');
     assert.equal(lines[1], 'Workspace: agy-hud · Matched via pid · 22 calls, 3 skills, 1 MCPs, 3 agents');
-    assert.ok(lines[2]?.includes('Gemini 4 Carbon · Ctx 42k/200k (21%) · 92.4 t/s · TTFT 1.45s · Cache 86%'));
+    assert.ok(lines[2]?.includes('Gemini 4 Carbon · Ctx 42k/200k (21%) · 92.4 token/s · TTFT 1.45s · Cache 86%'));
     assert.ok(lines[3]?.startsWith('Note: 1 other active/recent session in this workspace:'));
   });
 

@@ -8,7 +8,8 @@ import { resolveCliHome } from '../../core/paths.ts';
 import { getSettingsPaths } from '../../core/statusline-ownership.ts';
 import { lstatIfPresentSync, makeTempSuffix } from '../../fs-utils.ts';
 import { INSTALLER_HELP_TEXT, parseInstallerArgs, PLUGIN_NAME, type InstallerOptions } from './args.ts';
-import { hasAgyCli, runDoctor, toggleAgyPlugin, writeInstallerLine } from './doctor.ts';
+import { preflightPurgeConfig, runPostTeardownCleanup } from './cleanup.ts';
+import { hasAgyCli, runDoctor, toggleAgyPlugin, uninstallAgyPlugin, writeInstallerLine } from './doctor.ts';
 import {
   assertDirectoryTreeRemovable,
   assertNotActiveSourceRepo,
@@ -259,7 +260,7 @@ function runUninstall(opts: InstallerOptions): void {
     resolvedDst,
     cliHome,
     {
-      includeCliHome: opts.restoreStatusLine || opts.manageShim,
+      includeCliHome: true,
       binDir: opts.manageShim ? opts.binDir : undefined,
     },
     ({ lockTarget, lockCliHome, lockBinDir }) => {
@@ -269,13 +270,18 @@ function runUninstall(opts: InstallerOptions): void {
         assertRemovableTarget(resolvedDst, dstStat, PLUGIN_NAME);
         if (!dstStat.isSymbolicLink()) assertDirectoryTreeRemovable(resolvedDst);
       }
-      const shouldRestoreStatusLine = opts.restoreStatusLine && lockCliHome;
+      const shouldRestoreStatusLine = (opts.restoreStatusLine || opts.purge) && lockCliHome;
       if (shouldRestoreStatusLine) {
-        preflightStatusLineBackup(cliHome, resolvedDst, 'restore');
+        preflightStatusLineBackup(cliHome, resolvedDst, 'restore', opts.purge);
       }
-      const stagedRemovalPath = dstStat ? `${resolvedDst}.removing.${makeTempSuffix()}` : null;
+      if (opts.purge && lockCliHome) {
+        preflightPurgeConfig(cliHome);
+      }
+      const useHostPluginUninstall = !opts.isProject && !opts.isCustomTarget && !opts.skipEnable && hasAgyCli();
+      const stagedRemovalPath =
+        dstStat && !useHostPluginUninstall ? `${resolvedDst}.removing.${makeTempSuffix()}` : null;
       let movedToStaging = false;
-      const receipts: TeardownReceipts = { removedShim: null, restored: null };
+      const receipts: TeardownReceipts = { removedShim: null, restored: null, cleanup: null };
       try {
         if (dstStat && stagedRemovalPath !== null) {
           moveVerifiedTarget(resolvedDst, dstStat, stagedRemovalPath);
@@ -303,15 +309,7 @@ function runUninstall(opts: InstallerOptions): void {
         }
         throw makeRollbackError(err, runRollbackSteps(steps));
       }
-      printTeardownResults(receipts, opts.quiet);
-      if (!dstStat) {
-        if (!opts.quiet && !receipts.removedShim?.removed) {
-          writeInstallerLine(`Nothing to remove (${resolvedDst} does not exist).`);
-        }
-        return;
-      }
-      toggleAgyPlugin(opts, 'disable');
-      if (movedToStaging && stagedRemovalPath !== null) {
+      if (movedToStaging && stagedRemovalPath !== null && dstStat !== null) {
         try {
           removeVerifiedStagedPath(stagedRemovalPath, dstStat);
         } catch (cleanupErr) {
@@ -320,6 +318,56 @@ function runUninstall(opts: InstallerOptions): void {
             `Uninstalled ${PLUGIN_NAME} from ${resolvedDst}, but failed to remove staged directory ${stagedRemovalPath}: ${detail}`,
           );
         }
+      }
+      if (lockCliHome) {
+        receipts.cleanup = runPostTeardownCleanup(cliHome, resolvedDst, opts.purge);
+      }
+      printTeardownResults(receipts, opts.quiet);
+      if (!dstStat) {
+        if (useHostPluginUninstall) {
+          const hostRes = uninstallAgyPlugin(opts, true);
+          if (hostRes.ok) {
+            if (!opts.quiet) {
+              writeInstallerLine(`Removed stale ${PLUGIN_NAME} host registration via agy plugin uninstall.`);
+            }
+            return;
+          }
+          const isAlreadyAbsent = /not installed|not found|no such plugin|does not exist/i.test(hostRes.detail);
+          if (hostRes.attempted && !isAlreadyAbsent) {
+            const detail = hostRes.detail.length > 0 ? `: ${hostRes.detail}` : '';
+            throw new Error(
+              `'agy plugin uninstall ${PLUGIN_NAME}' failed while checking stale host registration${detail}.`,
+            );
+          }
+        }
+        const hadCleanup =
+          (receipts.cleanup?.removedCaches.length ?? 0) > 0 ||
+          (receipts.cleanup?.removedBackups.length ?? 0) > 0 ||
+          Boolean(receipts.cleanup?.removedConfig);
+        if (!opts.quiet && !receipts.removedShim?.removed && !hadCleanup) {
+          writeInstallerLine(`Nothing to remove (${resolvedDst} does not exist).`);
+        }
+        return;
+      }
+      if (useHostPluginUninstall) {
+        const hostRes = uninstallAgyPlugin(opts, true);
+        const remainingStat = lstatIfPresentSync(resolvedDst);
+        if (!hostRes.ok) {
+          const detail = hostRes.detail.length > 0 ? `: ${hostRes.detail}` : '';
+          throw new Error(
+            `Detached statusLine/shim/caches, but 'agy plugin uninstall ${PLUGIN_NAME}' failed${detail}. ` +
+              `Run 'agy plugin uninstall ${PLUGIN_NAME}' manually to remove host registration and ${resolvedDst}.`,
+          );
+        }
+        if (remainingStat !== null) {
+          if (!isSameStatIdentity(remainingStat, dstStat)) {
+            throw new Error(`Target changed during host uninstall; refusing to delete ${resolvedDst}.`);
+          }
+          assertRemovableTarget(resolvedDst, remainingStat, PLUGIN_NAME);
+          removeTargetPath(resolvedDst, remainingStat);
+        }
+        if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`);
+        return;
       }
       if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`);
     },

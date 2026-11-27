@@ -1,5 +1,6 @@
 import { padEndVisible, RESET, truncateToWidth } from '../render/ansi.ts';
 import type { ActivitySnapshot, SnapshotSection } from '../snapshot-types.ts';
+import type { HudCostCurrency } from '../types.ts';
 import {
   DEFAULT_INSPECTOR_WIDTH,
   renderStructuredInspector,
@@ -39,6 +40,8 @@ export interface PopupFrameOptions {
   readonly cols: number;
   readonly rows: number;
   readonly color: boolean;
+  readonly costCurrency?: HudCostCurrency;
+  readonly usdToCnyRate?: number;
 }
 
 export interface PopupRenderedFrame {
@@ -52,6 +55,8 @@ export interface RunSnapshotPopupOptions {
   readonly initialSections?: readonly SnapshotSection[];
   readonly color?: boolean;
   readonly noColor?: boolean;
+  readonly costCurrency?: HudCostCurrency;
+  readonly usdToCnyRate?: number;
   readonly env?: NodeJS.ProcessEnv;
   readonly stdin?: PopupInputStream;
   readonly stdout?: PopupOutputStream;
@@ -128,6 +133,8 @@ export function renderPopupFrame(
     sections: state.sections,
     width: cols,
     color: options.color,
+    costCurrency: options.costCurrency,
+    usdToCnyRate: options.usdToCnyRate,
   });
 
   const bodyHeight = Math.max(1, rows - 2);
@@ -163,6 +170,8 @@ export async function runSnapshotPopup(options: RunSnapshotPopupOptions): Promis
         sections: options.initialSections,
         width: stdout.columns,
         color: useColor,
+        costCurrency: options.costCurrency,
+        usdToCnyRate: options.usdToCnyRate,
         env,
       }),
     );
@@ -176,7 +185,13 @@ export async function runSnapshotPopup(options: RunSnapshotPopupOptions): Promis
   const draw = (): void => {
     const cols = resolveInspectorWidth(stdout.columns, DEFAULT_INSPECTOR_WIDTH);
     const rows = typeof stdout.rows === 'number' && stdout.rows > 0 ? stdout.rows : DEFAULT_POPUP_ROWS;
-    const frame = renderPopupFrame(snapshot, state, { cols, rows, color: useColor });
+    const frame = renderPopupFrame(snapshot, state, {
+      cols,
+      rows,
+      color: useColor,
+      costCurrency: options.costCurrency,
+      usdToCnyRate: options.usdToCnyRate,
+    });
     lastMaxScroll = frame.maxScrollOffset;
     if (state.scrollOffset > lastMaxScroll) {
       state.scrollOffset = lastMaxScroll;

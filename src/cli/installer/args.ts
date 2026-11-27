@@ -41,6 +41,7 @@ type BooleanFlagKey =
   | 'skipEnable'
   | 'wireStatusLine'
   | 'restoreStatusLine'
+  | 'purge'
   | 'noShim'
   | 'quiet';
 
@@ -50,6 +51,7 @@ export interface InstallerOptions {
   skipEnable: boolean;
   wireStatusLine: boolean;
   restoreStatusLine: boolean;
+  purge: boolean;
   noShim: boolean;
   manageShim: boolean;
   binDir: string;
@@ -68,6 +70,7 @@ const FLAG_MAP: Readonly<Record<string, BooleanFlagKey>> = {
   '--no-enable': 'skipEnable',
   '--wire-statusline': 'wireStatusLine',
   '--restore-statusline': 'restoreStatusLine',
+  '--purge': 'purge',
   '--no-shim': 'noShim',
   '--quiet': 'quiet',
   '-q': 'quiet',
@@ -87,9 +90,10 @@ Options:
   --link                 Create a symlink to this repository
   --bin-dir <dir>        Custom CLI Shim directory (also honors AGY_HUD_BIN_DIR)
   --no-shim              Skip CLI Shim creation or removal
-  --no-enable            Skip running agy plugin enable/disable
+  --no-enable            Skip running agy plugin enable/disable/uninstall
   --wire-statusline      Wire statusLine in <cliHome>/settings.json
   --restore-statusline   Restore prior statusLine backup on uninstall
+  --purge                Remove hud-config.json and orphaned statusLine backups on unwire/uninstall
   --quiet, -q            Suppress informational output
   -h, --help             Show this help`;
 
@@ -103,6 +107,7 @@ export function parseInstallerArgs(args: readonly string[], env: NodeJS.ProcessE
     skipEnable: false,
     wireStatusLine: false,
     restoreStatusLine: false,
+    purge: false,
     noShim: false,
     quiet: false,
     showHelp: false,

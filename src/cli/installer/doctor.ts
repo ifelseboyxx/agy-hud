@@ -4,8 +4,8 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
-import { resolveCliHome, toComparePath } from '../../core/paths.ts';
-import { lstatIfPresentSync } from '../../fs-utils.ts';
+import { resolveCliHome } from '../../core/paths.ts';
+import { lstatIfPresentSync, statIfPresentSync } from '../../fs-utils.ts';
 import { PLUGIN_NAME, type InstallerOptions } from './args.ts';
 import { inspectStatusLineState, isSupportedNodeVersion, NODE_RANGE_LABEL } from './settings.ts';
 import { inspectCliShim, runCliShimSmoke } from './shim.ts';
@@ -69,16 +69,42 @@ export function toggleAgyPlugin(opts: InstallerOptions, action: 'enable' | 'disa
   }
 }
 
-export function runAgyPluginValidate(pluginBase: string, repoRoot: string, timeoutMs: number): AgyValidateResult {
+export interface HostPluginUninstallResult {
+  readonly attempted: boolean;
+  readonly ok: boolean;
+  readonly status: number | null;
+  readonly detail: string;
+}
+
+export function uninstallAgyPlugin(opts: InstallerOptions, agyAvailable?: boolean): HostPluginUninstallResult {
+  if (opts.isProject || opts.isCustomTarget || opts.skipEnable || !(agyAvailable ?? hasAgyCli())) {
+    return { attempted: false, ok: false, status: null, detail: '' };
+  }
+  const res = spawnSync('agy', ['plugin', 'uninstall', PLUGIN_NAME], {
+    encoding: 'utf8',
+    timeout: AGY_COMMAND_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  const detail = res.error ? res.error.message : (res.stderr ?? '').trim() || (res.stdout ?? '').trim();
+  return {
+    attempted: true,
+    ok: !res.error && res.status === 0,
+    status: res.status,
+    detail,
+  };
+}
+
+export function runAgyPluginValidate(pluginBase: string, _repoRoot: string, timeoutMs: number): AgyValidateResult {
   let res = spawnSync('agy', ['plugin', 'validate', pluginBase, '--strict'], {
     encoding: 'utf8',
     timeout: timeoutMs,
     windowsHide: true,
   });
   const combined = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+  const hasRootAgentsMd = statIfPresentSync(path.join(pluginBase, 'AGENTS.md'))?.isFile() === true;
   if (
     res.status !== 0 &&
-    toComparePath(tryRealpath(pluginBase)) === toComparePath(tryRealpath(repoRoot)) &&
+    hasRootAgentsMd &&
     combined.includes('AGENTS.md: never loaded') &&
     combined.includes('1 warning')
   ) {
@@ -192,7 +218,7 @@ function evaluateCliShimDoctor(
       ? { ok: false, label: `FAILED (incomplete Windows shim pair: ${info.detail})` }
       : { ok: true, label: `incomplete Windows shim pair (${info.detail})` };
   }
-  if (lstatIfPresentSync(info.expectedTarget) === null) {
+  if (statIfPresentSync(info.expectedTarget)?.isFile() !== true) {
     return { ok: false, label: `FAILED (missing ${info.expectedTarget})` };
   }
   if (!info.executable) {
@@ -212,12 +238,14 @@ export function runDoctor(opts: DoctorRunOptions): { ok: boolean } {
     throw new Error(`Node.js ${NODE_RANGE_LABEL} required (current: v${nodeVer})`);
   }
   const resolvedTarget = path.resolve(opts.targetDir);
-  const targetExists = lstatIfPresentSync(resolvedTarget) !== null;
+  const targetLstat = lstatIfPresentSync(resolvedTarget);
+  const targetExists = targetLstat !== null;
+  const isLinkInstall = targetLstat?.isSymbolicLink() === true;
   const pluginBase = targetExists ? resolvedTarget : opts.packageRoot;
   const hudPath = path.join(pluginBase, 'dist', 'hud.mjs');
   const sqliteOk = checkSqliteBuiltin();
   const hudSmoke =
-    lstatIfPresentSync(hudPath) !== null
+    statIfPresentSync(hudPath)?.isFile() === true
       ? runHudStdinSmoke(hudPath, opts.packageRoot)
       : { ok: false, durationMs: 0, bytes: 0, detail: 'missing dist/hud.mjs' };
   const slState = inspectStatusLineState(resolveCliHome(), resolvedTarget);
@@ -239,9 +267,12 @@ export function runDoctor(opts: DoctorRunOptions): { ok: boolean } {
       ? `OK (${hudSmoke.durationMs}ms, ${hudSmoke.bytes} bytes)`
       : `FAILED (${hudSmoke.detail})`;
     writeInstallerLine('agy-hud doctor:');
-    writeInstallerLine(
-      `  - Plugin base  : ${pluginBase}${targetExists ? '' : ' (fallback to repo; not installed at target)'}`,
-    );
+    const baseSuffix = !targetExists
+      ? ' (fallback to repo; not installed at target)'
+      : isLinkInstall
+        ? ` (Link Install -> ${tryRealpath(resolvedTarget)})`
+        : '';
+    writeInstallerLine(`  - Plugin base  : ${pluginBase}${baseSuffix}`);
     writeInstallerLine(`  - Node.js      : v${nodeVer} (OK)`);
     writeInstallerLine(`  - node:sqlite  : ${sqliteOk ? 'OK' : 'FAILED'}`);
     writeInstallerLine(`  - dist/hud.mjs : ${smokeDesc}`);
@@ -250,6 +281,11 @@ export function runDoctor(opts: DoctorRunOptions): { ok: boolean } {
     if (agyValidate !== null) {
       writeInstallerLine(
         `  - agy validate : ${agyValidate.ok ? 'PASSED (--strict)' : `FAILED (${agyValidate.output})`}`,
+      );
+    }
+    if (isLinkInstall) {
+      writeInstallerLine(
+        '  - Link Install : to switch to zero-build Plugin Install, run `agy plugin uninstall agy-hud && agy plugin install https://github.com/ifelseboyxx/agy-hud`',
       );
     }
   }

@@ -7,24 +7,12 @@ import {
   GREEN,
   padEndVisible,
   RESET,
-  stripAnsi,
   truncateToWidth,
   visibleLen,
   YELLOW,
 } from '../render/ansi.ts';
-import { formatHudLines } from '../render/format-hud.ts';
-import { formatActivitySummarySnapshotTail, formatOsc8Overflow } from '../render/osc8.ts';
-import type {
-  AgentsSummary,
-  HudConfig,
-  HudLineId,
-  HudPreset,
-  HudSegmentId,
-  SessionTelemetry,
-  StatusLineData,
-  TodoSummary,
-  TranscriptActivity,
-} from '../types.ts';
+import { renderHudPreviewLines } from '../render/preview-fixture.ts';
+import type { HudConfig, HudCostCurrency, HudLineId, HudPreset, HudSegmentId } from '../types.ts';
 
 const ESC_CHAR = String.fromCharCode(0x1b);
 const CLEAR_HOME = `${ESC_CHAR}[H${ESC_CHAR}[2J`;
@@ -34,8 +22,6 @@ const DEFAULT_TUI_COLS = 104;
 const MIN_TUI_COLS = 56;
 const DEFAULT_TUI_ROWS = 28;
 const MIN_TUI_ROWS = 12;
-const PREVIEW_NOW_SEC = 1_780_000_000;
-const PREVIEW_OSC8_URI = 'file:///preview/agy-hud-snapshot.md';
 
 export type ConfigureTuiTier = 'presets' | 'modules';
 
@@ -44,7 +30,8 @@ export type ConfigureTuiKeyEffect = 'redraw' | 'noop' | 'save' | 'cancel';
 export type ConfigureTier2Item =
   | { readonly kind: 'line'; readonly id: HudLineId; readonly enabled: boolean; readonly orderIndex: number }
   | { readonly kind: 'segment'; readonly id: HudSegmentId; readonly enabled: boolean }
-  | { readonly kind: 'option'; readonly id: 'osc8Links'; readonly enabled: boolean };
+  | { readonly kind: 'option'; readonly id: 'osc8Links'; readonly enabled: boolean }
+  | { readonly kind: 'currency'; readonly id: 'costCurrency'; readonly value: HudCostCurrency };
 
 export interface ConfigureTuiState {
   tier: ConfigureTuiTier;
@@ -87,87 +74,14 @@ const LINE_DESCRIPTIONS: Readonly<Record<HudLineId, string>> = {
 
 const SEGMENT_DESCRIPTIONS: Readonly<Record<HudSegmentId, string>> = {
   model: 'identity: model name & effort badge',
-  git: 'identity: workspace folder & git branch',
+  git: 'identity: workspace folder & git status',
   duration: 'identity: session elapsed time',
   badges: 'identity: inline Agents/Swarm & runtime flags',
-  cost: 'identity: cumulative session USD cost',
+  cost: 'identity: cumulative session cost (USD/CNY)',
   perf: 'identity: TPS, TTFT, and cache hit capsule',
   context: 'usage/zen: context bar or compact Ctx%',
   quota: 'usage/zen: primary/secondary quota windows',
 };
-
-function createPreviewFixture(termWidth: number): {
-  data: StatusLineData;
-  telemetry: SessionTelemetry;
-  activity: TranscriptActivity;
-  agentsSummary: AgentsSummary;
-  todos: TodoSummary;
-} {
-  const reset5hIso = new Date((PREVIEW_NOW_SEC + 8_100) * 1000).toISOString();
-  const reset7dIso = new Date((PREVIEW_NOW_SEC + 345_600) * 1000).toISOString();
-
-  const data: StatusLineData = {
-    model: { id: 'gemini-4-carbon', display_name: 'Gemini 4 Carbon', effort: 'high' },
-    workspace: { current_dir: '/workspace/agy-hud', project_dir: '/workspace/agy-hud' },
-    context_window: { used_percentage: 38, context_window_size: 200_000 },
-    cost: { total_usd: 0.42 },
-    quota: {
-      'gemini-5h': { remaining_fraction: 0.82, reset_time: reset5hIso },
-      'gemini-weekly': { remaining_fraction: 0.91, reset_time: reset7dIso },
-    },
-    terminal_width: termWidth,
-  };
-
-  const telemetry: SessionTelemetry = {
-    genCount: 12,
-    tps: 94.2,
-    ttft: 1.4,
-    cachePct: 87,
-    ctxUsed: 76_000,
-    ctxMax: 200_000,
-  };
-
-  const activity: TranscriptActivity = {
-    tools: [
-      {
-        name: 'read_file',
-        disp: 'read_file',
-        target: 'configure-tui.ts',
-        fullTarget: 'src/cli/configure-tui.ts',
-        running: true,
-        isSkillRead: false,
-      },
-      { name: 'run_checks', disp: 'run_checks', target: 'test', running: false, isSkillRead: false },
-      { name: 'run_checks', disp: 'run_checks', target: 'lint', running: false, isSkillRead: false },
-      { name: 'edit_file', disp: 'edit_file', target: 'cli-entry.ts', running: false, isSkillRead: false },
-      { name: 'batch_search', disp: 'batch_search', target: 'src/cli', running: false, isSkillRead: false },
-    ],
-    skills: ['tdd', 'codebase-design'],
-    mcps: ['agy-fast', 'chrome-devtools'],
-    agents: [],
-  };
-
-  const agentsSummary: AgentsSummary = {
-    kind: 'swarm',
-    working: 2,
-    waiting: 0,
-    alive: 2,
-    total: 2,
-    entries: [
-      { name: 'Reviewer', type: 'review', model: 'Gemini 4 Flash', state: 'working', ts: PREVIEW_NOW_SEC - 15 },
-      { name: 'Tester', type: 'test', model: 'Gemini 4 Flash', state: 'working', ts: PREVIEW_NOW_SEC - 8 },
-      { name: 'Planner', type: 'plan', model: 'Gemini 4 Carbon', state: 'done', ts: PREVIEW_NOW_SEC - 25 },
-    ],
-  };
-
-  const todos: TodoSummary = {
-    total: 5,
-    completed: 3,
-    current: 'Wire configure -i TUI',
-  };
-
-  return { data, telemetry, activity, agentsSummary, todos };
-}
 
 export function getConfigureTier2Items(config: HudConfig): readonly ConfigureTier2Item[] {
   const items: ConfigureTier2Item[] = [];
@@ -187,40 +101,13 @@ export function getConfigureTier2Items(config: HudConfig): readonly ConfigureTie
     items.push({ kind: 'segment', id: segId, enabled: config.segments[segId] });
   }
   items.push({ kind: 'option', id: 'osc8Links', enabled: config.osc8Links });
+  items.push({ kind: 'currency', id: 'costCurrency', value: config.costCurrency });
   return items;
 }
 
 export function buildConfigurePreviewLines(config: HudConfig, termWidth: number, color: boolean): string[] {
   const width = Math.max(MIN_TUI_COLS, Math.floor(termWidth));
-  const fixture = createPreviewFixture(width);
-  const lines = formatHudLines({
-    data: fixture.data,
-    config,
-    cliSettings: {},
-    telemetry: fixture.telemetry,
-    activity: fixture.activity,
-    agentsSummary: fixture.agentsSummary,
-    todos: fixture.todos,
-    termWidth: width,
-    nowSec: PREVIEW_NOW_SEC,
-    modeOptions: { bypass: false, cliMode: 'plan' },
-    identityOptions: {
-      branch: 'main',
-      dirty: true,
-      elapsedSeconds: 754,
-      nowSec: PREVIEW_NOW_SEC,
-    },
-    ...(config.osc8Links
-      ? {
-          activityLineOptions: {
-            formatOverflow: (hiddenCount) => formatOsc8Overflow(hiddenCount, PREVIEW_OSC8_URI),
-          },
-          formatActivitySummaryTail: (remainingCols) =>
-            formatActivitySummarySnapshotTail(remainingCols, PREVIEW_OSC8_URI),
-        }
-      : {}),
-  });
-  return color ? lines : lines.map((line) => stripAnsi(line));
+  return renderHudPreviewLines(config, { width, color });
 }
 
 function formatConfigureRule(title: string, width: number, color: boolean): string {
@@ -266,7 +153,8 @@ function renderTier1Rows(state: ConfigureTuiState, width: number, color: boolean
 
 function formatTier2ItemRow(item: ConfigureTier2Item, active: boolean, width: number, color: boolean): string {
   const pointer = active ? '▸' : ' ';
-  const check = item.enabled ? '[x]' : '[ ]';
+  const isEnabled = item.kind === 'currency' ? true : item.enabled;
+  const check = item.kind === 'currency' ? `[${item.value.padEnd(4)}]` : item.enabled ? '[x]' : '[ ]';
   let label = '';
   let desc = '';
   if (item.kind === 'line') {
@@ -276,9 +164,12 @@ function formatTier2ItemRow(item: ConfigureTier2Item, active: boolean, width: nu
   } else if (item.kind === 'segment') {
     label = `    ${item.id.padEnd(10)}`;
     desc = SEGMENT_DESCRIPTIONS[item.id];
-  } else {
+  } else if (item.kind === 'option') {
     label = `    ${item.id.padEnd(10)}`;
     desc = 'Clickable OSC 8 overflow & snapshot hyperlinks';
+  } else {
+    label = ` ${item.id.padEnd(12)}`;
+    desc = 'Session cost currency (Space cycles usd -> cny -> both)';
   }
   const plain = ` ${pointer} ${check} ${label} ${desc}`;
   const fitted = padEndVisible(truncateToWidth(plain, width), width);
@@ -288,8 +179,8 @@ function formatTier2ItemRow(item: ConfigureTier2Item, active: boolean, width: nu
   if (active) {
     return `${ACTIVE_ROW_BG}${BRIGHT_CYAN}${BOLD}${fitted}${RESET}`;
   }
-  const checkStyled = item.enabled ? `${GREEN}${check}${RESET}` : `${GRAY}${check}${RESET}`;
-  const labelStyled = item.enabled ? `${BRIGHT_WHITE}${label}${RESET}` : `${GRAY}${label}${RESET}`;
+  const checkStyled = isEnabled ? `${GREEN}${check}${RESET}` : `${GRAY}${check}${RESET}`;
+  const labelStyled = isEnabled ? `${BRIGHT_WHITE}${label}${RESET}` : `${GRAY}${label}${RESET}`;
   const maxDesc = Math.max(8, width - 24);
   return `   ${checkStyled} ${labelStyled} ${GRAY}${truncateToWidth(desc, maxDesc)}${RESET}`;
 }
@@ -315,9 +206,9 @@ function renderTier2Rows(state: ConfigureTuiState, width: number, maxRows: numbe
     if (item.kind === 'segment' && !addedSegmentHeader) {
       addedSegmentHeader = true;
       allRows.push({ itemIndex: -1, text: formatConfigureRule('Inline Segments', width, color) });
-    } else if (item.kind === 'option' && !addedOptionHeader) {
+    } else if ((item.kind === 'option' || item.kind === 'currency') && !addedOptionHeader) {
       addedOptionHeader = true;
-      allRows.push({ itemIndex: -1, text: formatConfigureRule('Hyperlinks', width, color) });
+      allRows.push({ itemIndex: -1, text: formatConfigureRule('Options', width, color) });
     }
     allRows.push({ itemIndex: i, text: formatTier2ItemRow(item, i === clampedCursor, width, color) });
   }

@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -16,7 +17,7 @@ import { afterEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { isInstallerCommand, parseInstallerArgs } from '../args.ts';
-import { moveVerifiedTarget, removeVerifiedStagedPath } from '../fs-ops.ts';
+import { assertRuntimeFilesPresent, moveVerifiedTarget, removeVerifiedStagedPath } from '../fs-ops.ts';
 import {
   createWireRollbackSteps,
   disableCliStatusLine,
@@ -63,6 +64,56 @@ void describe('installer staging identity verification', async () => {
     writeFileSync(path.join(stagedDir, 'unverified.txt'), 'do-not-delete', 'utf8');
     assert.throws(() => removeVerifiedStagedPath(stagedDir, precheckedStat), /modified staged entry/i);
     assert.equal(existsSync(path.join(stagedDir, 'unverified.txt')), true);
+  });
+});
+
+void describe('installer runtime file preflight', async () => {
+  await it('accepts regular files in assertRuntimeFilesPresent', () => {
+    const root = makeTempDir('agy-hud-rt-regular-');
+    const srcRoot = path.join(root, 'src-root');
+    mkdirSync(path.join(srcRoot, 'dist'), { recursive: true });
+    writeFileSync(path.join(srcRoot, 'dist', 'hud.mjs'), 'export {};\n', 'utf8');
+
+    assert.doesNotThrow(() => assertRuntimeFilesPresent(srcRoot, ['dist/hud.mjs']));
+  });
+
+  await it('accepts valid symlinked files in assertRuntimeFilesPresent', () => {
+    if (process.platform === 'win32') return;
+    const root = makeTempDir('agy-hud-rt-symlink-');
+    const realFile = path.join(root, 'real-hud.mjs');
+    const srcRoot = path.join(root, 'src-root');
+    mkdirSync(path.join(srcRoot, 'dist'), { recursive: true });
+    writeFileSync(realFile, 'export {};\n', 'utf8');
+    symlinkSync(realFile, path.join(srcRoot, 'dist', 'hud.mjs'));
+
+    assert.doesNotThrow(() => assertRuntimeFilesPresent(srcRoot, ['dist/hud.mjs']));
+  });
+
+  await it('rejects a directory standing in for a required file in assertRuntimeFilesPresent', () => {
+    const root = makeTempDir('agy-hud-rt-dir-');
+    const srcRoot = path.join(root, 'src-root');
+    const hudPath = path.join(srcRoot, 'dist', 'hud.mjs');
+    mkdirSync(path.dirname(hudPath), { recursive: true });
+    writeFileSync(hudPath, 'export {};\n', 'utf8');
+    assert.doesNotThrow(() => assertRuntimeFilesPresent(srcRoot, ['dist/hud.mjs']));
+
+    rmSync(hudPath);
+    mkdirSync(hudPath);
+    assert.throws(() => assertRuntimeFilesPresent(srcRoot, ['dist/hud.mjs']), /Missing required file: dist\/hud\.mjs/);
+  });
+
+  await it('rejects a dangling symlink in assertRuntimeFilesPresent', () => {
+    if (process.platform === 'win32') return;
+    const root = makeTempDir('agy-hud-rt-dangling-');
+    const srcRoot = path.join(root, 'src-root');
+    const hudPath = path.join(srcRoot, 'dist', 'hud.mjs');
+    mkdirSync(path.dirname(hudPath), { recursive: true });
+    writeFileSync(hudPath, 'export {};\n', 'utf8');
+    assert.doesNotThrow(() => assertRuntimeFilesPresent(srcRoot, ['dist/hud.mjs']));
+
+    rmSync(hudPath);
+    symlinkSync(path.join(root, 'nonexistent.mjs'), hudPath);
+    assert.throws(() => assertRuntimeFilesPresent(srcRoot, ['dist/hud.mjs']), /Missing required file: dist\/hud\.mjs/);
   });
 });
 

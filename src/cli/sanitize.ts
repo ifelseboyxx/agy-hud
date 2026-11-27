@@ -43,7 +43,7 @@ const ALLOWED_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   'effort',
 ]);
 
-const ALLOWED_HUD_KEYS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_HUD_CONFIG));
+const ALLOWED_HUD_KEYS: ReadonlySet<string> = new Set([...Object.keys(DEFAULT_HUD_CONFIG), 'narrow']);
 
 const ALLOWED_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
   'command',
@@ -272,6 +272,54 @@ export function sanitizeHudConfigTemplate(raw: Record<string, unknown>): Record<
       out.segments = cleanSegments;
       continue;
     }
+    if (key === 'narrow') {
+      if (!isPlainObject(val)) {
+        throw new Error("Invalid 'narrow' in hud-config.json (expected object with optional 'lines' and 'segments')");
+      }
+      const cleanNarrow: Record<string, unknown> = {};
+      if (val.lines !== undefined) {
+        if (!Array.isArray(val.lines)) {
+          throw new Error("Invalid 'narrow.lines' in hud-config.json (expected array of line IDs)");
+        }
+        const deduped: string[] = [];
+        const seen = new Set<string>();
+        for (const item of val.lines) {
+          if (typeof item !== 'string') {
+            throw new Error(`Invalid line ID '${String(item)}' in hud-config.json 'narrow.lines' (expected string)`);
+          }
+          if (!isHudLineId(item)) {
+            throw new Error(`Invalid line ID '${item}' in hud-config.json 'narrow.lines'`);
+          }
+          if (!seen.has(item)) {
+            seen.add(item);
+            deduped.push(item);
+          }
+        }
+        cleanNarrow.lines = deduped;
+      }
+      if (val.segments !== undefined) {
+        if (!isPlainObject(val.segments)) {
+          throw new Error("Invalid 'narrow.segments' in hud-config.json (expected object of segment booleans)");
+        }
+        const cleanNarrowSegs: Record<string, unknown> = {};
+        for (const [segKey, segVal] of Object.entries(val.segments)) {
+          if (UNSAFE_KEYS.has(segKey) || !isHudSegmentId(segKey)) {
+            throw new Error(`Invalid segment ID '${segKey}' in hud-config.json 'narrow.segments'`);
+          }
+          if (typeof segVal !== 'boolean') {
+            throw new Error(`Invalid boolean 'narrow.segments.${segKey}' in hud-config.json`);
+          }
+          cleanNarrowSegs[segKey] = segVal;
+        }
+        if (Object.keys(cleanNarrowSegs).length > 0) {
+          cleanNarrow.segments = cleanNarrowSegs;
+        }
+      }
+      if (Object.keys(cleanNarrow).length > 0) {
+        out.narrow = cleanNarrow;
+      }
+      continue;
+    }
     out[key] = cloneValue(val);
   }
   const hydrated = hydrateHudConfig(out);
@@ -279,8 +327,11 @@ export function sanitizeHudConfigTemplate(raw: Record<string, unknown>): Record<
     preset: hydrated.preset,
     maxAgentChips: hydrated.maxAgentChips,
     osc8Links: hydrated.osc8Links,
+    costCurrency: hydrated.costCurrency,
+    usdToCnyRate: hydrated.usdToCnyRate,
     lines: [...hydrated.lines],
     segments: { ...hydrated.segments },
+    ...(hydrated.narrow !== undefined ? { narrow: cloneValue(hydrated.narrow) } : {}),
   };
 }
 

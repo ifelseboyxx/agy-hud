@@ -2,11 +2,13 @@ import path from 'node:path';
 
 import { discoverSessions } from '../collectors/session-discovery.ts';
 import { matchesSourceFilter, resolveSession, type ResolveSessionOptions } from '../collectors/session-index.ts';
+import { readHudConfig } from '../collectors/settings.ts';
 import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
 import { loadActivitySnapshot } from '../collectors/snapshot-loader.ts';
 import { nonEmptyStr } from '../core/guards.ts';
 import { resolveProfileRoots } from '../core/paths.ts';
 import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
+import { formatCostBreakdown } from '../render/cost.ts';
 import type { ActivitySnapshot, SessionRecord, SessionSourceFilter, SnapshotSection } from '../snapshot-types.ts';
 import { type KeybindingsTarget, parseKeybindingsTarget, renderKeybindings } from './keybindings.ts';
 import { type PopupInputStream, type PopupOutputStream, runSnapshotPopup } from './snapshot-popup.ts';
@@ -336,14 +338,37 @@ export function executeParsedSnapshotCommand(
   }
 
   const { snapshot, sessions } = loadSnapshotForParsedArgs(parsed, options);
+  const hudCfg = readHudConfig(cliHome);
   if (parsed.json) {
-    return { output: `${JSON.stringify(snapshot, null, 2)}\n`, snapshot, sessions };
+    const costDisplay =
+      snapshot.cost !== null && snapshot.cost !== undefined
+        ? formatCostBreakdown(snapshot.cost, {
+            currency: hudCfg.costCurrency,
+            usdToCnyRate: hudCfg.usdToCnyRate,
+          })
+        : null;
+    return {
+      output: `${JSON.stringify(
+        {
+          ...snapshot,
+          costCurrency: hudCfg.costCurrency,
+          usdToCnyRate: hudCfg.usdToCnyRate,
+          costDisplay,
+        },
+        null,
+        2,
+      )}\n`,
+      snapshot,
+      sessions,
+    };
   }
   return {
     output: formatSnapshotText(snapshot, parsed.sections, {
       width: options.width,
       color: shouldUseSnapshotColor(parsed.noColor, env),
       env,
+      costCurrency: hudCfg.costCurrency,
+      usdToCnyRate: hudCfg.usdToCnyRate,
     }),
     snapshot,
     sessions,
@@ -359,11 +384,15 @@ export async function executeParsedSnapshotPopupCommand(
   options: SnapshotPopupCommandOptions = {},
 ): Promise<number> {
   const env = options.env ?? process.env;
+  const { cliHome } = resolveProfileRoots(options.cliHome, options.geminiRoot, env);
+  const hudCfg = readHudConfig(cliHome);
   return await runSnapshotPopup({
     loadSnapshot: () => loadSnapshotForParsedArgs(parsed, options).snapshot,
     initialSections: parsed.sections,
     color: shouldUseSnapshotColor(parsed.noColor, env),
     noColor: parsed.noColor,
+    costCurrency: hudCfg.costCurrency,
+    usdToCnyRate: hudCfg.usdToCnyRate,
     env,
     stdin: options.stdin,
     stdout: options.stdout,
