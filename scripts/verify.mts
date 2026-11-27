@@ -179,6 +179,6 @@ if (isMainEntry(import.meta.url)) {
   const cliArgs = process.argv.slice(2).filter((arg) => arg !== '--');
   const skipBuild = cliArgs.includes('--skip-build');
   void runVerify({ skipBuild }).then((code) => {
-    if (code !== 0) process.exit(code);
+    if (code !== 0) process.exitCode = code;
   });
 }

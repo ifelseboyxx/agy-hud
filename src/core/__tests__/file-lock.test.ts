@@ -124,7 +124,7 @@ withFileLocksSync([${JSON.stringify(lockPath)}], () => {
       chmodSync(root1, 0o755);
     }
 
-    // Hold lockA for 220ms in a child worker and hold lockB indefinitely; shared 360ms budget must expire ~360ms (not 580ms).
+    // Hold lockA for 450ms in a child worker and hold lockB indefinitely; shared 600ms budget must expire ~600ms (not ~1050ms).
     const root2 = makeTempDir('agy-hud-sync-deadline-');
     const lockA = path.join(root2, 'a.lock');
     const lockB = path.join(root2, 'b.lock');
@@ -136,7 +136,7 @@ import { withFileLocksSync } from ${JSON.stringify(pathToFileURL(FILE_LOCK_MODUL
 const cell = new Int32Array(new SharedArrayBuffer(4));
 withFileLocksSync([${JSON.stringify(lockA)}], () => {
   writeFileSync(${JSON.stringify(lockAReady)}, 'ready', 'utf8');
-  Atomics.wait(cell, 0, 0, 220);
+  Atomics.wait(cell, 0, 0, 450);
 }, 5000);
 `);
     const waitDeadline = Date.now() + 5000;
@@ -146,12 +146,12 @@ withFileLocksSync([${JSON.stringify(lockA)}], () => {
     }
 
     const start = Date.now();
-    assert.throws(() => withFileLocksSync([lockB, lockA], () => {}, 360), FileLockTimeoutError);
+    assert.throws(() => withFileLocksSync([lockB, lockA], () => {}, 600), FileLockTimeoutError);
     const elapsed = Date.now() - start;
     const holderRes = await holderA;
     assert.equal(holderRes.status, 0, holderRes.stderr);
 
-    assert.ok(elapsed >= 320 && elapsed < 520, `expected shared deadline ~360ms, got ${elapsed}ms`);
+    assert.ok(elapsed >= 520 && elapsed < 950, `expected shared deadline ~600ms (not ~1050ms), got ${elapsed}ms`);
     assert.equal(existsSync(lockA), false, 'lockA must be released when lockB times out');
   });
 

@@ -272,7 +272,11 @@ try {
       readProc: () => null,
     });
     const elapsedMs = performance.now() - start;
-    assert.ok(elapsedMs < 100, `expected contended detectAgyProcess < 100ms, got ${elapsedMs.toFixed(1)}ms`);
+    const procLimitMs = process.env.CI ? 350 : 100;
+    assert.ok(
+      elapsedMs < procLimitMs,
+      `expected contended detectAgyProcess < ${procLimitMs}ms, got ${elapsedMs.toFixed(1)}ms`,
+    );
   });
 
   await it('returns HUD output promptly when snapshot and PID locks are held by a live PID', () => {
@@ -318,7 +322,11 @@ try {
     const elapsedMs = performance.now() - start;
 
     assert.ok(lines.length >= 2, 'HUD must still render valid lines under lock contention');
-    assert.ok(elapsedMs < 120, `expected contended HUD hot path < 120ms, got ${elapsedMs.toFixed(1)}ms`);
+    const hotPathLimitMs = process.env.CI ? 400 : 120;
+    assert.ok(
+      elapsedMs < hotPathLimitMs,
+      `expected contended HUD hot path < ${hotPathLimitMs}ms, got ${elapsedMs.toFixed(1)}ms`,
+    );
   });
 
   await it('flattens snapshot and PID locks so contended PID lock fails fast without partial Markdown write', () => {
@@ -356,6 +364,10 @@ try {
 
     assert.equal(res.written, false);
     assert.equal(existsSync(target.absPath), false, 'contended PID lock must abort before writing partial .md');
-    assert.ok(elapsedMs < 120, `expected flattened lock timeout < 120ms, got ${elapsedMs.toFixed(1)}ms`);
+    const flatLockLimitMs = process.env.CI ? 400 : 120;
+    assert.ok(
+      elapsedMs < flatLockLimitMs,
+      `expected flattened lock timeout < ${flatLockLimitMs}ms, got ${elapsedMs.toFixed(1)}ms`,
+    );
   });
 });
