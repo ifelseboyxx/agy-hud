@@ -6,7 +6,7 @@ import { isMainEntry } from '../src/core/paths.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage', '.cache']);
+const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage', '.cache', '.scratch', '.agents', '.workbench']);
 const SKIP_REL_DIRS = new Set(['.husky/_']);
 const CHECK_EXTS = new Set([
   '.ts',

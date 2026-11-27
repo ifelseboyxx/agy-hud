@@ -11,6 +11,30 @@ const STDOUT_WARNING_LINE_RE = /^\s*(?:warn(?:ing)?(?:\s*[:[\](]|\s+)|\(!\)\s)/i
 const NODE_RUNTIME_WARNING_RE =
   /^\s*(?:\(node:\d+\)\s+(?:\[[^\]]+\]\s+)?[A-Za-z]*Warning:|\(Use `node --trace-warnings\b)/im;
 const PNPM_SCRIPT_RE = /pnpm[^\\/]*\.[cm]?js$/i;
+const ANSI_SGR_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
+const SPEC_TOP_SUITE_RE = /^[\u2714\u2716]\s+(.+?)\s+\(([0-9]+(?:\.[0-9]+)?)ms\)$/;
+const SLOW_TEST_OBSERVATION_MS = 10_000;
+const DEFAULT_SLOW_SUITE_LIMIT = 5;
+
+export interface SuiteTiming {
+  readonly name: string;
+  readonly durationMs: number;
+}
+
+export function extractSlowestSuites(testStdout: string, limit: number = DEFAULT_SLOW_SUITE_LIMIT): SuiteTiming[] {
+  if (limit <= 0) return [];
+  const results: SuiteTiming[] = [];
+  for (const rawLine of testStdout.split(/\r?\n/)) {
+    const cleanLine = rawLine.replace(ANSI_SGR_RE, '');
+    const match = SPEC_TOP_SUITE_RE.exec(cleanLine);
+    if (!match?.[1] || !match[2]) continue;
+    const durationMs = Number.parseFloat(match[2]);
+    if (Number.isFinite(durationMs)) {
+      results.push({ name: match[1], durationMs });
+    }
+  }
+  return results.sort((a, b) => b.durationMs - a.durationMs).slice(0, limit);
+}
 
 export interface PnpmSpawnSpec {
   readonly command: string;
@@ -49,6 +73,7 @@ export interface RunVerifyOptions {
   stepRunner?: VerifyStepRunner;
   stdout?: { write(chunk: string): boolean };
   stderr?: { write(chunk: string): boolean };
+  skipBuild?: boolean;
 }
 
 export function detectStepWarning(name: string, stdout: string, stderr: string): string | null {
@@ -130,11 +155,14 @@ export async function runVerify(options: RunVerifyOptions = {}): Promise<number>
     runner('typecheck', ['run', 'typecheck']),
     runner('validate', ['run', 'validate']),
   ];
-  const buildAndTest = runner('build', ['run', 'build']).then(async (buildRes) => {
-    if (buildRes.code !== 0) return [buildRes];
-    const testRes = await runner('test', ['run', 'test']);
-    return [buildRes, testRes];
-  });
+  const buildAndTest =
+    options.skipBuild === true
+      ? runner('test', ['run', 'test']).then((testRes) => [testRes])
+      : runner('build', ['run', 'build']).then(async (buildRes) => {
+          if (buildRes.code !== 0) return [buildRes];
+          const testRes = await runner('test', ['run', 'test']);
+          return [buildRes, testRes];
+        });
 
   const [staticOutcomes, pipelineOutcomes] = await Promise.all([Promise.all(staticSteps), buildAndTest]);
   const all = [...staticOutcomes, ...pipelineOutcomes];
@@ -153,12 +181,22 @@ export async function runVerify(options: RunVerifyOptions = {}): Promise<number>
     }
     return 1;
   }
+  const testOutcome = all.find((item) => item.name === 'test');
+  if (testOutcome && testOutcome.durationMs > SLOW_TEST_OBSERVATION_MS) {
+    const slowest = extractSlowestSuites(testOutcome.stdout);
+    if (slowest.length > 0) {
+      const summary = slowest.map((s) => `${s.name} (${Math.round(s.durationMs)}ms)`).join(', ');
+      out.write(`[INFO] slowest test suites (test > ${SLOW_TEST_OBSERVATION_MS}ms): ${summary}\n`);
+    }
+  }
   out.write(`[OK] verify passed in ${Date.now() - totalStart}ms\n`);
   return 0;
 }
 
 if (isMainEntry(import.meta.url)) {
-  void runVerify().then((code) => {
+  const cliArgs = process.argv.slice(2).filter((arg) => arg !== '--');
+  const skipBuild = cliArgs.includes('--skip-build');
+  void runVerify({ skipBuild }).then((code) => {
     if (code !== 0) process.exit(code);
   });
 }

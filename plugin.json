@@ -1,12 +1,21 @@
 {
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "agy-hud",
-  "displayName": "agy-hud",
+  "displayName": "Agy HUD",
   "version": "0.1.0",
-  "description": "Native ANSI terminal HUD statusline and profile portability toolkit for Antigravity CLI, featuring live model, quota, telemetry metrics, and swarm roster chips.",
+  "description": "Terminal HUD statusline and App HUD Inspector for Antigravity, with live model, quota, token/TTFT telemetry, tool activity, and swarm chips.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "Install and wire the agy-hud statusline in my Antigravity CLI settings",
-    "Configure agy-hud display preset and toggle performance capsule or swarm chips",
-    "Export a sanitized Antigravity CLI profile for migration to another machine"
-  ]
+    "/hud setup — check status and activate the CLI statusline",
+    "/hud compact — switch HUD preset or customize modules",
+    "/hud check — inspect HUD health, telemetry, and active session"
+  ],
+  "author": {
+    "name": "ifelseboyxx",
+    "url": "https://github.com/ifelseboyxx"
+  },
+  "homepage": "https://github.com/ifelseboyxx/agy-hud#readme",
+  "repository": "https://github.com/ifelseboyxx/agy-hud",
+  "license": "MIT",
+  "keywords": ["hud", "statusline", "telemetry", "quota", "inspector", "mcp-app", "swarm", "cli"]
 }

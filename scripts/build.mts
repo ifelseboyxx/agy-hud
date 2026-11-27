@@ -98,24 +98,23 @@ export async function runAtomicBuild(options: AtomicBuildOptions = {}): Promise<
 
   ensureStagingDirSync(stagingDir);
   try {
-    await viteBuild(
-      createViteBuildConfig({
-        rootDir,
-        outDir: stagingDir,
-        input: HUD_ENTRY_INPUT,
-        emitDts: false,
-        codeSplitting: false,
-        logLevel: options.logLevel,
-      }),
-    );
-    await viteBuild(
-      createViteBuildConfig({
-        rootDir,
-        outDir: stagingDir,
-        input: SHARED_ENTRY_INPUTS,
-        emitDts: true,
-        logLevel: options.logLevel,
-      }),
+    const standaloneEntries: ReadonlyArray<readonly [string, string, boolean]> = [
+      ...Object.entries(HUD_ENTRY_INPUT).map(([k, v]) => [k, v, false] as const),
+      ...Object.entries(SHARED_ENTRY_INPUTS).map(([k, v]) => [k, v, k === 'index'] as const),
+    ];
+    await Promise.all(
+      standaloneEntries.map(([name, entryPath, emitDts]) =>
+        viteBuild(
+          createViteBuildConfig({
+            rootDir,
+            outDir: stagingDir,
+            input: { [name]: entryPath },
+            emitDts,
+            codeSplitting: false,
+            logLevel: options.logLevel,
+          }),
+        ),
+      ),
     );
 
     const published = publishStagingDirSync(stagingDir, outDir);

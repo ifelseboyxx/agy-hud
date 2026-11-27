@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Pre-release quality and plugin gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Verify single-segment semver tag and version parity
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const tag = process.env.RELEASE_TAG || '';
+            const strictSemverTag = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
+            if (tag.includes('/') || !strictSemverTag.test(tag)) {
+              console.error('Invalid release tag (must be single-segment semver vX.Y.Z): ' + tag);
+              process.exit(1);
+            }
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const manifest = JSON.parse(fs.readFileSync('plugin.json', 'utf8'));
+            if (pkg.version !== manifest.version) {
+              console.error('Version mismatch: package.json=' + pkg.version + ' plugin.json=' + manifest.version);
+              process.exit(1);
+            }
+            if (tag !== 'v' + pkg.version) {
+              console.error('Tag ' + tag + ' does not match version v' + pkg.version);
+              process.exit(1);
+            }
+          "
+      - run: pnpm install --frozen-lockfile
+      - name: Check tracked dist freshness, declarations, and modes
+        run: pnpm dist:check --git-clean
+      - name: Run full verification suite
+        run: pnpm verify --skip-build
+      - name: Install Antigravity CLI (with retry)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if curl -fsSL https://antigravity.google/cli/install.sh | bash; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to install agy CLI after 3 attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Validate plugin manifest and components
+        run: pnpm validate:plugin
+      - name: Smoke test zero-build plugin install in isolated HOME
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP_HOME="$(mktemp -d)"
+          trap 'rm -rf "$TMP_HOME"' EXIT
+          HOME="$TMP_HOME" agy plugin install .
+          test -x "$TMP_HOME/.gemini/config/plugins/agy-hud/dist/hud.mjs"
+          HOME="$TMP_HOME" agy plugin list --json | node -e "
+            const raw = require('node:fs').readFileSync(0, 'utf8');
+            const parsed = JSON.parse(raw);
+            const list = Array.isArray(parsed) ? parsed : (parsed.plugins || []);
+            const hit = list.find((p) => p && p.name === 'agy-hud');
+            const skills = Array.isArray(hit && hit.skills) ? hit.skills : [];
+            const mcps = Array.isArray(hit && hit.mcpServers) ? hit.mcpServers : [];
+            if (!hit || skills.length !== 1 || !skills.includes('hud') || mcps.length !== 1 || !mcps.includes('inspector')) {
+              console.error('Unexpected installed plugin smoke result:', JSON.stringify(hit));
+              process.exit(1);
+            }
+          "
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOTES_FILE="$(mktemp)"
+          trap 'rm -f "$NOTES_FILE"' EXIT
+          cat <<EOF > "$NOTES_FILE"
+          ## Install or Upgrade (Zero-Build)
+
+          \`\`\`bash
+          # Latest release on main
+          agy plugin install https://github.com/ifelseboyxx/agy-hud
+
+          # Pinned to ${RELEASE_TAG}
+          agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/${RELEASE_TAG}
+          \`\`\`
+
+          > Note: Do not pass GitHub Release \`.zip\` or \`.tar.gz\` source archives to \`agy plugin install\`; Antigravity CLI installs directly from the GitHub repository or tag URL above.
+          EOF
+          EXTRA_FLAGS=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            EXTRA_FLAGS+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes-file "$NOTES_FILE" \
+            --generate-notes \
+            "${EXTRA_FLAGS[@]}"

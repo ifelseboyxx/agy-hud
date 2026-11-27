@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { checkRuntimeEnvironment } from './check-env.mts';
 import { runValidation as runArchitectureValidation } from './validate-architecture.ts';
 import { findEmojiViolations } from './validate-no-emoji.mts';
+import { validatePluginPackageHygiene } from './validate-plugin-manifest.ts';
 import { validateSourceMaintainability } from './validate-source-maintainability.mts';
 import { findMisplacedTests } from './validate-test-layout.mts';
 import {
@@ -55,6 +56,12 @@ if (emojiViolations.length > 0) {
 }
 
 if (runArchitectureValidation(root) !== 0) {
+  failed = true;
+}
+
+const pluginErrors = validatePluginPackageHygiene(root);
+if (pluginErrors.length > 0) {
+  for (const err of pluginErrors) console.error(`[FAIL] plugin-hygiene: ${err}`);
   failed = true;
 }
 

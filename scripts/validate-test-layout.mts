@@ -6,7 +6,17 @@ import { isMainEntry } from '../src/core/paths.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage', '.husky', '.cache']);
+const SKIP_DIRS = new Set([
+  'node_modules',
+  'dist',
+  '.git',
+  'coverage',
+  '.husky',
+  '.cache',
+  '.scratch',
+  '.agents',
+  '.workbench',
+]);
 const TEST_FILE_RE = /\.test\.(?:mts|ts|mjs|cjs|js)$/;
 
 export function findMisplacedTests(projectRoot: string = root): string[] {

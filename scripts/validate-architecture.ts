@@ -6,13 +6,42 @@ import { parseSync, Visitor } from 'oxc-parser';
 import { ResolverFactory } from 'oxc-resolver';
 
 import { isMainEntry, toPosixPath } from '../src/core/paths.ts';
+import { INSPECTOR_SCRIPT } from '../src/mcp/hud-inspector-script.ts';
 import { createStatusLineFenceTracker, STATUSLINE_SINGLE_WRITER } from './lib/statusline-writer-fence.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
+const DEFAULT_ARCH_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_DESC_MIN = 24;
 const SKILL_DESC_MAX = 240;
-const IGNORED_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage']);
+const IGNORED_DIRS = new Set([
+  'node_modules',
+  'dist',
+  '.git',
+  'coverage',
+  '.cache',
+  '.scratch',
+  '.agents',
+  '.workbench',
+]);
 const AST_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
+const FORBIDDEN_RENDER_CALLS = new Set([
+  'writeFileSync',
+  'mkdirSync',
+  'rmSync',
+  'unlinkSync',
+  'renameSync',
+  'copyFileSync',
+  'writeBufferAtomicSync',
+  'writeJsonAtomicSync',
+  'touchRegularFileTimesSync',
+]);
+const FORBIDDEN_RENDER_MODULES = new Set(['node:child_process', 'child_process', 'node:sqlite']);
+const FORBIDDEN_RENDER_TARGETS = new Set([
+  'src/hud-runner.ts',
+  'src/hud-snapshot-publish.ts',
+  'src/core/file-lock.ts',
+  'src/collectors/snapshot-envelope.ts',
+]);
 
 // 跨模块重复顶层函数的棘轮基线：已清零，禁止新增跨模块重复定义。
 export const KNOWN_DUPLICATE_FUNCTIONS: ReadonlySet<string> = new Set();
@@ -40,7 +69,8 @@ function isFenceTarget(relPosix: string): boolean {
     relPosix.startsWith('src/render/') ||
     relPosix.startsWith('src/mcp/') ||
     relPosix === 'src/hud-entry.ts' ||
-    relPosix === 'src/hud-runner.ts'
+    relPosix === 'src/hud-runner.ts' ||
+    relPosix === 'src/hud-snapshot-publish.ts'
   );
 }
 
@@ -192,8 +222,10 @@ function inspectTypeScriptAst(
     }
   }
 
+  const isRenderModule = relPosix.startsWith('src/render/') && !relPosix.includes('/__tests__/');
   let consoleLogCount = 0;
   const forbiddenGlobalNetworks = new Set<string>();
+  const forbiddenRenderCalls = new Set<string>();
   const statusLineFence = createStatusLineFenceTracker(checkStatusLineOwnership);
 
   const visitor = new Visitor({
@@ -211,6 +243,9 @@ function inspectTypeScriptAst(
     CallExpression(node): void {
       if (checkNetworkFence && node.callee.type === 'Identifier' && node.callee.name === 'fetch') {
         forbiddenGlobalNetworks.add('fetch');
+      }
+      if (isRenderModule && node.callee.type === 'Identifier' && FORBIDDEN_RENDER_CALLS.has(node.callee.name)) {
+        forbiddenRenderCalls.add(node.callee.name);
       }
       statusLineFence.onCallExpression(node);
       if (
@@ -237,6 +272,9 @@ function inspectTypeScriptAst(
   for (const api of forbiddenGlobalNetworks) {
     errors.push(`${relPosix}: global network API '${api}' is forbidden by AST fence`);
   }
+  for (const fnName of forbiddenRenderCalls) {
+    errors.push(`${relPosix}: pure src/render/ module may not call filesystem mutator '${fnName}'`);
+  }
   errors.push(...statusLineFence.collectErrors(relPosix));
 
   const isCollectorModule = relPosix.startsWith('src/collectors/') && !relPosix.includes('/__tests__/');
@@ -244,23 +282,34 @@ function inspectTypeScriptAst(
     if (checkNetworkFence && NETWORK_MODULES.has(spec)) {
       errors.push(`${relPosix}: network import '${spec}' is forbidden by AST import fence`);
     }
+    if (isRenderModule && FORBIDDEN_RENDER_MODULES.has(spec)) {
+      errors.push(`${relPosix}: pure src/render/ module may not import '${spec}'`);
+    }
     if (checkRelativeImports && (spec.startsWith('./') || spec.startsWith('../'))) {
       const resolved = resolver.resolveFileSync(fullPath, spec);
       if (resolved.error || !resolved.path || !resolved.path.startsWith(rootDir)) {
         errors.push(`${relPosix}: unresolved relative import '${spec}' (${resolved.error ?? 'missing target'})`);
-      } else if (isCollectorModule) {
+      } else {
         const targetRel = toPosixPath(path.relative(rootDir, resolved.path));
-        if (targetRel.startsWith('src/render/')) {
+        if (isCollectorModule && targetRel.startsWith('src/render/')) {
           errors.push(`${relPosix}: collectors may not import from src/render/ ('${spec}')`);
+        }
+        if (isRenderModule && FORBIDDEN_RENDER_TARGETS.has(targetRel)) {
+          errors.push(`${relPosix}: pure src/render/ module may not import I/O/lock module '${targetRel}' ('${spec}')`);
         }
       }
     }
   }
 }
 
+export function validateEmbeddedClientScript(scriptCode: string, label = 'src/mcp/hud-inspector-script.ts'): string[] {
+  const parsed = parseSync('hud-inspector-client.js', scriptCode, { lang: 'js', sourceType: 'script' });
+  return parsed.errors.map((err) => `${label} (embedded client JS): ${err.message}`);
+}
+
 export function collectArchitectureErrors(
-  rootDir: string = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
-  options: { checkSkills?: boolean } = {},
+  rootDir: string = DEFAULT_ARCH_ROOT,
+  options: { checkSkills?: boolean; checkClientScripts?: boolean } = {},
 ): { errors: string[]; fileCount: number; skillCount: number } {
   const errors: string[] = [];
   const files = walkFiles(rootDir, rootDir, {
@@ -280,13 +329,15 @@ export function collectArchitectureErrors(
   }
   errors.push(...findDuplicateFunctionErrors(functionDefs));
 
+  if (options.checkClientScripts !== false && path.resolve(rootDir) === DEFAULT_ARCH_ROOT) {
+    errors.push(...validateEmbeddedClientScript(INSPECTOR_SCRIPT));
+  }
+
   const skillCount = options.checkSkills === false ? 0 : validateSkills(rootDir, errors);
   return { errors, fileCount: files.length, skillCount };
 }
 
-export function runValidation(
-  rootDir: string = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
-): number {
+export function runValidation(rootDir: string = DEFAULT_ARCH_ROOT): number {
   const { errors, fileCount, skillCount } = collectArchitectureErrors(rootDir);
   if (errors.length > 0) {
     console.error(`Architecture validation failed (${errors.length} issue(s)):`);

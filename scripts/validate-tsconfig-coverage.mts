@@ -9,7 +9,18 @@ import { walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_ROOTS = ['src', 'scripts', 'tests'] as const;
-const SKIP_DIRS = new Set(['node_modules', 'vendor', 'cache', 'dist', '__pycache__', '.git', 'coverage']);
+const SKIP_DIRS = new Set([
+  'node_modules',
+  'vendor',
+  '.cache',
+  'dist',
+  '__pycache__',
+  '.git',
+  'coverage',
+  '.scratch',
+  '.agents',
+  '.workbench',
+]);
 const SOURCE_EXTENSIONS = new Set(['.mts', '.ts', '.cts', '.tsx']);
 
 export interface TypecheckProject {
