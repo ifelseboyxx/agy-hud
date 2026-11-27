@@ -4,7 +4,7 @@
 
 # agy-hud
 
-**A live terminal HUD below your Antigravity prompt — plus an App HUD Inspector.**<br>
+**A live terminal HUD below your Antigravity CLI prompt — with snapshots & profile portability.**<br>
 Model, readable quotas, throughput, enhanced Git diff stats, USD/CNY cost, active tools, and `/swarm` status — zero build, zero runtime dependencies.
 
 [![CI](https://github.com/ifelseboyxx/agy-hud/actions/workflows/ci.yml/badge.svg)](https://github.com/ifelseboyxx/agy-hud/actions/workflows/ci.yml)
@@ -26,7 +26,7 @@ Model, readable quotas, throughput, enhanced Git diff stats, USD/CNY cost, activ
 
 While Antigravity runs a turn, you want to see which model and thinking effort are active, how much context and rate-limit quota remain, whether streaming throughput has stalled, how much the session costs, and what tools or `/swarm` workers are doing — without interrupting the session or tailing logs.
 
-`agy-hud` stays pinned below your CLI prompt with live, width-aware telemetry and ships an out-of-the-box `HUD Inspector` MCP App for Antigravity App — with zero runtime dependencies and zero local build steps.
+`agy-hud` stays pinned below your Antigravity CLI prompt with live, width-aware telemetry, clickable OSC 8 snapshots, and terminal popup inspection — with zero runtime dependencies and zero local build steps.
 
 ## What you see
 
@@ -34,18 +34,18 @@ The default (`full`) layout renders active mode, identity and performance metric
 
 ```text
  ⏵⏵ accept edits on (shift+tab to cycle)
- [G4 Carbon ◑ high] │ agy-hud git:(main +!? ↑1) +48 -12 │ ◷ 12m │ Swarm 1/2 │ Cost ~$0.185 / ¥1.34 │ 86.4 token/s · TTFT 1.62s · Cache 94%
-  Context █████░░░░░ 48% (480k/1M) │ Gemini 5h: 92% left (3h14m) | 7d: 88% left (4d6h)
+ [G4 Carbon ● high] │ agy-hud git:(main +!? ↑1) +48 -12 │ ◷ 12m │ Swarm 1/2 │ Cost ~$0.185 / ¥1.34 │ 86.4 token/s · TTFT 1.6s · Cache 94%
+  Context █████░░░░░ 48% (246k/512k) │ Gemini 5h: 92% left (3h14m) | 7d: 88% left (4d6h)
   ◐ Edit: lines.ts | ✓ Read ×4 | ✓ Grep ×2 | +3 more
   ✓ Skills (1): hud
   ✓ MCPs (1): filesystem
   ◐ Swarm (1/2): ◐ coder, ◌ reviewer
-  ▸ Verify statusLine rollback guards (2/4) │ BG 1
+  ▸ Verify statusLine rollback guards (2/4) │ Bg Tasks 1
 ```
 
 - **Mode (`mode`)** — active permission or agent mode (`bypass permissions`, `accept edits`, `plan`, `auto`, `default`), optional Vim tag (`[NORMAL]` / `[INSERT]`), and cycle hint
-- **Identity & Perf (`identity`)** — model and thinking effort (including `Orchestrator (Planner/Executor)`), workspace and cached enhanced Git status (`=+!->?$ ↑N↓N` + `+N -M` tracked diff lines, degrading to `git:(branch*)` below 100 cols), duration, `Swarm` / `Agents` counter, runtime badges (`@agent`, `Battle`, `BG`, `! Approval`, `Q:N`), offline USD/CNY session cost (`~` when estimated), and width-adaptive Perf Capsule (`token/s`, `TTFT`, `Cache%`)
-- **Context & Quota (`usage`)** — color-coded context bar with capacity and compaction-aware estimates (`~used/max`), alongside human-readable `Gemini` / `3rd-Party` remaining quotas (`left`, integer percentages with `<1%`/`99%`/`100%` edge accuracy, and compact `4d6h` resets; `Gem`/`3P` below 100 cols)
+- **Identity & Perf (`identity`)** — model and model-aware thinking effort (`◔ low` / `◑ medium` / `◕ high` / `● peak` / `✦ max`, automatically promoting each model's highest supported tier such as `xhigh` on Hydrogen/Neon and `high` on Carbon/Argon/Claude/Flash to a monochrome platinum active-turn sheen, plus `Orchestrator (Planner/Executor)`), workspace and cached enhanced Git status (`=+!->?$ ↑N↓N` + `+N -M` tracked diff lines, degrading to `git:(branch*)` below 100 cols), duration, `Swarm` / `Agents` counter, runtime badges (`@agent`, `Battle`, `Bg Tasks`, `! Approval`, `! Auth`, `Review`, `Retry`, `! Error`, `Queued`), offline USD/CNY session cost (`~` when estimated), and width-adaptive Perf Capsule (`token/s`, `TTFT`, `Cache%` with anomaly alerts)
+- **Context & Quota (`usage`)** — color-coded Context Budget bar (`used/budget`) with CJK-aware compaction estimates (`~used/max`), alongside human-readable `Gemini` / `Claude/GPT` remaining quotas (`left`, integer percentages with `<1%`/`99%`/`100%` edge accuracy, compact `4d6h` resets, and conditional Quota Pace depletion forecast `~0% <eta>` / `!`)
 - **Activity (`tools`, `skills`, `mcps`, `agents`, `todos`, or `activity`)** — running and completed tools, loaded skills and MCP servers, `/swarm` and subagent chips (`◐` working, `◌` waiting), and todo progress; width-packed with clickable OSC 8 `+N more` (or `· snapshot`) links
 
 ### Presets
@@ -69,12 +69,6 @@ agy plugin install https://github.com/ifelseboyxx/agy-hud
 # Or pin a specific release tag (single-segment semver tag only; never pass .zip archives)
 agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.0
 ```
-
-### Antigravity App
-
-Ready immediately after `agy plugin install` — no statusline wiring required. Open **HUD Inspector** from Conversation **Overview -> Plugins** (`aux_pane`) or the left sidebar **Plugins** (`global`).
-
-### Antigravity CLI
 
 Start `agy` and activate the terminal status line in one step (hot-reloads immediately, no restart needed):
 
@@ -124,23 +118,22 @@ node scripts/install.mjs install --target <dir> --no-enable
 
 ## Overflow inspector
 
-When session activity exceeds one status line (`+N more` or `· snapshot`), inspect the full untruncated Activity Snapshot through three channels:
+When session activity exceeds one status line (`+N more` or `· snapshot`), inspect the full untruncated Activity Snapshot through two terminal-native channels:
 
 - **Clickable OSC 8 links** — `Cmd+Click` (or terminal hyperlink open) any `+N more` badge or `· snapshot` tail to open the session's local `0o600` Markdown snapshot (written lazily only when a link is emitted and content changes).
-- **Terminal CLI & interactive popup** — inspect the active session directly from the Antigravity prompt (`!agy-hud`) or any terminal, open a single-key-dismiss overlay, or generate popup keybindings.
-- **Antigravity App `HUD Inspector` (MCP App)** — bundled via `mcp_config.json` (`dist/mcp-hud.mjs`). Displays live telemetry (and USD/CNY CLI session cost when present), searchable tools, skills, MCP breakdowns, swarm rosters, and clickable local file links.
+- **Terminal CLI & interactive popup** — inspect the active session directly from the Antigravity CLI prompt (`!agy-hud`) or any terminal, open a single-key-dismiss overlay, or generate popup keybindings.
 
 ```bash
-# Inspect active session or filter specific sections
+# Inspect active session or filter specific sections (context, tools, skills, mcps, agents)
 agy-hud
-agy-hud snapshot tools agents
+agy-hud snapshot context tools agents
 
-# Open interactive popup overlay (q/Esc/Enter close, 1-4/a filter, j/k scroll, r reload)
+# Open interactive popup overlay (q/Esc/Enter close, 1-5/c/a filter, j/k scroll, r reload)
 agy-hud -p
 
-# List active and recent CLI / APP / IDE sessions or emit structured JSON
+# List active and recent CLI sessions or emit structured JSON
 agy-hud --sessions
-agy-hud -s <id-or-prefix> --source all --json
+agy-hud -s <id-or-prefix> --json
 
 # Print ready-to-paste popup shortcut snippets (tmux, kitty, wezterm, ghostty, iterm2, or all)
 agy-hud --keybindings
@@ -192,7 +185,7 @@ Settings live in `~/.gemini/antigravity-cli/hud-config.json` (respects `GEMINI_C
 | `lines` | Ordered array of `mode`, `identity`, `usage`, `activity`, `tools`, `skills`, `mcps`, `agents`, `todos` | `full` lines | Explicit pluggable rows rendered in order; empty rows auto-collapse. |
 | `segments` | Booleans for `model`, `git`, `duration`, `badges`, `cost`, `perf`, `context`, `quota` | All `true` | Toggleable inline segments within `identity` and `usage` (and `zen` folded tail). |
 | `costCurrency` | `usd` \| `cny` \| `both` | `usd` | Offline cost currency format (`both` renders `$0.818 / ¥5.93`, compacting to `$0.82/¥5.93` below 100 cols). |
-| `usdToCnyRate` | number `0.01..1000` | `7.25` | Offline USD-to-CNY conversion rate used by HUD, Markdown, CLI `snapshot`, and `HUD Inspector`. |
+| `usdToCnyRate` | number `0.01..1000` | `7.25` | Offline USD-to-CNY conversion rate shared across HUD, OSC 8 Markdown, and CLI `snapshot`. |
 | `narrow` | `{ lines?: HudLineId[], segments?: Partial<HudSegments> }` | *(omitted)* | Optional split-pane overrides active when `terminal_width < 100`; omitted keys inherit top-level config and skipped modules skip collectors. |
 | `osc8Links` | `boolean` | `true` | Emit OSC 8 hyperlinks on `+N more` / `snapshot` (suppressed under `NO_COLOR`, `TERM=dumb`, or SSH). |
 | `maxAgentChips` | integer `0..20` | `8` | Maximum Swarm/Agent chips shown before `+N more` (`0` hides the row). |
@@ -217,9 +210,9 @@ agy-hud import-profile --in ./agy-profile --merge-mcp
 
 ## Uninstall
 
-Always detach the CLI status line **before** removing the plugin so Antigravity CLI's 30-failure statusline circuit breaker is never triggered. You can also run **`/hud uninstall`** (or `/hud uninstall --purge`) inside Antigravity.
+Always detach the CLI status line **before** removing the plugin so Antigravity CLI's 30-failure statusline circuit breaker is never triggered. You can also run **`/hud uninstall`** (or `/hud uninstall --purge`) inside Antigravity CLI.
 
-### Antigravity CLI (Recommended 2-Step Clean Uninstall)
+### Recommended 2-Step Clean Uninstall
 
 ```bash
 # 1. Restore previous statusLine, remove owned `agy-hud` command, and sweep transient caches (keeps hud-config.json)
@@ -237,14 +230,6 @@ agy plugin uninstall agy-hud
 ```
 
 Inside a live CLI session, run `/statusline delete` to immediately clear the active bar without restarting.
-
-### Antigravity App Only
-
-```bash
-agy plugin uninstall agy-hud
-```
-
-*(Optional: run `node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs unwire --purge` before `agy plugin uninstall agy-hud` if you also want to sweep local `HUD Inspector` caches.)*
 
 ### File footprint
 
@@ -267,28 +252,27 @@ agy plugin uninstall agy-hud
 
 ## How it works
 
-`agy-hud` combines Antigravity CLI `statusLine` stdin payloads with strictly read-only local telemetry, transcripts, SQLite/WAL databases, `/swarm` rosters, and cached non-locking Git status. One shared incremental scanner and aggregator powers all four user-facing surfaces so counts and ordering stay identical everywhere.
+`agy-hud` combines Antigravity CLI `statusLine` stdin payloads with strictly read-only local telemetry, transcripts, SQLite/WAL databases, `/swarm` rosters, and cached non-locking Git status. One shared incremental scanner and aggregator powers all three CLI surfaces so counts and ordering stay identical everywhere.
 
 ```text
  Antigravity CLI (stdin ~300 ms) ──┐
- Local SQLite/WAL + transcripts  ──┼──> Shared collectors & aggregator ──> Terminal HUD / OSC 8 / CLI / MCP App
- /swarm roster + Git + proc      ──┘                                   (strictly read-only on App/IDE roots)
+ Local SQLite/WAL + transcripts  ──┼──> Shared collectors & aggregator ──> Terminal HUD / OSC 8 / CLI Snapshot
+ /swarm roster + Git + proc      ──┘                                   (strictly read-only on CLI DB dirs)
 ```
 
 | Surface | Reads from | Delivered via |
 | :--- | :--- | :--- |
 | **Terminal HUD** (`dist/hud.mjs`) | `statusLine` stdin, `hud-config.json`, transcripts, SQLite/WAL, `/swarm`, cached Git | ANSI lines pinned below the CLI prompt |
 | **OSC 8 Snapshot** | Same live collector pass (digest-gated) | Lazy `0o600` Markdown file in `<cliHome>/cache/` |
-| **CLI & Popup** (`agy-hud` / `-p`) | CLI, App, and IDE session indexes, transcripts, and DBs | Structured terminal output, `-p` overlay, or JSON |
-| **App `HUD Inspector`** (`dist/mcp-hud.mjs`) | Same cross-surface snapshot index with semantic ETag | Self-contained MCP App UI (`aux_pane` / `global`) |
+| **CLI & Popup** (`agy-hud` / `-p`) | CLI session index, transcripts, and SQLite/WAL DBs | Structured terminal output, `-p` overlay, or JSON |
 
 More detail is in [docs/architecture.md](docs/architecture.md) and [docs/host-contracts.md](docs/host-contracts.md).
 
 ## Security and reliability
 
-- **Local-only, zero network calls** — reads only `statusLine` stdin JSON, local session roots, local Git metadata (`--no-optional-locks`), and (during profile commands) `~/.gemini/config`; the MCP App HTML is 100% self-contained (`default-src 'none'` CSP), and USD/CNY conversion is 100% offline
-- **Zero runtime dependencies** — compiled into 6 standalone unhashed ESM/type files (`dist/hud.mjs`, `dist/cli.mjs`, `dist/mcp-hud.mjs`, `dist/index.mjs`, `dist/index.d.mts`, `dist/types.d.mts`) using only Node built-ins (`node:sqlite`, `node:fs`, `node:child_process`) and a pure-TypeScript Protobuf decoder
-- **Read-only host access & path containment** — App/IDE SQLite and WAL files are read strictly read-only (`?immutable=1` or short-lived `os.tmpdir()` snapshot copies, 50 ms timeout, zero writes to host roots); caches stay in `<cliHome>/cache` (`0o600`), and session/transcript/skill paths are validated against trusted roots
+- **Local-only, zero network calls** — reads only `statusLine` stdin JSON, local CLI session files, local Git metadata (`--no-optional-locks`), and (during profile commands) `~/.gemini/config`; USD/CNY conversion is 100% offline
+- **Zero runtime dependencies** — compiled into 5 standalone unhashed ESM/type files (`dist/hud.mjs`, `dist/cli.mjs`, `dist/index.mjs`, `dist/index.d.mts`, `dist/types.d.mts`) using only Node built-ins (`node:sqlite`, `node:fs`, `node:child_process`) and a pure-TypeScript Protobuf decoder
+- **Read-only DB access & path containment** — CLI SQLite and WAL files are read strictly read-only (`?immutable=1` or short-lived `os.tmpdir()` snapshot copies, 50 ms timeout, zero writes to database directories); caches stay in `<cliHome>/cache` (`0o600`), and session/transcript/skill paths are validated against trusted roots
 - **Ownership-gated writes & atomic rollback** — `settings.json` goes through a single locked writer (`src/cli/installer/settings.ts`); command shims carry `agy-hud-shim:v1` headers and pass a 5 s `--help` smoke check without touching shell rc files or the Windows Registry; corrupt user JSON fails closed without being overwritten, and failed `install`/`wire` transactions roll back atomically
 
 ## Development

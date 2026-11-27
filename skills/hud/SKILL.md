@@ -1,11 +1,11 @@
 ---
 name: hud
-description: Activate, preview, customize, diagnose, or cleanly uninstall agy-hud statusline and HUD Inspector across Antigravity CLI and App.
+description: Activate, preview, customize, diagnose, or cleanly uninstall the agy-hud terminal status line and CLI toolkit in Antigravity CLI.
 ---
 
 # `/hud` — Agy HUD Setup, Customization, Diagnostics & Uninstall
 
-Use this skill to manage `agy-hud` across **Antigravity CLI** (terminal status line + `agy-hud` CLI) and **Antigravity App** (zero-wiring `HUD Inspector` MCP App).
+Use this skill to manage `agy-hud` in **Antigravity CLI** (live terminal status line, activity snapshots, offline previews, and profile migration).
 
 ## Resolve `<PLUGIN_ROOT>` & Install Scope First
 
@@ -18,11 +18,6 @@ Resolve `<PLUGIN_ROOT>` strictly relative to this `SKILL.md` file (`../..`, i.e.
   - Default global install (`~/.gemini/config/plugins/agy-hud`): no target flag needed.
   - Workspace install (`<project>/.agents/plugins/agy-hud`): ALWAYS pass `--project "<project>"` (targets the workspace copy and avoids touching global `CLI Shim` or global host registration).
   - Marketplace or custom directory (any other path): ALWAYS pass `--target "<PLUGIN_ROOT>"` (add `--bin-dir ~/.local/bin` only if the user explicitly opts into installing/removing the global `CLI Shim`).
-
-## Surface Split (App vs CLI)
-
-- **Antigravity App**: `HUD Inspector` works immediately after `agy plugin install` via `mcp_config.json` with **zero `/statusline` or `wire` setup**.
-- **Antigravity CLI**: Activate the live terminal status bar using one of the paths below.
 
 ## 1. Default `/hud` & `/hud check` (Read-Only First)
 

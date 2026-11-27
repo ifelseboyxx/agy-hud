@@ -9,8 +9,8 @@ Review-stage judgement standards for `agy-hud` (enforced during `/code-review`, 
 
 ## Concurrency & Cross-Surface Verification
 
-- **Interactive config & MCP polling**: Changes to interactive config save require a lock-interleaved test verifying stale-draft rejection while preserving concurrent writes. Changes to HUD Inspector polling or host pushes require an interleaved test verifying bidirectional stale response dropping by `session + source + request sequence` with retry after timeout.
-- **Cross-host read-only & 4-surface parity**: Changes to cross-host session reading must verify zero directory/content mutations in a temporary App root (including closed-writer WAL scenarios) and use an isolated CLI Home for diagnostics. Changes to transcript continuation or Activity Snapshot aggregation must verify parity across HUD, OSC 8 Markdown, CLI `snapshot`, and MCP `HUD Inspector` on one shared fixture (including same-inode same-length rewrites).
+- **Interactive config concurrency**: Changes to interactive config save require a lock-interleaved test verifying stale-draft rejection while preserving concurrent writes.
+- **CLI SQLite/WAL read-only & 3-surface parity**: Changes to CLI SQLite/WAL reading must verify zero directory/content mutations in temporary database directories (including closed-writer WAL scenarios) and use an isolated CLI Home for diagnostics. Changes to transcript continuation or Activity Snapshot aggregation must verify 3-surface CLI parity across HUD, OSC 8 Markdown, and CLI `snapshot` on one shared fixture (including same-inode same-length rewrites).
 
 ## Test Granularity & Lifecycle Hygiene
 
@@ -19,7 +19,5 @@ Review-stage judgement standards for `agy-hud` (enforced during `/code-review`, 
 
 ## Architecture & Distribution Hygiene
 
-- **Pure `src/render/` & server-side formatting parity**: Keep `src/render/` strictly pure (zero file locks, disk writes, or `hud-runner` cycles; AST-enforced by `scripts/validate-architecture.ts`). Pre-compute shared currency/telemetry strings in Node rather than re-implementing float math inside client script templates.
 - **Test hermeticity (`PATH` isolation)**: Isolated test environments (`makeIsolatedEnv`) must strip host `agy` directories from `PATH` by default; tests exercising host CLI interactions must inject an explicit `createFakeAgyBin` fixture.
-- **Standalone `dist/` & `.d.mts` verification**: `dist/` emits strictly 6 standalone files with self-contained `.d.mts` declarations verified via `ts.createProgram` and `--git-clean` index checks (`pnpm dist:check --git-clean`).
 - **Describe boundaries, not caller lists**: Keep `docs/architecture.md` focused on layer boundaries and shared contracts rather than enumerating individual consumer filenames that drift during refactors.
