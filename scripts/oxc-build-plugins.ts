@@ -6,8 +6,10 @@ import { parseSync } from 'oxc-parser';
 import { isolatedDeclaration } from 'oxc-transform';
 import type { Plugin, ResolvedConfig } from 'vite';
 
+import { EXECUTABLE_DIST_FILES } from './lib/dist-manifest.mts';
+
 const SHEBANG_RE = /^(#![^\r\n]*)\r?\n/;
-const EXECUTABLE_BINS = new Set(['hud.mjs', 'cli.mjs', 'mcp-hud.mjs']);
+const EXECUTABLE_BINS: ReadonlySet<string> = new Set(EXECUTABLE_DIST_FILES);
 
 function extractShebangFromFile(filePath: string | null | undefined): string {
   if (!filePath || !existsSync(filePath)) return '';

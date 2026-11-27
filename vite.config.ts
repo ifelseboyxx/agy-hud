@@ -11,7 +11,6 @@ export const HUD_ENTRY_INPUT: Readonly<Record<string, string>> = {
 export const SHARED_ENTRY_INPUTS: Readonly<Record<string, string>> = {
   cli: 'src/cli-entry.ts',
   index: 'src/index.ts',
-  'mcp-hud': 'src/mcp/hud-mcp-entry.ts',
 };
 
 export interface ViteBuildPassOptions {

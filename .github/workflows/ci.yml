@@ -89,7 +89,7 @@ jobs:
             }
             const skills = Array.isArray(hit.skills) ? hit.skills : [];
             const mcps = Array.isArray(hit.mcpServers) ? hit.mcpServers : [];
-            if (skills.length !== 1 || !skills.includes('hud') || mcps.length !== 1 || !mcps.includes('inspector')) {
+            if (skills.length !== 1 || !skills.includes('hud') || mcps.length !== 0) {
               console.error('Unexpected installed components:', JSON.stringify({ skills, mcps }));
               process.exit(1);
             }

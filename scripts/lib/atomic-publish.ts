@@ -19,16 +19,10 @@ import {
   writeBufferAtomicSync,
   type EntrySnapshotSync,
 } from '../../src/fs-utils.ts';
+import { EXPECTED_DIST_FILES } from './dist-manifest.mts';
 
 const OWNED_CHUNKS_DIR = 'chunks';
-const OWNED_TOP_LEVEL_FILES: ReadonlySet<string> = new Set([
-  'hud.mjs',
-  'cli.mjs',
-  'mcp-hud.mjs',
-  'index.mjs',
-  'index.d.mts',
-  'types.d.mts',
-]);
+const OWNED_TOP_LEVEL_FILES: ReadonlySet<string> = new Set(EXPECTED_DIST_FILES);
 const POSIX_MODE_MASK = 0o777;
 export const FS_MAX_RETRIES = 5;
 export const FS_RETRY_DELAY_MS = 20;

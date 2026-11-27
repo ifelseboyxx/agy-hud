@@ -72,8 +72,8 @@ export function evaluateAgyPluginValidationReport(rawJson: string, expectedName 
     if (report.components.skills !== 1) {
       errors.push(`expected components.skills === 1, got ${String(report.components.skills)}`);
     }
-    if (report.components.mcpServers !== 1) {
-      errors.push(`expected components.mcpServers === 1, got ${String(report.components.mcpServers)}`);
+    if (report.components.mcpServers !== 0) {
+      errors.push(`expected components.mcpServers === 0, got ${String(report.components.mcpServers)}`);
     }
     if (report.components.hooks !== 0) {
       errors.push(`expected components.hooks === 0, got ${String(report.components.hooks)}`);

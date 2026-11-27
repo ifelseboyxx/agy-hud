@@ -6,8 +6,8 @@ import { parseSync, Visitor } from 'oxc-parser';
 import { ResolverFactory } from 'oxc-resolver';
 
 import { isMainEntry, toPosixPath } from '../src/core/paths.ts';
-import { INSPECTOR_SCRIPT } from '../src/mcp/hud-inspector-script.ts';
 import { createStatusLineFenceTracker, STATUSLINE_SINGLE_WRITER } from './lib/statusline-writer-fence.ts';
+import { createUnusedExportsTracker, type UnusedExportsTracker } from './lib/unused-exports-fence.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
 const DEFAULT_ARCH_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -35,12 +35,13 @@ const FORBIDDEN_RENDER_CALLS = new Set([
   'writeJsonAtomicSync',
   'touchRegularFileTimesSync',
 ]);
-const FORBIDDEN_RENDER_MODULES = new Set(['node:child_process', 'child_process', 'node:sqlite']);
+const FORBIDDEN_RENDER_MODULES = new Set(['node:child_process', 'child_process', 'node:sqlite', 'node:fs', 'fs']);
 const FORBIDDEN_RENDER_TARGETS = new Set([
   'src/hud-runner.ts',
   'src/hud-snapshot-publish.ts',
   'src/core/file-lock.ts',
   'src/collectors/snapshot-envelope.ts',
+  'src/fs-utils.ts',
 ]);
 
 // 跨模块重复顶层函数的棘轮基线：已清零，禁止新增跨模块重复定义。
@@ -67,7 +68,6 @@ function isFenceTarget(relPosix: string): boolean {
     relPosix.startsWith('src/core/') ||
     relPosix.startsWith('src/collectors/') ||
     relPosix.startsWith('src/render/') ||
-    relPosix.startsWith('src/mcp/') ||
     relPosix === 'src/hud-entry.ts' ||
     relPosix === 'src/hud-runner.ts' ||
     relPosix === 'src/hud-snapshot-publish.ts'
@@ -193,6 +193,7 @@ function inspectTypeScriptAst(
   resolver: ResolverFactory,
   errors: string[],
   functionDefs: Map<string, string[]>,
+  unusedExports: UnusedExportsTracker,
 ): void {
   const parsed = parseSync(fullPath, content);
   if (parsed.errors.length > 0) {
@@ -212,6 +213,7 @@ function inspectTypeScriptAst(
   const checkRelativeImports = isResolverTarget(relPosix);
   const checkStatusLineOwnership = isDuplicateScanTarget(relPosix) && relPosix !== STATUSLINE_SINGLE_WRITER;
   const specifiers = new Set<string>();
+  const dynamicRelativeSpecifiers = new Set<string>();
 
   for (const imp of parsed.module.staticImports) {
     specifiers.add(imp.moduleRequest.value);
@@ -233,6 +235,9 @@ function inspectTypeScriptAst(
     ImportExpression(node): void {
       if (node.source.type === 'Literal' && typeof node.source.value === 'string') {
         specifiers.add(node.source.value);
+        if (node.source.value.startsWith('./') || node.source.value.startsWith('../')) {
+          dynamicRelativeSpecifiers.add(node.source.value);
+        }
       }
     },
     NewExpression(node): void {
@@ -267,6 +272,7 @@ function inspectTypeScriptAst(
     },
   });
   visitor.visit(parsed.program);
+  unusedExports.recordFile(rootDir, fullPath, relPosix, parsed, dynamicRelativeSpecifiers, resolver);
 
   if (consoleLogCount > 0) errors.push(`${relPosix}: console.log call found in src/ (${consoleLogCount})`);
   for (const api of forbiddenGlobalNetworks) {
@@ -302,14 +308,9 @@ function inspectTypeScriptAst(
   }
 }
 
-export function validateEmbeddedClientScript(scriptCode: string, label = 'src/mcp/hud-inspector-script.ts'): string[] {
-  const parsed = parseSync('hud-inspector-client.js', scriptCode, { lang: 'js', sourceType: 'script' });
-  return parsed.errors.map((err) => `${label} (embedded client JS): ${err.message}`);
-}
-
 export function collectArchitectureErrors(
   rootDir: string = DEFAULT_ARCH_ROOT,
-  options: { checkSkills?: boolean; checkClientScripts?: boolean } = {},
+  options: { checkSkills?: boolean; checkUnusedExports?: boolean } = {},
 ): { errors: string[]; fileCount: number; skillCount: number } {
   const errors: string[] = [];
   const files = walkFiles(rootDir, rootDir, {
@@ -322,15 +323,15 @@ export function collectArchitectureErrors(
   });
 
   const functionDefs = new Map<string, string[]>();
+  const unusedExports = createUnusedExportsTracker();
   for (const fullPath of files) {
     const relPosix = toPosixPath(path.relative(rootDir, fullPath));
     const content = readFileSync(fullPath, 'utf8');
-    inspectTypeScriptAst(rootDir, fullPath, relPosix, content, resolver, errors, functionDefs);
+    inspectTypeScriptAst(rootDir, fullPath, relPosix, content, resolver, errors, functionDefs, unusedExports);
   }
   errors.push(...findDuplicateFunctionErrors(functionDefs));
-
-  if (options.checkClientScripts !== false && path.resolve(rootDir) === DEFAULT_ARCH_ROOT) {
-    errors.push(...validateEmbeddedClientScript(INSPECTOR_SCRIPT));
+  if (options.checkUnusedExports !== false) {
+    errors.push(...unusedExports.collectErrors());
   }
 
   const skillCount = options.checkSkills === false ? 0 : validateSkills(rootDir, errors);

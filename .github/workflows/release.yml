@@ -17,10 +17,14 @@ jobs:
     name: Pre-release quality and plugin gates
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      verified_commit: ${{ steps.verify_commit.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: pnpm
@@ -28,16 +32,16 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          node -e "
-            const fs = require('node:fs');
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            import { isStrictSemverTag } from './scripts/lib/release-version.mts';
             const tag = process.env.RELEASE_TAG || '';
-            const strictSemverTag = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/;
-            if (tag.includes('/') || !strictSemverTag.test(tag)) {
+            if (!isStrictSemverTag(tag)) {
               console.error('Invalid release tag (must be single-segment semver vX.Y.Z): ' + tag);
               process.exit(1);
             }
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            const manifest = JSON.parse(fs.readFileSync('plugin.json', 'utf8'));
+            const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+            const manifest = JSON.parse(readFileSync('plugin.json', 'utf8'));
             if (pkg.version !== manifest.version) {
               console.error('Version mismatch: package.json=' + pkg.version + ' plugin.json=' + manifest.version);
               process.exit(1);
@@ -47,6 +51,28 @@ jobs:
               process.exit(1);
             }
           "
+      - name: Verify release commit and stable tag reachability from main
+        id: verify_commit
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_COMMIT="$(git rev-parse 'HEAD^{commit}')"
+          echo "sha=${TAG_COMMIT}" >> "$GITHUB_OUTPUT"
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            echo "Prerelease tag ${RELEASE_TAG} (${TAG_COMMIT}): skipping main ancestry requirement."
+            exit 0
+          fi
+          git fetch --no-tags --filter=blob:none origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/main; then
+            echo "Stable release tag ${RELEASE_TAG} (${TAG_COMMIT}) is not reachable from origin/main." >&2
+            exit 1
+          fi
+      - name: Validate CHANGELOG.md section for release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release.mts notes "$RELEASE_TAG" --prev-tag "" >/dev/null
       - run: pnpm install --frozen-lockfile
       - name: Check tracked dist freshness, declarations, and modes
         run: pnpm dist:check --git-clean
@@ -84,7 +110,7 @@ jobs:
             const hit = list.find((p) => p && p.name === 'agy-hud');
             const skills = Array.isArray(hit && hit.skills) ? hit.skills : [];
             const mcps = Array.isArray(hit && hit.mcpServers) ? hit.mcpServers : [];
-            if (!hit || skills.length !== 1 || !skills.includes('hud') || mcps.length !== 1 || !mcps.includes('inspector')) {
+            if (!hit || skills.length !== 1 || !skills.includes('hud') || mcps.length !== 0) {
               console.error('Unexpected installed plugin smoke result:', JSON.stringify(hit));
               process.exit(1);
             }
@@ -95,38 +121,81 @@ jobs:
     needs: [gate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: release-publish-latest
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Create GitHub Release
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
+          VERIFIED_COMMIT: ${{ needs.gate.outputs.verified_commit }}
         shell: bash
         run: |
           set -euo pipefail
           NOTES_FILE="$(mktemp)"
-          trap 'rm -f "$NOTES_FILE"' EXIT
-          cat <<EOF > "$NOTES_FILE"
-          ## Install or Upgrade (Zero-Build)
+          API_OUT="$(mktemp)"
+          trap 'rm -f "$NOTES_FILE" "$API_OUT"' EXIT
 
-          \`\`\`bash
-          # Latest release on main
-          agy plugin install https://github.com/ifelseboyxx/agy-hud
-
-          # Pinned to ${RELEASE_TAG}
-          agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/${RELEASE_TAG}
-          \`\`\`
-
-          > Note: Do not pass GitHub Release \`.zip\` or \`.tar.gz\` source archives to \`agy plugin install\`; Antigravity CLI installs directly from the GitHub repository or tag URL above.
-          EOF
-          EXTRA_FLAGS=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            EXTRA_FLAGS+=(--prerelease)
+          # Verify the remote tag still resolves to the exact gate-verified commit before publishing
+          REMOTE_TAG_LINES="$(git ls-remote origin "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}")"
+          REMOTE_TAG_COMMIT="$(printf '%s\n' "$REMOTE_TAG_LINES" | awk -v ref="refs/tags/${RELEASE_TAG}" '
+            $2 == ref "^{}" { peeled=$1 }
+            $2 == ref { direct=$1 }
+            END { print (peeled != "" ? peeled : direct) }
+          ')"
+          if [ -z "$VERIFIED_COMMIT" ] || [ -z "$REMOTE_TAG_COMMIT" ] || [ "$REMOTE_TAG_COMMIT" != "$VERIFIED_COMMIT" ]; then
+            echo "Refusing to publish: remote tag ${RELEASE_TAG} resolves to '${REMOTE_TAG_COMMIT:-missing}', expected gate-verified commit '${VERIFIED_COMMIT:-missing}'." >&2
+            exit 1
           fi
-          gh release create "$RELEASE_TAG" \
-            --title "$RELEASE_TAG" \
-            --notes-file "$NOTES_FILE" \
-            --generate-notes \
-            "${EXTRA_FLAGS[@]}"
+
+          # Serialized under release-publish-latest: compute latest pointer freshly inside the critical section
+          REMOTE_TAGS="$(git ls-remote --tags --refs origin 'v*' | awk '{sub("^refs/tags/", "", $2); print $2}')"
+          META="$(REMOTE_TAGS="$REMOTE_TAGS" node --input-type=module -e "
+            import { findPreviousReleaseTag, isHighestStableTag, isPrereleaseVersion } from './scripts/lib/release-version.mts';
+            const tag = process.env.RELEASE_TAG || '';
+            const tags = (process.env.REMOTE_TAGS || '').split(/\r?\n/).filter(Boolean);
+            const prev = findPreviousReleaseTag(tag, tags) || '';
+            const pre = isPrereleaseVersion(tag) ? 'true' : 'false';
+            const latest = isHighestStableTag(tag, tags) ? 'true' : 'false';
+            process.stdout.write(prev + '|' + pre + '|' + latest);
+          ")"
+          IFS='|' read -r PREV_TAG IS_PRERELEASE IS_LATEST <<< "$META"
+
+          node scripts/release.mts notes "$RELEASE_TAG" \
+            --out "$NOTES_FILE" \
+            --with-install-header \
+            --prev-tag "$PREV_TAG"
+
+          set +e
+          gh api -i "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" >"$API_OUT" 2>&1
+          API_RC=$?
+          set -e
+          HTTP_STATUS="$(awk 'toupper($1) ~ /^HTTP\// { code=$2 } END { print code }' "$API_OUT")"
+
+          if [ "$API_RC" -eq 0 ] && [ "$HTTP_STATUS" = "200" ]; then
+            gh release edit "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --notes-file "$NOTES_FILE" \
+              --prerelease="$IS_PRERELEASE" \
+              --latest="$IS_LATEST"
+          elif [ "$HTTP_STATUS" = "404" ]; then
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --title "$RELEASE_TAG" \
+              --notes-file "$NOTES_FILE" \
+              --prerelease="$IS_PRERELEASE" \
+              --latest="$IS_LATEST"
+          else
+            echo "Unexpected GitHub API response checking release ${RELEASE_TAG} (exit=${API_RC}, http=${HTTP_STATUS:-none}):" >&2
+            cat "$API_OUT" >&2
+            exit 1
+          fi

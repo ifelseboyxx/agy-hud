@@ -10,22 +10,9 @@ import ts from 'typescript';
 
 import { isMainEntry, toPosixPath } from '../src/core/paths.ts';
 import { runAtomicBuild } from './build.mts';
+import { EXECUTABLE_REPO_PATHS, EXPECTED_DIST_FILES } from './lib/dist-manifest.mts';
 
-export const EXPECTED_DIST_FILES: readonly string[] = [
-  'cli.mjs',
-  'hud.mjs',
-  'index.d.mts',
-  'index.mjs',
-  'mcp-hud.mjs',
-  'types.d.mts',
-];
-
-export const EXECUTABLE_REPO_PATHS: readonly string[] = [
-  'dist/cli.mjs',
-  'dist/hud.mjs',
-  'dist/mcp-hud.mjs',
-  'scripts/install.mjs',
-];
+export { EXECUTABLE_REPO_PATHS, EXPECTED_DIST_FILES };
 
 function sha256File(filePath: string): string {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex');
@@ -71,10 +58,10 @@ export function compareDistTrees(actualDistDir: string, expectedDistDir: string)
   const actualScan = scanDistDirectory(actualDistDir);
   const expectedScan = scanDistDirectory(expectedDistDir);
   for (const item of actualScan.unexpectedEntries) {
-    errors.push(`tracked dist/ contains unexpected ${item} (must contain strictly 6 regular files)`);
+    errors.push(`tracked dist/ contains unexpected ${item} (must contain strictly 5 regular files)`);
   }
   for (const item of expectedScan.unexpectedEntries) {
-    errors.push(`fresh build produced unexpected ${item} (must emit strictly 6 regular files)`);
+    errors.push(`fresh build produced unexpected ${item} (must emit strictly 5 regular files)`);
   }
   const actualFiles = actualScan.files;
   const expectedFiles = expectedScan.files;
@@ -89,7 +76,7 @@ export function compareDistTrees(actualDistDir: string, expectedDistDir: string)
   }
   for (const rel of expectedFiles) {
     if (!expectedAllowed.has(rel)) {
-      errors.push(`fresh build produced unexpected extra file dist/${rel} (must emit strictly 6 standalone files)`);
+      errors.push(`fresh build produced unexpected extra file dist/${rel} (must emit strictly 5 standalone files)`);
     }
   }
   for (const rel of expectedFiles) {

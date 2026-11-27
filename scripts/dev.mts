@@ -286,9 +286,15 @@ function attachReloadWatchers(
     }, debounceMs);
   };
 
-  const watchTargets: Array<{ abs: string; recursive: boolean }> = [{ abs: rootDir, recursive: false }];
+  let watchRoot = rootDir;
+  try {
+    watchRoot = realpathSync(rootDir);
+  } catch {
+    watchRoot = rootDir;
+  }
+  const watchTargets: Array<{ abs: string; recursive: boolean }> = [{ abs: watchRoot, recursive: false }];
   for (const sub of ['docs', 'assets']) {
-    const abs = path.join(rootDir, sub);
+    const abs = path.join(watchRoot, sub);
     if (existsSync(abs)) watchTargets.push({ abs, recursive: true });
   }
 

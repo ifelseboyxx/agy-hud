@@ -2,15 +2,16 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { nonEmptyStr } from '../src/core/guards.ts';
 import { isMainEntry } from '../src/core/paths.ts';
+import { type PnpmSpawnSpec, resolvePnpmSpawnSpec } from './lib/pnpm-spawn.mts';
+
+export { type PnpmSpawnSpec, resolvePnpmSpawnSpec };
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NON_ZERO_WARNING_COUNT_RE = /\b([1-9]\d*)\s+warnings?\b/i;
 const STDOUT_WARNING_LINE_RE = /^\s*(?:warn(?:ing)?(?:\s*[:[\](]|\s+)|\(!\)\s)/im;
 const NODE_RUNTIME_WARNING_RE =
   /^\s*(?:\(node:\d+\)\s+(?:\[[^\]]+\]\s+)?[A-Za-z]*Warning:|\(Use `node --trace-warnings\b)/im;
-const PNPM_SCRIPT_RE = /pnpm[^\\/]*\.[cm]?js$/i;
 const ANSI_SGR_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
 const SPEC_TOP_SUITE_RE = /^[\u2714\u2716]\s+(.+?)\s+\(([0-9]+(?:\.[0-9]+)?)ms\)$/;
 const SLOW_TEST_OBSERVATION_MS = 10_000;
@@ -34,28 +35,6 @@ export function extractSlowestSuites(testStdout: string, limit: number = DEFAULT
     }
   }
   return results.sort((a, b) => b.durationMs - a.durationMs).slice(0, limit);
-}
-
-export interface PnpmSpawnSpec {
-  readonly command: string;
-  readonly args: readonly string[];
-}
-
-export function resolvePnpmSpawnSpec(
-  args: readonly string[],
-  platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
-  execPath: string = process.execPath,
-): PnpmSpawnSpec {
-  if (platform !== 'win32') {
-    return { command: 'pnpm', args: ['--silent', ...args] };
-  }
-  const npmExecPath = nonEmptyStr(env.npm_execpath);
-  if (npmExecPath !== undefined && PNPM_SCRIPT_RE.test(path.win32.basename(npmExecPath))) {
-    return { command: execPath, args: [npmExecPath, '--silent', ...args] };
-  }
-  const comspec = nonEmptyStr(env.ComSpec) ?? nonEmptyStr(env.COMSPEC) ?? 'cmd.exe';
-  return { command: comspec, args: ['/d', '/s', '/c', 'pnpm.cmd', '--silent', ...args] };
 }
 
 export interface StepOutcome {
@@ -160,8 +139,11 @@ export async function runVerify(options: RunVerifyOptions = {}): Promise<number>
       ? runner('test', ['run', 'test']).then((testRes) => [testRes])
       : runner('build', ['run', 'build']).then(async (buildRes) => {
           if (buildRes.code !== 0) return [buildRes];
-          const testRes = await runner('test', ['run', 'test']);
-          return [buildRes, testRes];
+          const [distCheckRes, testRes] = await Promise.all([
+            runner('dist:check', ['run', 'dist:check']),
+            runner('test', ['run', 'test']),
+          ]);
+          return [buildRes, distCheckRes, testRes];
         });
 
   const [staticOutcomes, pipelineOutcomes] = await Promise.all([Promise.all(staticSteps), buildAndTest]);

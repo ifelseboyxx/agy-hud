@@ -33,7 +33,7 @@
     "scripts/install.mjs",
     "skills",
     "plugin.json",
-    "mcp_config.json",
+    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "README.zh-CN.md"
@@ -61,6 +61,7 @@
     "check:fast": "pnpm lint && pnpm format:check && pnpm validate",
     "verify": "node scripts/verify.mts",
     "verify:fix": "pnpm format && pnpm verify",
+    "release": "node scripts/release.mts",
     "cz": "czg",
     "hud:install": "node scripts/install.mjs install --link --no-enable",
     "hud:wire": "node scripts/install.mjs install --link --no-enable --wire-statusline",

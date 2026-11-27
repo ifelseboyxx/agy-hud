@@ -33,6 +33,7 @@ const FORBIDDEN_ROOT_PATHS: readonly string[] = [
   'GEMINI.md',
   '.mcp.json',
   'mcp.json',
+  'mcp_config.json',
   'hooks/hooks.json',
   'commands',
   '.antigravity-plugin',
@@ -178,49 +179,13 @@ function validatePluginJsonFields(
   }
 }
 
-function validateMcpConfig(rootDir: string, errors: string[], checkTargetsExist: boolean): void {
-  const mcp = readJsonStrict(path.join(rootDir, 'mcp_config.json'), 'mcp_config.json', errors);
-  if (mcp === null) return;
-  if (!isPlainObject(mcp.mcpServers) || Object.keys(mcp.mcpServers).length === 0) {
-    errors.push("mcp_config.json: 'mcpServers' must be a non-empty object");
-    return;
-  }
-  for (const [serverName, rawServer] of Object.entries(mcp.mcpServers)) {
-    if (!isPlainObject(rawServer)) {
-      errors.push(`mcp_config.json: server '${serverName}' must be an object`);
-      continue;
-    }
-    if (isPlainObject(rawServer.env)) {
-      for (const forbidden of ['PLUGIN_ROOT', 'PLUGIN_DATA']) {
-        if (Object.hasOwn(rawServer.env, forbidden)) {
-          errors.push(`mcp_config.json: server '${serverName}' must not duplicate '${forbidden}' in env`);
-        }
-      }
-    }
-    if (checkTargetsExist && Array.isArray(rawServer.args)) {
-      for (const arg of rawServer.args) {
-        if (typeof arg !== 'string' || !arg.startsWith('${PLUGIN_ROOT}/')) continue;
-        const rel = arg.slice('${PLUGIN_ROOT}/'.length);
-        if (statIfPresentSync(path.join(rootDir, rel))?.isFile() !== true) {
-          errors.push(`mcp_config.json: server '${serverName}' target '${rel}' does not exist on disk`);
-        }
-      }
-    }
-  }
-}
-
-export interface ValidatePluginManifestOptions {
-  readonly checkMcpTargetsExist?: boolean;
-}
-
-export function validatePluginPackageHygiene(rootDir: string, options: ValidatePluginManifestOptions = {}): string[] {
+export function validatePluginPackageHygiene(rootDir: string): string[] {
   const errors: string[] = [];
   const manifest = readJsonStrict(path.join(rootDir, 'plugin.json'), 'plugin.json', errors);
   const pkg = readJsonStrict(path.join(rootDir, 'package.json'), 'package.json', errors);
   if (manifest !== null) {
     validatePluginJsonFields(rootDir, manifest, pkg, errors);
   }
-  validateMcpConfig(rootDir, errors, options.checkMcpTargetsExist ?? true);
 
   const readmePath = path.join(rootDir, 'README.md');
   if (statIfPresentSync(readmePath)?.isFile() !== true || readFileSync(readmePath, 'utf8').trim().length === 0) {
