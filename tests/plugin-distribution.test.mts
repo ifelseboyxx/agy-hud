@@ -10,6 +10,7 @@ import {
   parseGitLsFilesModes,
   verifyDistDeclarations,
 } from '../scripts/dist-check.mts';
+import { buildPreviewHtml } from '../scripts/render-preview-png.mts';
 import { evaluateAgyPluginValidationReport, isAllowlistedPluginFinding } from '../scripts/validate-plugin-cli.mts';
 import { validatePluginPackageHygiene } from '../scripts/validate-plugin-manifest.ts';
 import { createTempDirTracker, REPO_ROOT, writeJson } from './helpers.ts';
@@ -309,9 +310,44 @@ void describe('CI and Release workflow security and gate contracts', () => {
     );
 
     assert.ok(ciYml.includes('ubuntu-latest') && ciYml.includes('macos-latest') && ciYml.includes('windows-latest'));
+    assert.match(
+      ciYml,
+      /push:\r?\n\s+branches:\r?\n\s+-\s*main\r?\n\s+pull_request:/,
+      'ci.yml must scope push trigger to main while keeping pull_request',
+    );
+    const ciExternalUses = [...ciYml.matchAll(/uses:\s+([^\s#]+)/g)]
+      .map((m) => m[1] ?? '')
+      .filter((ref) => !ref.startsWith('./'));
+    assert.ok(ciExternalUses.length >= 6, 'ci.yml must list checkout, pnpm, and setup-node across both jobs');
+    for (const ref of ciExternalUses) {
+      assert.match(
+        ref,
+        /^(?:actions\/checkout@v[7-9]|pnpm\/action-setup@v[6-9]|actions\/setup-node@v[7-9])$/,
+        `ci.yml action must use native Node 24 major version: ${ref}`,
+      );
+    }
     assert.ok(releaseYml.includes('RELEASE_TAG: ${{ github.ref_name }}'));
     assert.ok(releaseYml.includes('isStrictSemverTag'));
     assert.ok(releaseYml.includes('single-segment semver'));
     assert.ok(releaseYml.includes('scripts/release.mts notes') && releaseYml.includes('--with-install-header'));
+  });
+});
+
+void describe('preview screenshot HTML generator', () => {
+  void it('renders all 8 live HUD lines without raw ANSI escapes or outer pre whitespace', () => {
+    const html = buildPreviewHtml();
+    assert.equal(html.includes(String.fromCharCode(0x1b)), false, 'must convert all ANSI escapes to HTML spans');
+    assert.ok(html.includes('accept edits on'));
+    assert.ok(html.includes('G4 Carbon'));
+    assert.ok(html.includes('rgb(148, 188, 228)'));
+    assert.ok(html.includes('Context'));
+    assert.ok(html.includes('Gemini'));
+    assert.ok(html.includes('Claude/GPT'));
+    assert.ok(html.includes('+2 more'));
+    assert.ok(html.includes('Skills'));
+    assert.ok(html.includes('Swarm'));
+    assert.ok(html.includes('Bg Tasks 1'));
+    assert.ok(html.includes('.hud-line { white-space: pre;'));
+    assert.equal(/\.hud\s*\{[^}]*white-space:\s*pre/.test(html), false, 'outer .hud must not use white-space: pre');
   });
 });

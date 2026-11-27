@@ -28,7 +28,7 @@ This runbook documents the standardized release process, GitHub Repository Rules
    ```
 4. **Human polish pause**:
    - Review `CHANGELOG.md`, add or refine `### Highlights`, and replace any `<!-- TODO: summarize user-visible changes -->` placeholder.
-   - Audit pinned `/tree/vX.Y.Z` examples in `README.md` / `README.zh-CN.md` and refresh `assets/preview.png` if HUD visuals changed.
+   - Audit pinned `/tree/vX.Y.Z` examples in `README.md` / `README.zh-CN.md` and refresh `assets/preview.png` via `pnpm preview:screenshot` if HUD visuals changed.
    - Run `pnpm release notes vX.Y.Z` to verify strict extraction passes.
 5. Commit, push the release branch, and open a PR into `main`:
    ```bash
@@ -123,14 +123,3 @@ Split creation and immutability into two rulesets so admin creation bypass never
 ### 3. GitHub Immutable Releases (Defense-in-Depth)
 
 Enable **Repository Settings -> General -> Releases -> Enable release immutability** so published release tags and assets are cryptographically locked while release notes, `--prerelease`, and `--latest` remain editable on idempotent CI reruns.
-
-## `v0.1.0` Launch Checklist
-
-Before pushing `v0.1.0`:
-
-- [ ] Merge feature branch (`feat/hud-overflow-inspection`) into `main` with all 5 `ci.yml` checks passing.
-- [x] Refresh `assets/preview.png` with v0.1.0 HUD visuals (model-aware peak effort platinum sheen styling, enhanced Git status, dual USD/CNY cost, Context Budget, `Gemini` and `Claude/GPT` quota labels, OSC 8 `+N more`, unified `hud` skill, Swarm chips, `Bg Tasks`, and `TTFT 1.6s`).
-- [x] Review `CHANGELOG.md` `## [v0.1.0]` `### Highlights` and `### Added`, and verify `pnpm release notes v0.1.0 --with-install-header`.
-- [x] Confirm `README.md` and `README.zh-CN.md` pinned `/tree/v0.1.0` examples match the target tag.
-- [ ] Enable the `main` and `v*` GitHub Rulesets plus Immutable Releases above.
-- [ ] On synced `main`, run `pnpm release tag` and push with `git push origin v0.1.0`.

@@ -61,6 +61,7 @@
     "check:fast": "pnpm lint && pnpm format:check && pnpm validate",
     "verify": "node scripts/verify.mts",
     "verify:fix": "pnpm format && pnpm verify",
+    "preview:screenshot": "node scripts/render-preview-png.mts",
     "release": "node scripts/release.mts",
     "cz": "czg",
     "hud:install": "node scripts/install.mjs install --link --no-enable",

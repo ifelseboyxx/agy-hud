@@ -111,13 +111,57 @@ function runPnpmStep(name: string, args: readonly string[]): Promise<StepOutcome
   });
 }
 
+function extractFailingTestDiagnostics(stdout: string): string | null {
+  const lines = stdout.split(/\r?\n/);
+  const cleanLines = lines.map((line) => line.replace(ANSI_SGR_RE, ''));
+
+  const specFailIdx = cleanLines.findLastIndex((line) => /^\s*(?:\u2716\s+)?failing tests:\s*$/i.test(line));
+  if (specFailIdx >= 0) {
+    let startIdx = specFailIdx;
+    while (
+      startIdx > 0 &&
+      /^\s*(?:\u2139\s+(?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)\b|$)/.test(
+        cleanLines[startIdx - 1] ?? '',
+      )
+    ) {
+      startIdx -= 1;
+    }
+    return lines.slice(startIdx).join('\n').trim();
+  }
+
+  let hasTapFailure = false;
+  const tapBlocks: string[] = [];
+  for (let i = 0; i < cleanLines.length; i += 1) {
+    const clean = cleanLines[i] ?? '';
+    if (/^\s*not ok \d+\b/.test(clean)) {
+      hasTapFailure = true;
+      const block = [lines[i] ?? ''];
+      if (i + 1 < cleanLines.length && /^\s*---\s*$/.test(cleanLines[i + 1] ?? '')) {
+        i += 1;
+        block.push(lines[i] ?? '');
+        while (i + 1 < cleanLines.length) {
+          i += 1;
+          block.push(lines[i] ?? '');
+          if (/^\s*\.\.\.\s*$/.test(cleanLines[i] ?? '')) break;
+        }
+      }
+      tapBlocks.push(block.join('\n'));
+    } else if (/^#\s+(?:tests|suites|pass|fail|cancelled|skipped|todo)\s+\d+/i.test(clean)) {
+      tapBlocks.push(lines[i] ?? '');
+    }
+  }
+  return hasTapFailure ? tapBlocks.join('\n').trim() : null;
+}
+
 function formatStepDiagnostics(item: StepOutcome): string {
   const parts: string[] = [];
   if (item.stderr.trim().length > 0) {
     parts.push(`[stderr]\n${item.stderr.trim()}`);
   }
-  if (item.stdout.trim().length > 0) {
-    parts.push(`[stdout]\n${item.stdout.trim()}`);
+  const trimmedStdout = item.stdout.trim();
+  if (trimmedStdout.length > 0) {
+    const focused = item.name === 'test' && item.code !== 0 ? extractFailingTestDiagnostics(trimmedStdout) : null;
+    parts.push(`[stdout]\n${focused ?? trimmedStdout}`);
   }
   return parts.join('\n');
 }
