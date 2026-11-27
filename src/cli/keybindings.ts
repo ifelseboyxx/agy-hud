@@ -3,13 +3,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { nonEmptyStr } from '../core/guards.ts';
-import { resolveGlobalPluginDir, SAFE_POSIX_SHELL_PATH_RE, SAFE_WIN_SHELL_PATH_RE } from '../core/paths.ts';
-import { hasTerminalControlChars, sanitizeTerminalText } from '../core/terminal-text.ts';
+import {
+  quotePosixSh,
+  resolveGlobalPluginDir,
+  SAFE_POSIX_SHELL_PATH_RE,
+  SAFE_WIN_SHELL_PATH_RE,
+} from '../core/paths.ts';
+import { hasTerminalControlChars, sanitizeTerminalText, shouldUseTerminalColor } from '../core/terminal-text.ts';
 import { BOLD, CYAN, GRAY, RESET } from '../render/ansi.ts';
 import { PLUGIN_NAME } from './installer/args.ts';
-import { expectedCliMjsPath, quotePosixSh } from './installer/shim-format.ts';
-import { inspectCliShim, resolveShimBinDir, resolveShimPaths } from './installer/shim.ts';
-import { shouldUseSnapshotColor } from './snapshot-render.ts';
+import { expectedCliMjsPath, resolveShimBinDir, resolveShimPaths } from './installer/shim-format.ts';
+import { inspectCliShim } from './installer/shim.ts';
 
 export type HostTerminal = 'tmux' | 'kitty' | 'wezterm' | 'ghostty' | 'iterm2';
 export type KeybindingsTarget = HostTerminal | 'all';
@@ -196,7 +200,7 @@ function formatHostSnippet(
 
 export function renderKeybindings(options: RenderKeybindingsOptions = {}): string {
   const env = options.env ?? process.env;
-  const useColor = options.color !== undefined ? options.color : shouldUseSnapshotColor(options.noColor ?? false, env);
+  const useColor = options.color !== undefined ? options.color : shouldUseTerminalColor(options.noColor ?? false, env);
   const b = useColor ? BOLD : '';
   const d = useColor ? GRAY : '';
   const r = useColor ? RESET : '';

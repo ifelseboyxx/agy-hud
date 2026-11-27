@@ -5,7 +5,8 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 
-import { MAX_PROTO_BLOB_BYTES, parseGenMetadataBlob, parseKvStepIdx } from '../proto.ts';
+import { MAX_PROTO_BLOB_BYTES } from '../proto-wire.ts';
+import { parseGenMetadataBlob, parseKvStepIdx } from '../proto.ts';
 import { loadSessionTelemetry } from '../telemetry.ts';
 
 function encodeVarint(value: bigint): number[] {

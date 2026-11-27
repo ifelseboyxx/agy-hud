@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
 
-import { aggregateActivityTools, mergeActivityAgents } from '../collectors/activity-aggregate.ts';
+import { aggregateActivityTools, mergeActivityAgents } from '../core/activity-aggregate.ts';
+import { resolveSessionCost } from '../core/cost-utils.ts';
 import { isFiniteNum, nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
-import { normalizeHostAgentState, resolveSnapshotQuotaBuckets } from '../core/quota-pace.ts';
-import { resolveTurnPhase } from '../core/telemetry-error.ts';
+import { resolveSnapshotQuotaBuckets } from '../core/quota-pace.ts';
+import { normalizeHostAgentState, resolveTurnPhase } from '../core/telemetry-error.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { SnapshotAgent, SubagentAggregateRollup, TurnPhase } from '../snapshot-types.ts';
 import type { AgentsSummary, HudCostCurrency, SessionTelemetry, StatusLineData, TranscriptActivity } from '../types.ts';
-import { formatTelemetryDiagnostics, formatTelemetryFields } from './ansi.ts';
-import { formatSessionCostText, formatSubagentCostText, resolveSessionCost } from './cost.ts';
+import { formatSessionCostText, formatSubagentCostText } from './cost.ts';
 import { formatSnapshotQuotaLine } from './quota.ts';
 import {
   buildContextSectionModel,
@@ -17,6 +17,7 @@ import {
   formatSubagentTelemetryParts,
   formatToolsSectionHeading,
 } from './snapshot-presentation.ts';
+import { formatTelemetryDiagnostics, formatTelemetryFields } from './telemetry-format.ts';
 
 const HUD_RUNNING_TOOL_CAP = 2;
 const HUD_COMPLETED_TOOL_CAP = 8;

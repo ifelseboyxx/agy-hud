@@ -2,10 +2,11 @@ import { loadTodos, loadTranscriptActivity, resolveTranscriptPath } from './coll
 import { collectAgentsSummary } from './collectors/agents.ts';
 import { detectGitStatus } from './collectors/git.ts';
 import { detectAgyFlags, detectAgyProcess } from './collectors/proc.ts';
-import { resolveConversationId } from './collectors/safe-path.ts';
 import { getSessionElapsedSeconds, readCliSettings, readHudConfig } from './collectors/settings.ts';
-import { readActivePidMarker, readSnapshotEnvelope, type ActivePidMarker } from './collectors/snapshot-envelope.ts';
+import { readSnapshotEnvelope } from './collectors/snapshot-envelope.ts';
+import { readActivePidMarker, type ActivePidMarker } from './collectors/snapshot-pid-marker.ts';
 import { loadSessionTelemetry } from './collectors/telemetry.ts';
+import { lstatIfPresentSync, statIfPresentSync } from './core/fs-utils.ts';
 import { isFiniteNum, nonEmptyStr } from './core/guards.ts';
 import {
   buildPresetConfig,
@@ -14,8 +15,12 @@ import {
   PRESET_TEMPLATES,
   resolveEffectiveHudConfig,
 } from './core/hud-config.ts';
-import { lstatIfPresentSync, statIfPresentSync } from './fs-utils.ts';
-import { materializeSnapshotMarkdownIfNeeded, type TranscriptStatFingerprint } from './hud-snapshot-publish.ts';
+import { resolveConversationId } from './core/safe-path.ts';
+import {
+  materializeSnapshotMarkdownIfNeeded,
+  resolveSnapshotMarkdownUri,
+  type TranscriptStatFingerprint,
+} from './hud-snapshot-publish.ts';
 import { DEFAULT_TERM_WIDTH } from './render/ansi.ts';
 import { formatHudLines, normalizeEffectiveStatusData } from './render/format-hud.ts';
 import { hasAnyActivityLine } from './render/modules.ts';
@@ -24,7 +29,6 @@ import {
   countEmittedOsc8Links,
   formatActivitySummarySnapshotTail,
   formatOsc8Overflow,
-  resolveSnapshotMarkdownUri,
 } from './render/osc8.ts';
 import type { SnapshotEnvelope } from './snapshot-types.ts';
 import type {
@@ -36,8 +40,6 @@ import type {
   RenderHudOptions,
   StatusLineData,
 } from './types.ts';
-
-export type { HudCollectorOverrides, RenderHudOptions };
 
 function resolveRenderHudConfig(baseConfig: HudConfig, override?: Partial<HudConfig>): HudConfig {
   if (!override) {
@@ -94,9 +96,6 @@ function resolveHudGitInfo(
     nonEmptyStr(data.workspace?.current_dir) ?? nonEmptyStr(data.workspace?.project_dir) ?? nonEmptyStr(data.cwd) ?? '';
   if (collectors?.detectGitStatus !== undefined) {
     return collectors.detectGitStatus(cliHome, curDir, data.vcs);
-  }
-  if (collectors?.detectGitBranch !== undefined) {
-    return collectors.detectGitBranch(curDir, data.vcs);
   }
   return detectGitStatus(cliHome, curDir, data.vcs, { nowMs });
 }

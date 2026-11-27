@@ -276,6 +276,10 @@ void describe('CI and Release workflow security and gate contracts', () => {
   void it('enforces dist:check before verify, plugin validation, least-privilege permissions, and safe tag handling', () => {
     const ciYml = readFileSync(path.join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
     const releaseYml = readFileSync(path.join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8');
+    const smokeActionYml = readFileSync(
+      path.join(REPO_ROOT, '.github', 'actions', 'agy-plugin-smoke', 'action.yml'),
+      'utf8',
+    );
 
     for (const [label, yml] of [
       ['ci.yml', ciYml],
@@ -287,17 +291,22 @@ void describe('CI and Release workflow security and gate contracts', () => {
       const distCheckIdx = yml.indexOf('pnpm dist:check');
       const verifyIdx = yml.indexOf('pnpm verify');
       assert.ok(distCheckIdx > 0 && verifyIdx > distCheckIdx, `${label} must run pnpm dist:check before pnpm verify`);
-      assert.ok(yml.includes('pnpm validate:plugin'), `${label} must run pnpm validate:plugin`);
-      assert.ok(yml.includes('agy plugin install .'), `${label} must smoke-test isolated agy plugin install .`);
       assert.ok(
-        yml.includes("skills.includes('hud')") && yml.includes('mcps.length !== 0'),
-        `${label} must assert installed hud skill and zero MCP servers in isolated smoke test`,
+        yml.includes('uses: ./.github/actions/agy-plugin-smoke'),
+        `${label} must invoke shared ./.github/actions/agy-plugin-smoke action`,
       );
       assert.ok(
         !yml.includes('echo "${{ github.ref_name }}"'),
         `${label} must not interpolate ref_name directly in shell`,
       );
     }
+
+    assert.ok(smokeActionYml.includes('pnpm validate:plugin'), 'shared smoke action must run pnpm validate:plugin');
+    assert.ok(smokeActionYml.includes('agy plugin install .'), 'shared smoke action must smoke-test isolated install');
+    assert.ok(
+      smokeActionYml.includes("skills.includes('hud')") && smokeActionYml.includes('mcps.length !== 0'),
+      'shared smoke action must assert installed hud skill and zero MCP servers in isolated smoke test',
+    );
 
     assert.ok(ciYml.includes('ubuntu-latest') && ciYml.includes('macos-latest') && ciYml.includes('windows-latest'));
     assert.ok(releaseYml.includes('RELEASE_TAG: ${{ github.ref_name }}'));

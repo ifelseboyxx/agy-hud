@@ -1,13 +1,10 @@
 import path from 'node:path';
 
+import { STATUSLINE_BACKUP_FILE } from './cache-registry.ts';
+import { realpathExistingPrefixSync } from './fs-utils.ts';
 import { isPlainObject } from './guards.ts';
-import {
-  expandHome,
-  realpathExistingPrefixSync,
-  SAFE_POSIX_SHELL_PATH_RE,
-  SAFE_WIN_SHELL_PATH_RE,
-  toComparePath,
-} from './paths.ts';
+import { expandHome, quotePosixSh, SAFE_POSIX_SHELL_PATH_RE, SAFE_WIN_SHELL_PATH_RE, toComparePath } from './paths.ts';
+import { hasAsciiControlChars } from './terminal-text.ts';
 
 export interface SettingsPaths {
   settingsPath: string;
@@ -24,7 +21,7 @@ export interface StatusLineBackupPayload {
 export function getSettingsPaths(cliHome: string): SettingsPaths {
   return {
     settingsPath: path.join(cliHome, 'settings.json'),
-    backupPath: path.join(cliHome, 'cache', 'agy-hud-statusline-backup.json'),
+    backupPath: path.join(cliHome, 'cache', STATUSLINE_BACKUP_FILE),
   };
 }
 
@@ -33,20 +30,12 @@ const WIN_UNQUOTED_SHELL_META_RE = /[;&|<>`$*?[\]\r\n]/;
 const POSIX_DOUBLE_QUOTED_META_RE = /[$`\\]/;
 const WIN_DOUBLE_QUOTED_META_RE = /[%!]/;
 
-function hasDisallowedControlChars(value: string): boolean {
-  for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
-}
-
 export function formatStatusLineCommand(
   hudScriptPath: string,
   platform: NodeJS.Platform = process.platform,
   options?: { readonly useNode?: boolean },
 ): string {
-  if (hudScriptPath.length === 0 || hasDisallowedControlChars(hudScriptPath)) {
+  if (hudScriptPath.length === 0 || hasAsciiControlChars(hudScriptPath)) {
     throw new Error('Invalid statusLine target path: path must not be empty or contain control/newline characters.');
   }
   let formatted: string;
@@ -63,7 +52,7 @@ export function formatStatusLineCommand(
   } else if (SAFE_POSIX_SHELL_PATH_RE.test(hudScriptPath)) {
     formatted = hudScriptPath;
   } else {
-    formatted = `'${hudScriptPath.replaceAll("'", "'\\''")}'`;
+    formatted = quotePosixSh(hudScriptPath);
   }
   return options?.useNode === true ? `node ${formatted}` : formatted;
 }
@@ -101,7 +90,7 @@ function parseSingleQuotedShellToken(s: string): ParsedCommandToken | null {
 
 function parseCommandToken(input: string, platform: NodeJS.Platform): ParsedCommandToken | null {
   const s = input.trimStart();
-  if (s.length === 0 || hasDisallowedControlChars(s)) return null;
+  if (s.length === 0 || hasAsciiControlChars(s)) return null;
   const quote = s[0];
   if (quote === "'") {
     if (platform === 'win32') return null;
@@ -182,7 +171,7 @@ export function isSameCanonicalFilePath(pathA: unknown, pathB: unknown, env: Nod
   const trimmedA = pathA.trim();
   const trimmedB = pathB.trim();
   if (trimmedA.length === 0 || trimmedB.length === 0) return false;
-  if (hasDisallowedControlChars(trimmedA) || hasDisallowedControlChars(trimmedB)) return false;
+  if (hasAsciiControlChars(trimmedA) || hasAsciiControlChars(trimmedB)) return false;
   return canonicalizeExpandedPath(expandHome(trimmedA, env)) === canonicalizeExpandedPath(expandHome(trimmedB, env));
 }
 

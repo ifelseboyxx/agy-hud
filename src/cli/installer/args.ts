@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { nonEmptyStr } from '../../core/guards.ts';
 import { expandHome, resolveGlobalPluginDir } from '../../core/paths.ts';
-import { resolveShimBinDir } from './shim.ts';
+import { resolveShimBinDir } from './shim-format.ts';
 
 export const PLUGIN_NAME = 'agy-hud';
 

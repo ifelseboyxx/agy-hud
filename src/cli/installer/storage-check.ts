@@ -1,11 +1,11 @@
 import { opendirSync } from 'node:fs';
 import path from 'node:path';
 
-import { sanitizeSessionId } from '../../collectors/safe-path.ts';
-import { TRANSIENT_HUD_CACHE_RE, TRANSIENT_HUD_TMP_RE } from '../../collectors/snapshot-cache-sweep.ts';
 import { withReadonlyDb } from '../../collectors/sqlite-readonly.ts';
+import { HUD_CACHE_LOCK_RE, TRANSIENT_HUD_CACHE_RE, TRANSIENT_HUD_TMP_RE } from '../../core/cache-registry.ts';
+import { lstatIfPresentSync } from '../../core/fs-utils.ts';
 import { isPlainObject } from '../../core/guards.ts';
-import { lstatIfPresentSync } from '../../fs-utils.ts';
+import { sanitizeSessionId } from '../../core/safe-path.ts';
 
 const MAX_DOCTOR_STORAGE_DIR_ENTRIES = 5_000;
 const MAX_DOCTOR_STORAGE_SCAN_MS = 250;
@@ -14,7 +14,6 @@ const SUMMARY_IN_BATCH_SIZE = 200;
 const BYTES_PER_MIB = 1024 * 1024;
 const MAX_SUMMARY_WAL_COPY_BYTES = 32 * BYTES_PER_MIB;
 const OVERSIZED_WAL_BYTES = 32 * BYTES_PER_MIB;
-const HUD_LOCK_FILE_RE = /^\.agy_hud_.*\.lock$/;
 
 const DEFAULT_THRESHOLDS: Required<CliStorageThresholds> = {
   dbPlusWalBytes: 1024 * BYTES_PER_MIB,
@@ -233,7 +232,7 @@ export function inspectCliStorageHealth(
   if (nowMs() - startedAt < maxWallMs) {
     cacheTruncated = scanDirectoryBounded(cacheDir, maxEntries, startedAt, maxWallMs, nowMs, (name) => {
       const isTmp = TRANSIENT_HUD_TMP_RE.test(name);
-      const isOwned = isTmp || TRANSIENT_HUD_CACHE_RE.test(name) || HUD_LOCK_FILE_RE.test(name);
+      const isOwned = isTmp || TRANSIENT_HUD_CACHE_RE.test(name) || HUD_CACHE_LOCK_RE.test(name);
       if (!isOwned) return;
       const st = lstatIfPresentSync(path.join(cacheDir, name));
       if (st === null || st.isSymbolicLink() || !st.isFile()) return;

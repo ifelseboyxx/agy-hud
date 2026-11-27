@@ -16,16 +16,10 @@ import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { isSupportedNodeVersion, NODE_RANGE_LABEL } from '../../../core/guards.ts';
 import { isInstallerCommand, parseInstallerArgs } from '../args.ts';
 import { assertRuntimeFilesPresent, moveVerifiedTarget, removeVerifiedStagedPath } from '../fs-ops.ts';
-import {
-  createWireRollbackSteps,
-  disableCliStatusLine,
-  isSupportedNodeVersion,
-  NODE_RANGE_LABEL,
-  restoreCliStatusLine,
-  wireCliStatusLine,
-} from '../settings.ts';
+import { createWireRollbackSteps, disableCliStatusLine, restoreCliStatusLine, wireCliStatusLine } from '../settings.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const tempDirs: string[] = [];

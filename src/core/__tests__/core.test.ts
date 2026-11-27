@@ -11,8 +11,7 @@ import {
   wireCliStatusLine,
 } from '../../cli/installer/settings.ts';
 import { parseStatusLineData } from '../../hud-entry.ts';
-import { DEFAULT_HUD_CONFIG } from '../../types.ts';
-import { hydrateHudConfig, mergeHudConfig } from '../hud-config.ts';
+import { DEFAULT_HUD_CONFIG, hydrateHudConfig, mergeHudConfig } from '../hud-config.ts';
 import { getHomeDir, resolveCliHome } from '../paths.ts';
 import { formatStatusLineCommand, isSameCommandPath, isValidBackupRecord } from '../statusline-ownership.ts';
 

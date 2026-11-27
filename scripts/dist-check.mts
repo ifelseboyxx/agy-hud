@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { parseSync } from 'oxc-parser';
 import ts from 'typescript';
 
-import { isMainEntry, toPosixPath } from '../src/core/paths.ts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
+import { toPosixPath } from '../src/core/paths.ts';
 import { runAtomicBuild } from './build.mts';
 import { EXECUTABLE_REPO_PATHS, EXPECTED_DIST_FILES } from './lib/dist-manifest.mts';
 

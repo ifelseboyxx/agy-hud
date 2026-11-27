@@ -6,16 +6,12 @@ import { readHudConfig } from '../collectors/settings.ts';
 import { loadActivitySnapshot } from '../collectors/snapshot-loader.ts';
 import { nonEmptyStr } from '../core/guards.ts';
 import { resolveCliHome } from '../core/paths.ts';
-import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
+import { sanitizeTerminalLabel, sanitizeTerminalText, shouldUseTerminalColor } from '../core/terminal-text.ts';
 import { formatCostBreakdown } from '../render/cost.ts';
 import type { ActivitySnapshot, SessionRecord, SnapshotSection } from '../snapshot-types.ts';
 import { type KeybindingsTarget, parseKeybindingsTarget, renderKeybindings } from './keybindings.ts';
 import { type PopupInputStream, type PopupOutputStream, runSnapshotPopup } from './snapshot-popup.ts';
-import {
-  renderStructuredInspector,
-  shouldUseSnapshotColor,
-  type StructuredInspectorOptions,
-} from './snapshot-render.ts';
+import { renderStructuredInspector, type StructuredInspectorOptions } from './snapshot-render.ts';
 
 const FILTER_ALIASES: Readonly<Record<string, SnapshotSection | 'all'>> = {
   all: 'all',
@@ -187,7 +183,9 @@ export function parseSnapshotArgs(argv: readonly string[]): SnapshotCliArgs {
     const key = arg.toLowerCase();
     const mapped = Object.hasOwn(FILTER_ALIASES, key) ? FILTER_ALIASES[key] : undefined;
     if (mapped === undefined) {
-      throw new Error(`Unknown snapshot filter "${arg}" (expected: all | tools | skills | mcps | agents | swarm)`);
+      throw new Error(
+        `Unknown snapshot filter "${arg}" (expected: all | context (ctx) | tools | skills | mcps | agents | swarm)`,
+      );
     }
     if (mapped === 'all') {
       explicitAll = true;
@@ -285,7 +283,7 @@ export function executeParsedSnapshotCommand(
       output: renderKeybindings({
         target: parsed.keybindings,
         env,
-        color: shouldUseSnapshotColor(parsed.noColor, env),
+        color: shouldUseTerminalColor(parsed.noColor, env),
         binDir: options.binDir,
         pluginRoot: options.pluginRoot,
         platform: options.platform,
@@ -333,7 +331,7 @@ export function executeParsedSnapshotCommand(
   return {
     output: formatSnapshotText(snapshot, parsed.sections, {
       width: options.width,
-      color: shouldUseSnapshotColor(parsed.noColor, env),
+      color: shouldUseTerminalColor(parsed.noColor, env),
       env,
       costCurrency: hudCfg.costCurrency,
       usdToCnyRate: hudCfg.usdToCnyRate,
@@ -357,7 +355,7 @@ export async function executeParsedSnapshotPopupCommand(
   return await runSnapshotPopup({
     loadSnapshot: () => loadSnapshotForParsedArgs(parsed, options).snapshot,
     initialSections: parsed.sections,
-    color: shouldUseSnapshotColor(parsed.noColor, env),
+    color: shouldUseTerminalColor(parsed.noColor, env),
     noColor: parsed.noColor,
     costCurrency: hudCfg.costCurrency,
     usdToCnyRate: hudCfg.usdToCnyRate,

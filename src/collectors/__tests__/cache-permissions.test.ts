@@ -84,7 +84,7 @@ void describe('collector cache file permissions', () => {
       ageLabel: '1s ago',
     };
     loadSnapshotTranscript(session, cliHome);
-    const cachePath = path.join(cliHome, 'cache', `agy_hud_activity_snapshot_${convId}.json`);
+    const cachePath = path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
     assert.equal(statSync(cachePath).mode & 0o777, 0o600);
   });
 
@@ -174,7 +174,7 @@ void describe('collector cache file permissions', () => {
       ageLabel: '1s ago',
     };
     loadSnapshotTranscript(session, cliHome);
-    const snapCachePath = path.join(cliHome, 'cache', `agy_hud_activity_snapshot_${convId}.json`);
+    const snapCachePath = path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
     chmodSync(snapCachePath, 0o644);
     assert.equal(statSync(snapCachePath).mode & 0o777, 0o644);
 

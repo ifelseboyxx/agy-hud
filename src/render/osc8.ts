@@ -1,18 +1,10 @@
-import { resolveCliSubdirFile, sanitizeSessionId } from '../collectors/safe-path.ts';
 import { nonEmptyStr } from '../core/guards.ts';
+import { isColorDisabledByEnv } from '../core/terminal-text.ts';
 import type { HudConfig } from '../types.ts';
 import { GRAY, RESET } from './ansi.ts';
-import { toSafeLocalFileUri } from './file-link.ts';
 
 const ESC = String.fromCharCode(0x1b);
-const MAX_OSC8_DATA_BYTES = 4096;
-
 const ACTIVITY_SUMMARY_SNAPSHOT_TAIL_COLS: number = 11;
-
-export interface SnapshotMarkdownTarget {
-  absPath: string;
-  uri: string;
-}
 
 export function canEmitOsc8Links(
   config: Pick<HudConfig, 'osc8Links'>,
@@ -22,10 +14,7 @@ export function canEmitOsc8Links(
   if (!config.osc8Links || convId === null || convId.trim().length === 0) {
     return false;
   }
-  if (env.NO_COLOR !== undefined) {
-    return false;
-  }
-  if (env.TERM?.trim().toLowerCase() === 'dumb') {
+  if (isColorDisabledByEnv(env)) {
     return false;
   }
   if (
@@ -36,22 +25,6 @@ export function canEmitOsc8Links(
     return false;
   }
   return true;
-}
-
-export function resolveSnapshotMarkdownUri(cliHome: string, convId: string): SnapshotMarkdownTarget | null {
-  const safeId = sanitizeSessionId(convId);
-  if (safeId === null) {
-    return null;
-  }
-  const absPath = resolveCliSubdirFile(cliHome, 'cache', `agy_hud_snapshot_${safeId}.md`);
-  if (absPath === null) {
-    return null;
-  }
-  const uri = toSafeLocalFileUri(absPath, { maxBytes: MAX_OSC8_DATA_BYTES - 3 });
-  if (uri === null) {
-    return null;
-  }
-  return { absPath, uri };
 }
 
 export function wrapOsc8Link(text: string, uri: string): string {

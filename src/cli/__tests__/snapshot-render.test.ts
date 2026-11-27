@@ -1,16 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { shortenTarget } from '../../collectors/activity-parse.ts';
+import { shortenTarget } from '../../core/activity-aggregate.ts';
+import { shouldUseTerminalColor } from '../../core/terminal-text.ts';
 import { formatToolsLine } from '../../render/activity-lines.ts';
 import { stripAnsi, visibleLen } from '../../render/ansi.ts';
 import type { ActivitySnapshot, SnapshotCompletedTool, SnapshotRunningTool } from '../../snapshot-types.ts';
 import type { TranscriptToolEntry } from '../../types.ts';
-import {
-  renderStructuredInspector,
-  renderStructuredInspectorLines,
-  shouldUseSnapshotColor,
-} from '../snapshot-render.ts';
+import { renderStructuredInspector, renderStructuredInspectorLines } from '../snapshot-render.ts';
 
 function makeSnapshot(overrides: Partial<ActivitySnapshot> = {}): ActivitySnapshot {
   return {
@@ -90,12 +87,12 @@ function makeCompletedTools(count: number): SnapshotCompletedTool[] {
 
 void describe('Structured Inspector terminal renderer', () => {
   void it('suppresses ANSI SGR on --no-color, NO_COLOR, and TERM=dumb while preserving SGR by default', () => {
-    assert.equal(shouldUseSnapshotColor(false, {}), true);
-    assert.equal(shouldUseSnapshotColor(true, {}), false);
-    assert.equal(shouldUseSnapshotColor(false, { NO_COLOR: '1' }), false);
-    assert.equal(shouldUseSnapshotColor(false, { NO_COLOR: '' }), false);
-    assert.equal(shouldUseSnapshotColor(false, { TERM: 'dumb' }), false);
-    assert.equal(shouldUseSnapshotColor(false, { TERM: 'DUMB' }), false);
+    assert.equal(shouldUseTerminalColor(false, {}), true);
+    assert.equal(shouldUseTerminalColor(true, {}), false);
+    assert.equal(shouldUseTerminalColor(false, { NO_COLOR: '1' }), false);
+    assert.equal(shouldUseTerminalColor(false, { NO_COLOR: '' }), false);
+    assert.equal(shouldUseTerminalColor(false, { TERM: 'dumb' }), false);
+    assert.equal(shouldUseTerminalColor(false, { TERM: 'DUMB' }), false);
 
     const colored = renderStructuredInspector(makeSnapshot(), { color: true, width: 100 });
     assert.notEqual(colored, stripAnsi(colored), 'default piped render should preserve ANSI SGR');

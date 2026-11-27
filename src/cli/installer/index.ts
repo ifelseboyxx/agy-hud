@@ -4,12 +4,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { getCliHomeLockPath, getShimBinLockPath, getTargetLockPath, withFileLocksSync } from '../../core/file-lock.ts';
+import { lstatIfPresentSync, makeTempSuffix } from '../../core/fs-utils.ts';
 import { resolveCliHome } from '../../core/paths.ts';
 import { getSettingsPaths } from '../../core/statusline-ownership.ts';
-import { lstatIfPresentSync, makeTempSuffix } from '../../fs-utils.ts';
 import { INSTALLER_HELP_TEXT, parseInstallerArgs, PLUGIN_NAME, type InstallerOptions } from './args.ts';
 import { preflightPurgeConfig, runPostTeardownCleanup } from './cleanup.ts';
-import { hasAgyCli, runDoctor, toggleAgyPlugin, uninstallAgyPlugin, writeInstallerLine } from './doctor.ts';
+import {
+  hasAgyCli,
+  type InstallerRuntimeContext,
+  runDoctor,
+  toggleAgyPlugin,
+  uninstallAgyPlugin,
+  writeInstallerLine,
+} from './doctor.ts';
 import {
   assertDirectoryTreeRemovable,
   assertNotActiveSourceRepo,
@@ -94,6 +101,7 @@ function stagePluginInstall(
   resolvedDst: string,
   dstStat: Stats | null,
   suffix: string,
+  stdout?: { write(chunk: string): boolean },
 ): void {
   mkdirSync(path.dirname(resolvedDst), { recursive: true });
   if (!opts.useLink) {
@@ -114,7 +122,7 @@ function stagePluginInstall(
     symlinkSync(resolvedSrc, resolvedDst, process.platform === 'win32' ? 'junction' : 'dir');
     stage.createdTarget = true;
     stage.createdIdentity = lstatIfPresentSync(resolvedDst);
-    if (!opts.quiet) writeInstallerLine(`Linked ${resolvedDst} -> ${resolvedSrc}`);
+    if (!opts.quiet) writeInstallerLine(`Linked ${resolvedDst} -> ${resolvedSrc}`, stdout);
     return;
   }
   const stagedNewPath = stage.stagedNewPath;
@@ -124,7 +132,7 @@ function stagePluginInstall(
   stage.stagedNewPath = null;
   stage.createdTarget = true;
   stage.createdIdentity = stagedIdentity;
-  if (!opts.quiet) writeInstallerLine(`Installed ${PLUGIN_NAME} to ${resolvedDst}`);
+  if (!opts.quiet) writeInstallerLine(`Installed ${PLUGIN_NAME} to ${resolvedDst}`, stdout);
 }
 
 function buildInstallRollbackSteps(
@@ -175,9 +183,10 @@ function buildInstallRollbackSteps(
   return steps;
 }
 
-function runInstall(opts: InstallerOptions): void {
+function runInstall(opts: InstallerOptions, runtime?: InstallerRuntimeContext): void {
   const resolvedDst = path.resolve(opts.targetDir);
-  const cliHome = resolveCliHome();
+  const env = runtime?.env ?? process.env;
+  const cliHome = resolveCliHome(runtime?.cliHome, env);
   if (opts.manageShim) assertShimBinDirUsable(opts.binDir);
   const locks = [getTargetLockPath(resolvedDst)];
   if (opts.wireStatusLine || opts.manageShim) locks.push(getCliHomeLockPath(cliHome));
@@ -206,13 +215,15 @@ function runInstall(opts: InstallerOptions): void {
       createdIdentity: null,
     };
     const receipts: WireAndShimReceipts = { wireReceipt: null, shimReceipt: null };
-    const agyAvailable = hasAgyCli();
+    const agyAvailable = hasAgyCli(env);
 
     try {
       if (sameDirectory) {
-        if (!opts.quiet) writeInstallerLine(`Repository is already at target plugin directory: ${resolvedDst}`);
+        if (!opts.quiet) {
+          writeInstallerLine(`Repository is already at target plugin directory: ${resolvedDst}`, runtime?.stdout);
+        }
       } else {
-        stagePluginInstall(stage, opts, resolvedSrc, resolvedDst, dstStat, makeTempSuffix());
+        stagePluginInstall(stage, opts, resolvedSrc, resolvedDst, dstStat, makeTempSuffix(), runtime?.stdout);
       }
       applyWireShimAndDoctor({
         opts,
@@ -223,6 +234,7 @@ function runInstall(opts: InstallerOptions): void {
         agyAvailable,
         doctorFailMessage: 'Post-install doctor check failed.',
         receipts,
+        runtime,
       });
     } catch (err) {
       const steps = buildInstallRollbackSteps(
@@ -235,7 +247,7 @@ function runInstall(opts: InstallerOptions): void {
       throw makeRollbackError(err, runRollbackSteps(steps));
     }
 
-    toggleAgyPlugin(opts, 'enable', agyAvailable);
+    toggleAgyPlugin(opts, 'enable', agyAvailable, runtime);
     if (stage.prevMoved && stage.stagedPrevPath !== null && stage.prevIdentity !== null) {
       try {
         removeVerifiedStagedPath(stage.stagedPrevPath, stage.prevIdentity);
@@ -246,13 +258,14 @@ function runInstall(opts: InstallerOptions): void {
         );
       }
     }
-    printPathHintIfNeeded(opts);
+    printPathHintIfNeeded(opts, runtime);
   });
 }
 
-function runUninstall(opts: InstallerOptions): void {
+function runUninstall(opts: InstallerOptions, runtime?: InstallerRuntimeContext): void {
   const resolvedDst = path.resolve(opts.targetDir);
-  const cliHome = resolveCliHome();
+  const env = runtime?.env ?? process.env;
+  const cliHome = resolveCliHome(runtime?.cliHome, env);
   const resolvedSrc = realpathSync(PACKAGE_ROOT);
   assertNotActiveSourceRepo(resolvedSrc, resolvedDst, lstatIfPresentSync(resolvedDst));
 
@@ -322,13 +335,16 @@ function runUninstall(opts: InstallerOptions): void {
       if (lockCliHome) {
         receipts.cleanup = runPostTeardownCleanup(cliHome, resolvedDst, opts.purge);
       }
-      printTeardownResults(receipts, opts.quiet);
+      printTeardownResults(receipts, opts.quiet, runtime?.stdout);
       if (!dstStat) {
         if (useHostPluginUninstall) {
-          const hostRes = uninstallAgyPlugin(opts, true);
+          const hostRes = uninstallAgyPlugin(opts, true, env);
           if (hostRes.ok) {
             if (!opts.quiet) {
-              writeInstallerLine(`Removed stale ${PLUGIN_NAME} host registration via agy plugin uninstall.`);
+              writeInstallerLine(
+                `Removed stale ${PLUGIN_NAME} host registration via agy plugin uninstall.`,
+                runtime?.stdout,
+              );
             }
             return;
           }
@@ -345,12 +361,12 @@ function runUninstall(opts: InstallerOptions): void {
           (receipts.cleanup?.removedBackups.length ?? 0) > 0 ||
           Boolean(receipts.cleanup?.removedConfig);
         if (!opts.quiet && !receipts.removedShim?.removed && !hadCleanup) {
-          writeInstallerLine(`Nothing to remove (${resolvedDst} does not exist).`);
+          writeInstallerLine(`Nothing to remove (${resolvedDst} does not exist).`, runtime?.stdout);
         }
         return;
       }
       if (useHostPluginUninstall) {
-        const hostRes = uninstallAgyPlugin(opts, true);
+        const hostRes = uninstallAgyPlugin(opts, true, env);
         const remainingStat = lstatIfPresentSync(resolvedDst);
         if (!hostRes.ok) {
           const detail = hostRes.detail.length > 0 ? `: ${hostRes.detail}` : '';
@@ -366,17 +382,18 @@ function runUninstall(opts: InstallerOptions): void {
           assertRemovableTarget(resolvedDst, remainingStat, PLUGIN_NAME);
           removeTargetPath(resolvedDst, remainingStat);
         }
-        if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`);
+        if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`, runtime?.stdout);
         return;
       }
-      if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`);
+      if (!opts.quiet) writeInstallerLine(`Removed ${PLUGIN_NAME} from ${resolvedDst}`, runtime?.stdout);
     },
   );
 }
 
-function runToggle(opts: InstallerOptions, enable: boolean): void {
+function runToggle(opts: InstallerOptions, enable: boolean, runtime?: InstallerRuntimeContext): void {
   const resolvedDst = path.resolve(opts.targetDir);
-  const cliHome = resolveCliHome();
+  const env = runtime?.env ?? process.env;
+  const cliHome = resolveCliHome(runtime?.cliHome, env);
   const hudScriptPath = path.join(resolvedDst, 'dist', 'hud.mjs');
   if (enable && !pathExists(path.dirname(resolvedDst))) {
     throw new Error(`Missing ${hudScriptPath}. Run 'pnpm build' and install first.`);
@@ -387,49 +404,49 @@ function runToggle(opts: InstallerOptions, enable: boolean): void {
     if (enable) {
       if (!pathExists(hudScriptPath)) throw new Error(`Missing ${hudScriptPath}. Run 'pnpm build' and install first.`);
       wireCliStatusLine(cliHome, resolvedDst);
-      toggleAgyPlugin(opts, 'enable');
-      if (!opts.quiet) writeInstallerLine(`Enabled agy-hud statusLine in ${settingsPath}`);
+      toggleAgyPlugin(opts, 'enable', undefined, runtime);
+      if (!opts.quiet) writeInstallerLine(`Enabled agy-hud statusLine in ${settingsPath}`, runtime?.stdout);
       return;
     }
     const disabled = disableCliStatusLine(cliHome, resolvedDst);
-    toggleAgyPlugin(opts, 'disable');
+    toggleAgyPlugin(opts, 'disable', undefined, runtime);
     if (!opts.quiet) {
       const msg = disabled.changed
         ? `Disabled agy-hud statusLine in ${settingsPath}`
         : disabled.skippedReason === 'not-configured'
           ? `Skipped statusLine disable: statusLine is not configured in ${settingsPath}.`
           : `Skipped statusLine disable: current statusLine does not point to this installation.`;
-      writeInstallerLine(msg);
+      writeInstallerLine(msg, runtime?.stdout);
     }
   });
 }
 
-export function runInstallerCli(args: readonly string[]): number {
-  const opts = parseInstallerArgs(args);
+export function runInstallerCli(args: readonly string[], runtime?: InstallerRuntimeContext): number {
+  const opts = parseInstallerArgs(args, runtime?.env);
   if (opts.showHelp) {
-    writeInstallerLine(INSTALLER_HELP_TEXT);
+    writeInstallerLine(INSTALLER_HELP_TEXT, runtime?.stdout);
     return 0;
   }
   switch (opts.command) {
     case 'wire':
-      runWire(opts, PACKAGE_ROOT);
+      runWire(opts, PACKAGE_ROOT, runtime);
       return 0;
     case 'unwire':
-      runUnwire(opts);
+      runUnwire(opts, runtime);
       return 0;
     case 'install':
-      runInstall(opts);
+      runInstall(opts, runtime);
       return 0;
     case 'uninstall':
-      runUninstall(opts);
+      runUninstall(opts, runtime);
       return 0;
     case 'on':
     case 'enable':
-      runToggle(opts, true);
+      runToggle(opts, true, runtime);
       return 0;
     case 'off':
     case 'disable':
-      runToggle(opts, false);
+      runToggle(opts, false, runtime);
       return 0;
     case 'status':
     case 'doctor': {
@@ -441,6 +458,9 @@ export function runInstallerCli(args: readonly string[]): number {
         requireShim: false,
         noShim: opts.noShim,
         checkMalformedShim: false,
+        cliHome: runtime?.cliHome,
+        env: runtime?.env,
+        stdout: runtime?.stdout,
       });
       return ok ? 0 : 1;
     }

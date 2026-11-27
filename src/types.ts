@@ -1,3 +1,9 @@
+import type { HudConfig } from './profile-types.ts';
+import type { SessionTelemetry } from './telemetry-types.ts';
+
+export type * from './profile-types.ts';
+export type * from './telemetry-types.ts';
+
 export interface StatusLineModel {
   id?: string;
   display_name?: string;
@@ -141,51 +147,6 @@ export interface StatusLineData {
   output_style?: string | { name?: string };
 }
 
-export type HudPreset = 'zen' | 'minimal' | 'compact' | 'swarm' | 'full';
-
-export type HudCostCurrency = 'usd' | 'cny' | 'both';
-
-export type HudLineId = 'mode' | 'identity' | 'usage' | 'activity' | 'tools' | 'skills' | 'mcps' | 'agents' | 'todos';
-
-export type HudSegmentId = 'model' | 'git' | 'duration' | 'badges' | 'cost' | 'perf' | 'context' | 'quota';
-
-export type HudSegments = Record<HudSegmentId, boolean>;
-
-export interface HudNarrowOverride {
-  lines?: HudLineId[];
-  segments?: Partial<HudSegments>;
-}
-
-export interface HudConfig {
-  preset: HudPreset;
-  maxAgentChips: number;
-  osc8Links: boolean;
-  costCurrency: HudCostCurrency;
-  usdToCnyRate: number;
-  lines: HudLineId[];
-  segments: HudSegments;
-  narrow?: HudNarrowOverride;
-}
-
-export const DEFAULT_HUD_CONFIG: HudConfig = {
-  preset: 'full',
-  maxAgentChips: 8,
-  osc8Links: true,
-  costCurrency: 'usd',
-  usdToCnyRate: 7.25,
-  lines: ['mode', 'identity', 'usage', 'tools', 'skills', 'mcps', 'agents', 'todos'],
-  segments: {
-    model: true,
-    git: true,
-    duration: true,
-    badges: true,
-    cost: true,
-    perf: true,
-    context: true,
-    quota: true,
-  },
-};
-
 export interface GitStatusInfo {
   branch: string;
   dirty: boolean;
@@ -200,95 +161,6 @@ export interface GitStatusInfo {
   behind?: number;
   diffAdded?: number;
   diffDeleted?: number;
-}
-
-export type ModelErrorReason =
-  | 'rate-limit'
-  | 'unavailable'
-  | 'timeout'
-  | 'eof'
-  | 'connection'
-  | 'auth'
-  | 'region'
-  | 'bad-request'
-  | 'internal'
-  | 'other';
-
-export type CacheAnomalyKind = 'cleared' | 'dropped' | 'missed';
-export type TailStepPhase = 'working' | 'tool_use' | 'error';
-
-export interface ContextBreakdownSummary {
-  system: number;
-  rules: number;
-  skills: number;
-  tools: number;
-  mcp: number;
-  messages: number;
-  free: number;
-  budget: number;
-  used: number;
-  compacted: boolean;
-  estimatedMessages: boolean;
-}
-
-export interface CompactionSummary {
-  count: number;
-  active: boolean;
-  preUsed: number | null;
-  postUsed: number | null;
-}
-
-export interface ModelRoleContextEntry {
-  model: string;
-  role?: 'planner' | 'executor';
-  genCount: number;
-  lastCtxUsed: number;
-  lastCtxMax: number;
-}
-
-export interface CacheAnomalyEvent {
-  kind: CacheAnomalyKind;
-  prevPct: number;
-  curPct: number;
-  gapSec: number;
-}
-
-export interface SessionTelemetry {
-  genCount: number;
-  tps: number | null;
-  ttft: number | null;
-  cachePct: number | null;
-  ctxUsed: number | null;
-  ctxMax: number | null;
-  compacted?: boolean;
-  avgTps?: number | null;
-  peakTps?: number | null;
-  totalInputTokens?: number;
-  totalCacheReadTokens?: number;
-  totalOutputTokens?: number;
-  totalThinkingTokens?: number;
-  totalResponseTokens?: number;
-  lastThinkingTokens?: number;
-  lastResponseTokens?: number;
-  latestCacheAnomaly?: CacheAnomalyEvent | null;
-  cacheAnomalyCount?: number;
-  contextBreakdown?: ContextBreakdownSummary | null;
-  compaction?: CompactionSummary | null;
-  modelRoles?: ModelRoleContextEntry[] | null;
-  providerInputTokens?: number | null;
-  truncationReason?: 'cache-ttl-expired' | 'max-token-limit' | null;
-  retryCount?: number;
-  retryWaitSec?: number;
-  retryReasons?: Partial<Record<ModelErrorReason, number>>;
-  errorCount?: number;
-  errorReasons?: Partial<Record<ModelErrorReason, number>>;
-  lastRetries?: number;
-  lastRetryReason?: ModelErrorReason | null;
-  lastErrorCode?: ModelErrorReason | null;
-  modelTimeSec?: number;
-  toolTimeSec?: number;
-  tailStepPhase?: TailStepPhase | null;
-  lastModelName?: string | null;
 }
 
 export type AgentState = 'working' | 'waiting' | 'done';
@@ -380,13 +252,7 @@ export interface ActivityLineFormatOptions {
   formatOverflow?: (hiddenCount: number) => string;
 }
 
-export interface GitBranchInfo {
-  branch: string;
-  dirty: boolean;
-}
-
 export interface HudCollectorOverrides {
-  detectGitBranch?: (cwd: string | undefined, stdinVcs?: StatusLineVcs) => GitBranchInfo;
   detectGitStatus?: (cliHome: string, cwd: string | undefined, stdinVcs?: StatusLineVcs) => GitStatusInfo;
   loadTodos?: (cliHome: string, data: StatusLineData) => TodoSummary | null;
   loadSessionTelemetry?: (cliHome: string, data: StatusLineData) => SessionTelemetry;
@@ -418,76 +284,4 @@ export interface RenderHudOptions {
   formatActivitySummaryTail?: (remainingCols: number) => string;
   collectors?: HudCollectorOverrides;
   env?: NodeJS.ProcessEnv;
-}
-
-export interface ConfigureHudOptions {
-  cliHome?: string;
-  show?: boolean;
-  interactive?: boolean;
-  preset?: HudPreset;
-  enable?: readonly string[];
-  disable?: readonly string[];
-  order?: readonly string[];
-  narrowEnable?: readonly string[];
-  narrowDisable?: readonly string[];
-  narrowOrder?: readonly string[];
-  narrowReset?: boolean;
-  sets?: readonly string[];
-  reset?: boolean;
-  env?: NodeJS.ProcessEnv;
-}
-
-export interface ConfigureHudResult {
-  configPath: string;
-  config: HudConfig;
-  changed: boolean;
-  action: 'show' | 'reset' | 'update';
-}
-
-export interface ExportProfileOptions {
-  outDir: string;
-  cliHome?: string;
-  geminiRoot?: string;
-  env?: NodeJS.ProcessEnv;
-}
-
-export interface ExportedPluginEntry {
-  dir: string;
-  name: string;
-  version?: string;
-  repo?: string;
-  enabled?: boolean;
-  marketplace?: string;
-  pluginId?: string;
-}
-
-export interface PluginsManifest {
-  exportedAt: string;
-  plugins: ExportedPluginEntry[];
-}
-
-export interface ExportProfileResult {
-  outDir: string;
-  filesWritten: string[];
-  pluginCount: number;
-  skippedMissing: string[];
-}
-
-export interface ImportProfileOptions {
-  inDir: string;
-  cliHome?: string;
-  geminiRoot?: string;
-  mergeMcp?: boolean;
-  env?: NodeJS.ProcessEnv;
-}
-
-export type ImportMcpAction = 'none' | 'created' | 'merged' | 'skipped-exists';
-
-export interface ImportProfileResult {
-  inDir: string;
-  cliHome: string;
-  geminiRoot: string;
-  filesUpdated: string[];
-  mcpAction: ImportMcpAction;
-  pluginInstructions: string[];
 }

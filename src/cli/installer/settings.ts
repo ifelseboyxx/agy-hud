@@ -2,16 +2,7 @@ import { readdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-import { resolveTrustedCliDir } from '../../collectors/safe-path.ts';
-import { isPlainObject, isSupportedNodeVersion, NODE_RANGE_LABEL } from '../../core/guards.ts';
-import {
-  formatStatusLineCommand,
-  getSettingsPaths,
-  isSameCommandPath,
-  isValidBackupRecord,
-  type StatusLineBackupPayload,
-  unwrapCommandScriptPath,
-} from '../../core/statusline-ownership.ts';
+import { BACKUP_TMP_RE, STATUSLINE_BACKUP_FILE } from '../../core/cache-registry.ts';
 import {
   captureEntrySnapshotSync,
   decodeStrictUtf8,
@@ -26,11 +17,19 @@ import {
   statIfPresentSync,
   writeBufferAtomicSync,
   writeJsonAtomicSync,
-} from '../../fs-utils.ts';
+} from '../../core/fs-utils.ts';
+import { isPlainObject } from '../../core/guards.ts';
+import { resolveTrustedCliDir } from '../../core/safe-path.ts';
+import {
+  formatStatusLineCommand,
+  getSettingsPaths,
+  isSameCommandPath,
+  isValidBackupRecord,
+  type StatusLineBackupPayload,
+  unwrapCommandScriptPath,
+} from '../../core/statusline-ownership.ts';
 import { PLUGIN_NAME } from './args.ts';
 import { makeRollbackError, runRollbackSteps, type RollbackStep } from './fs-ops.ts';
-
-export { isSupportedNodeVersion, NODE_RANGE_LABEL };
 
 export interface RestoreStatusLineResult {
   changed: boolean;
@@ -156,8 +155,6 @@ export interface PurgeOrphanedBackupResult {
   readonly skippedReason: 'missing' | 'owned-other-live' | null;
 }
 
-const BACKUP_TMP_RE = /^agy-hud-statusline-backup\.json\.tmp\.\d+\.\d+\.[0-9a-f]{16}$/;
-
 function isOtherLiveAgyHudCommand(curCmd: unknown, targetDir: string, platform: NodeJS.Platform): boolean {
   if (typeof curCmd !== 'string' || curCmd.trim().length === 0) return false;
   const ownCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), platform);
@@ -190,7 +187,7 @@ export function purgeOrphanedStatusLineBackup(
   if (trustedCacheDir === null) {
     return { removedPaths: [], skippedReason: 'missing' };
   }
-  const backupPath = path.join(trustedCacheDir, 'agy-hud-statusline-backup.json');
+  const backupPath = path.join(trustedCacheDir, STATUSLINE_BACKUP_FILE);
   const backup = readStatusLineBackupStrict(backupPath);
   const curCmd = isPlainObject(existing?.statusLine) ? existing.statusLine.command : undefined;
   const ownCmd = formatStatusLineCommand(path.join(targetDir, 'dist', 'hud.mjs'), platform);

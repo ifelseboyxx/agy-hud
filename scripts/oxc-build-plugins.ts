@@ -36,6 +36,56 @@ async function runIsolatedDeclaration(rootDir: string, relSource: string): Promi
   return result.code;
 }
 
+function stripInlinedRelativeTypeEdges(dtsCode: string, inlinedSpecs: ReadonlySet<string>): string {
+  const parsed = parseSync('types.d.mts', dtsCode);
+  const ranges: Array<readonly [number, number]> = [];
+  for (const stmt of parsed.program.body) {
+    if (
+      (stmt.type === 'ImportDeclaration' || stmt.type === 'ExportAllDeclaration') &&
+      typeof stmt.source.value === 'string' &&
+      inlinedSpecs.has(stmt.source.value)
+    ) {
+      ranges.push([stmt.start, stmt.end]);
+    }
+  }
+  if (ranges.length === 0) return dtsCode.trim();
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    out += dtsCode.slice(cursor, start);
+    cursor = end;
+  }
+  out += dtsCode.slice(cursor);
+  return out.replace(/^\s*\n+/g, '').trim();
+}
+
+async function emitBundledTypesDts(rootDir: string): Promise<string> {
+  const entryRel = 'src/types.ts';
+  const entrySource = readFileSync(path.join(rootDir, entryRel), 'utf8');
+  const parsedEntry = parseSync(entryRel, entrySource);
+  if (parsedEntry.errors.length > 0) {
+    throw new Error(`parseSync(${entryRel}) failed: ${parsedEntry.errors.map((e) => e.message).join('; ')}`);
+  }
+
+  const inlinedSpecs = new Set<string>();
+  const subParts: string[] = [];
+  for (const exp of parsedEntry.module.staticExports) {
+    for (const entry of exp.entries) {
+      const req = entry.moduleRequest?.value;
+      if (!req || (!req.startsWith('./') && !req.startsWith('../'))) continue;
+      if (inlinedSpecs.has(req)) continue;
+      inlinedSpecs.add(req);
+      const subRel = path.posix.normalize(path.posix.join('src', req));
+      const subDts = await runIsolatedDeclaration(rootDir, subRel);
+      subParts.push(subDts.trim());
+    }
+  }
+
+  const rootDts = await runIsolatedDeclaration(rootDir, entryRel);
+  const cleanedRoot = stripInlinedRelativeTypeEdges(rootDts, inlinedSpecs);
+  return `${[...subParts, cleanedRoot].filter((part) => part.length > 0).join('\n\n')}\n`;
+}
+
 function collectExportedTypeNames(typesDtsCode: string): Set<string> {
   const names = new Set<string>();
   const parsed = parseSync('types.d.mts', typesDtsCode);
@@ -83,6 +133,16 @@ async function emitBundledIndexDts(rootDir: string, typesDtsCode: string): Promi
           const renamed =
             localName === exportedName ? rawDecl : rawDecl.replace(`function ${localName}`, `function ${exportedName}`);
           declarations.push(renamed);
+        } else if (stmt.declaration.type === 'VariableDeclaration') {
+          const matchesLocal = stmt.declaration.declarations.some(
+            (d) => d.id.type === 'Identifier' && d.id.name === localName,
+          );
+          if (matchesLocal) {
+            const rawDecl = targetDts.slice(stmt.start, stmt.end).trim();
+            const renamed =
+              localName === exportedName ? rawDecl : rawDecl.replace(`const ${localName}`, `const ${exportedName}`);
+            declarations.push(renamed);
+          }
         }
       }
     }
@@ -134,7 +194,7 @@ export function oxcIsolatedDtsAndMinifyPlugin(options: OxcBuildPluginOptions = {
       }
 
       if (shouldEmitDts && existsSync(path.join(rootDir, 'src/types.ts'))) {
-        const typesDtsCode = await runIsolatedDeclaration(rootDir, 'src/types.ts');
+        const typesDtsCode = await emitBundledTypesDts(rootDir);
         this.emitFile({
           type: 'asset',
           fileName: 'types.d.mts',

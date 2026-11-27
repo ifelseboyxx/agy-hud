@@ -5,24 +5,16 @@ import {
   VALID_COST_CURRENCIES,
   VALID_HUD_PRESETS,
 } from '../core/hud-config.ts';
-import type { HudConfig } from '../types.ts';
+import { shouldUseTerminalColor } from '../core/terminal-text.ts';
+import type { ConfigureHudOptions, HudConfig } from '../types.ts';
 import {
   getConfigureTier2Items,
   renderConfigureTuiFrame,
   type ConfigureTier2Item,
-  type ConfigureTuiFrameOptions,
   type ConfigureTuiKeyEffect,
-  type ConfigureTuiRenderedFrame,
   type ConfigureTuiState,
-  type ConfigureTuiTier,
 } from './configure-tui-render.ts';
-import {
-  type ConfigureHudOptions,
-  HudConfigConflictError,
-  loadInteractiveDraftSession,
-  writeHudConfigAtomic,
-} from './configure.ts';
-import { shouldUseSnapshotColor } from './snapshot-render.ts';
+import { HudConfigConflictError, loadInteractiveDraftSession, writeHudConfigAtomic } from './configure.ts';
 import {
   CTRL_C,
   ESC_CHAR,
@@ -32,16 +24,6 @@ import {
   type TtyInputStream,
   type TtyOutputStream,
 } from './tty-session.ts';
-
-export {
-  getConfigureTier2Items,
-  type ConfigureTier2Item,
-  type ConfigureTuiFrameOptions,
-  type ConfigureTuiKeyEffect,
-  type ConfigureTuiRenderedFrame,
-  type ConfigureTuiState,
-  type ConfigureTuiTier,
-};
 
 export const CONFIGURE_NON_TTY_HINT: string =
   'Interactive configure (-i/--interactive) requires an interactive TTY (stdin and stdout).\n' +
@@ -222,7 +204,7 @@ export async function runConfigureInteractive(options: RunConfigureInteractiveOp
     env,
   });
   const state = createConfigureTuiState(draftSession.config);
-  const useColor = options.color !== undefined ? options.color : shouldUseSnapshotColor(false, env);
+  const useColor = options.color !== undefined ? options.color : shouldUseTerminalColor(false, env);
   const escTimeoutMs = options.escTimeoutMs ?? ESC_SEQUENCE_TIMEOUT_MS;
 
   const draw = (): void => {

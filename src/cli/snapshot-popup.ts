@@ -1,3 +1,4 @@
+import { shouldUseTerminalColor } from '../core/terminal-text.ts';
 import { padEndVisible, RESET, truncateToWidth } from '../render/ansi.ts';
 import type { ActivitySnapshot, SnapshotSection } from '../snapshot-types.ts';
 import type { HudCostCurrency } from '../types.ts';
@@ -6,7 +7,6 @@ import {
   renderStructuredInspector,
   renderStructuredInspectorLines,
   resolveInspectorWidth,
-  shouldUseSnapshotColor,
 } from './snapshot-render.ts';
 import {
   CTRL_C,
@@ -159,7 +159,7 @@ export async function runSnapshotPopup(options: RunSnapshotPopupOptions): Promis
   const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
   const env = options.env ?? process.env;
-  const useColor = options.color !== undefined ? options.color : shouldUseSnapshotColor(options.noColor ?? false, env);
+  const useColor = options.color !== undefined ? options.color : shouldUseTerminalColor(options.noColor ?? false, env);
   const escTimeoutMs = options.escTimeoutMs ?? ESC_SEQUENCE_TIMEOUT_MS;
 
   if (!isPopupInteractiveTty(stdin, stdout)) {

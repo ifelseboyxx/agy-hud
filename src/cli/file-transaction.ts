@@ -1,14 +1,15 @@
 import { rmSync } from 'node:fs';
 
-import { realpathExistingPrefixSync, toComparePath } from '../core/paths.ts';
 import {
   captureEntrySnapshotSync,
   type EntrySnapshotSync,
+  realpathExistingPrefixSync,
   restoreOwnedEntrySnapshotSync,
   serializeJsonBuffer,
   statIfPresentSync,
   writeBufferAtomicSync,
-} from '../fs-utils.ts';
+} from '../core/fs-utils.ts';
+import { toComparePath } from '../core/paths.ts';
 
 export type PlannedOp = { kind: 'write'; filePath: string; payload: unknown } | { kind: 'delete'; filePath: string };
 

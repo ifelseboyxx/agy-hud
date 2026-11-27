@@ -14,8 +14,9 @@ import type {
   TodoSummary,
   TranscriptActivity,
 } from '../../types.ts';
+import { formatActivitySummaryLine } from '../activity-summary.ts';
 import { GRAY, RESET, stripAnsi, visibleLen } from '../ansi.ts';
-import { formatActivitySummaryLine, LINE_MODULE_REGISTRY } from '../modules.ts';
+import { LINE_MODULE_REGISTRY } from '../modules.ts';
 
 function makeRichData(tmpRoot: string, overrides?: Partial<StatusLineData>): StatusLineData {
   return {

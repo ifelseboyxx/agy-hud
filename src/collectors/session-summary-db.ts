@@ -7,8 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
+import { sanitizeSessionId } from '../core/safe-path.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { sanitizeSessionId } from './safe-path.ts';
 import { readSqliteVersionTag, withReadonlyDb } from './sqlite-readonly.ts';
 
 const SUMMARY_QUERY_LIMIT = 100;

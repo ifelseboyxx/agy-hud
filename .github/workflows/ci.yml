@@ -53,44 +53,5 @@ jobs:
           node-version: '22'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Install Antigravity CLI (with retry)
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if curl -fsSL https://antigravity.google/cli/install.sh | bash; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "Failed to install agy CLI after 3 attempts" >&2
-              exit 1
-            fi
-            sleep $((attempt * 5))
-          done
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Validate plugin manifest and components
-        run: pnpm validate:plugin
-      - name: Smoke test zero-build plugin install in isolated HOME
-        shell: bash
-        run: |
-          set -euo pipefail
-          TMP_HOME="$(mktemp -d)"
-          trap 'rm -rf "$TMP_HOME"' EXIT
-          HOME="$TMP_HOME" agy plugin install .
-          test -x "$TMP_HOME/.gemini/config/plugins/agy-hud/dist/hud.mjs"
-          HOME="$TMP_HOME" agy plugin list --json | node -e "
-            const raw = require('node:fs').readFileSync(0, 'utf8');
-            const parsed = JSON.parse(raw);
-            const list = Array.isArray(parsed) ? parsed : (parsed.plugins || []);
-            const hit = list.find((p) => p && p.name === 'agy-hud');
-            if (!hit) {
-              console.error('agy-hud not found in agy plugin list --json');
-              process.exit(1);
-            }
-            const skills = Array.isArray(hit.skills) ? hit.skills : [];
-            const mcps = Array.isArray(hit.mcpServers) ? hit.mcpServers : [];
-            if (skills.length !== 1 || !skills.includes('hud') || mcps.length !== 0) {
-              console.error('Unexpected installed components:', JSON.stringify({ skills, mcps }));
-              process.exit(1);
-            }
-          "
+      - name: Install Antigravity CLI, validate plugin, and run isolated smoke test
+        uses: ./.github/actions/agy-plugin-smoke

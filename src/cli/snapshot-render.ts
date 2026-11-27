@@ -1,15 +1,13 @@
 import path from 'node:path';
 
 import { nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
-import { sanitizeTerminalText } from '../core/terminal-text.ts';
+import { sanitizeTerminalText, shouldUseTerminalColor } from '../core/terminal-text.ts';
 import { computeHudVisibleToolsCap } from '../render/activity-lines.ts';
 import {
   BOLD,
   BRIGHT_WHITE,
   colorForUsedPct,
   CYAN,
-  formatTelemetryDiagnostics,
-  formatTelemetryFields,
   GRAY,
   GREEN,
   MAGENTA,
@@ -27,6 +25,7 @@ import {
   formatSubagentTelemetryParts,
   formatToolsSectionHeading,
 } from '../render/snapshot-presentation.ts';
+import { formatTelemetryDiagnostics, formatTelemetryFields } from '../render/telemetry-format.ts';
 import type { ActivitySnapshot, SnapshotCompletedTool, SnapshotSection } from '../snapshot-types.ts';
 import type { HudCostCurrency } from '../types.ts';
 import { appendContextSection, hasContextSectionContent } from './snapshot-context-render.ts';
@@ -78,13 +77,6 @@ export interface StructuredInspectorOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly costCurrency?: HudCostCurrency;
   readonly usdToCnyRate?: number;
-}
-
-export function shouldUseSnapshotColor(noColorFlag: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (noColorFlag) return false;
-  if (env.NO_COLOR !== undefined) return false;
-  if (env.TERM?.trim().toLowerCase() === 'dumb') return false;
-  return true;
 }
 
 export function resolveInspectorWidth(explicitWidth?: number, stdoutColumns?: number): number {
@@ -370,7 +362,7 @@ export function renderStructuredInspectorLines(
   options: StructuredInspectorOptions = {},
 ): string[] {
   const env = options.env ?? process.env;
-  const useColor = options.color !== undefined ? options.color : shouldUseSnapshotColor(options.noColor ?? false, env);
+  const useColor = options.color !== undefined ? options.color : shouldUseTerminalColor(options.noColor ?? false, env);
   const palette = useColor ? ANSI_PALETTE : PLAIN_PALETTE;
   const cols = resolveInspectorWidth(options.width, process.stdout.columns);
   const maxCols = Math.max(MIN_INSPECTOR_COLS, cols - 1);

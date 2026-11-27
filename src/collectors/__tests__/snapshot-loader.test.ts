@@ -214,7 +214,7 @@ void describe('loadActivitySnapshot CLI loader', () => {
     assert.equal(existsSync(path.join(roCliHome, 'cache')), false);
     assert.deepEqual(readdirSync(roCliHome).sort(), beforeRoRoot);
     assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_telemetry_${convId}.json`)), true);
-    assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_activity_snapshot_${convId}.json`)), true);
+    assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`)), true);
   });
 
   void it('merges live envelope subagents with historical done transcript agents and resumes cache on append', () => {

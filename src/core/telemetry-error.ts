@@ -1,6 +1,30 @@
-import type { TurnPhase } from '../snapshot-types.ts';
+import type { HostAgentState, TurnPhase } from '../snapshot-types.ts';
 import type { ModelErrorReason, TailStepPhase } from '../types.ts';
-import { normalizeHostAgentState } from './quota-pace.ts';
+import { isPlainObject, nonEmptyStr } from './guards.ts';
+
+const VALID_HOST_AGENT_STATES: ReadonlySet<HostAgentState> = new Set([
+  'idle',
+  'initializing',
+  'working',
+  'tool_use',
+  'reviewing',
+  'authenticating',
+  'error',
+]);
+
+export function normalizeHostAgentState(raw: unknown): HostAgentState | null {
+  let candidate: string | undefined;
+  if (typeof raw === 'string') {
+    candidate = raw;
+  } else if (isPlainObject(raw)) {
+    candidate = nonEmptyStr(raw.state) ?? nonEmptyStr(raw.phase) ?? nonEmptyStr(raw.status);
+  }
+  const normalized = candidate?.trim().toLowerCase();
+  if (normalized === undefined || !VALID_HOST_AGENT_STATES.has(normalized as HostAgentState)) {
+    return null;
+  }
+  return normalized as HostAgentState;
+}
 
 const CANCELED_RE = /\b(?:context canceled|canceled|cancelled|aborted|user abort(?:ed)?)\b/i;
 const RATE_LIMIT_RE = /\b(?:429|resource_exhausted|rate[ _-]?limit|too many requests|quota exceeded|quota)\b/i;

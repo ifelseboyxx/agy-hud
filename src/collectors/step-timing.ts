@@ -1,14 +1,15 @@
 import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { telemetryCacheFileName } from '../core/cache-registry.ts';
+import { readRegularJsonObjectSync } from '../core/fs-utils.ts';
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
-import { readRegularJsonObjectSync } from '../fs-utils.ts';
+import { resolveCliSubdirFile, sanitizeSessionId } from '../core/safe-path.ts';
 import type { ModelErrorReason, TailStepPhase } from '../types.ts';
 import { MAX_ACTIVITY_CACHE_BYTES } from './activity-cache.ts';
 import { parseStepTimestampsProto } from './proto-steps.ts';
 import { MAX_PROTO_BLOB_BYTES } from './proto-wire.ts';
 import { parseGenMetadataBlob } from './proto.ts';
-import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
 import { readSqliteVersionTag, withReadonlyDb } from './sqlite-readonly.ts';
 
 const STEP_TYPE_PLANNER = 15;
@@ -219,7 +220,7 @@ export function readSessionTailPhaseFallback(
 
   const versionTag = readSqliteVersionTag(dbPath);
   if (versionTag.length === 0) return none;
-  const cacheFile = resolveCliSubdirFile(cacheCliHome, 'cache', `agy_hud_telemetry_${safeId}.json`);
+  const cacheFile = resolveCliSubdirFile(cacheCliHome, 'cache', telemetryCacheFileName(safeId));
   if (cacheFile !== null) {
     const cached = readCachedTailPhase(cacheFile, versionTag);
     if (cached !== null) return cached;

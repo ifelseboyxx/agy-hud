@@ -9,14 +9,10 @@ import { FileLockTimeoutError, withFileLocksSync } from '../../core/file-lock.ts
 import { buildPresetConfig } from '../../core/hud-config.ts';
 import { runHudRender } from '../../hud-runner.ts';
 import { resolveSession } from '../session-index.ts';
-import {
-  parseEnvelopeRecord,
-  readActivePidMarker,
-  readSnapshotEnvelope,
-  resolveLivePidOwners,
-  sweepStaleSnapshotFiles,
-  writeSnapshotEnvelope,
-} from '../snapshot-envelope.ts';
+import { sweepStaleSnapshotFiles } from '../snapshot-cache-sweep.ts';
+import { parseEnvelopeRecord } from '../snapshot-envelope-codec.ts';
+import { readSnapshotEnvelope, writeSnapshotEnvelope } from '../snapshot-envelope.ts';
+import { readActivePidMarker, resolveLivePidOwners } from '../snapshot-pid-marker.ts';
 
 void describe('snapshot envelope ownership and bounds', () => {
   let tmpRoot = '';

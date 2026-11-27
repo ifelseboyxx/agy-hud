@@ -28,6 +28,26 @@ function isBidiFormatControl(code: number): boolean {
   );
 }
 
+export function hasAsciiControlChars(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function hasC0C1ControlChars(text: string): boolean {
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function hasTerminalControlChars(text: string): boolean {
   for (let i = 0; i < text.length; i += 1) {
     const code = text.charCodeAt(i);
@@ -42,6 +62,16 @@ export function hasTerminalControlChars(text: string): boolean {
     }
   }
   return false;
+}
+
+export function isColorDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.NO_COLOR !== undefined) return true;
+  if (env.TERM?.trim().toLowerCase() === 'dumb') return true;
+  return false;
+}
+
+export function shouldUseTerminalColor(noColorFlag: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
+  return !noColorFlag && !isColorDisabledByEnv(env);
 }
 
 export function sanitizeTerminalText(text: string): string {

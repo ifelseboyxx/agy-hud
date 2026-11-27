@@ -11,7 +11,7 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
-import { lstatIfPresentSync, readFdRange } from '../fs-utils.ts';
+import { lstatIfPresentSync, readFdRange } from '../core/fs-utils.ts';
 
 const SQLITE_TIMEOUT_MS = 50;
 const WAL_COPY_MAX_ATTEMPTS = 4;

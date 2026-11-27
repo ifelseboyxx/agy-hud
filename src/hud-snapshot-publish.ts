@@ -6,21 +6,19 @@
  */
 import { createHash } from 'node:crypto';
 
-import { aggregateActivityTools, mergeActivityAgents } from './collectors/activity-aggregate.ts';
+import { SNAPSHOT_TTL_MS, sweepStaleSnapshotFiles } from './collectors/snapshot-cache-sweep.ts';
 import {
   isEnvelopeWriteSuperseded,
-  readActivePidMarker,
   readSnapshotEnvelope,
   resolveSnapshotLockPlan,
   SNAPSHOT_HOT_PATH_LOCK_TIMEOUT_MS,
-  SNAPSHOT_TTL_MS,
-  sweepStaleSnapshotFiles,
   writeSnapshotEnvelope,
-  type ActivePidMarker,
 } from './collectors/snapshot-envelope.ts';
+import { readActivePidMarker, type ActivePidMarker } from './collectors/snapshot-pid-marker.ts';
 import { attachSubagentTelemetryRollups } from './collectors/subagent-rollup.ts';
+import { aggregateActivityTools, mergeActivityAgents } from './core/activity-aggregate.ts';
+import { snapshotMarkdownFileName } from './core/cache-registry.ts';
 import { withFileLocksSync } from './core/file-lock.ts';
-import { nonEmptyStr } from './core/guards.ts';
 import {
   captureEntrySnapshotSync,
   createWorkspaceRegularFileChecker,
@@ -29,12 +27,36 @@ import {
   restoreEntrySnapshotSync,
   touchRegularFileTimesSync,
   writeBufferAtomicSync,
-} from './fs-utils.ts';
-import { resolveMarkdownFileTargetLink } from './render/file-link.ts';
+} from './core/fs-utils.ts';
+import { nonEmptyStr } from './core/guards.ts';
+import { resolveCliSubdirFile, sanitizeSessionId } from './core/safe-path.ts';
+import { resolveMarkdownFileTargetLink, toSafeLocalFileUri } from './render/file-link.ts';
 import { renderSnapshotMarkdownWithDigest } from './render/osc8-markdown.ts';
-import type { SnapshotMarkdownTarget } from './render/osc8.ts';
 import type { SnapshotAgent, SnapshotEnvelope, SubagentAggregateRollup } from './snapshot-types.ts';
 import type { AgentsSummary, HudCostCurrency, SessionTelemetry, StatusLineData, TranscriptActivity } from './types.ts';
+
+const MAX_OSC8_DATA_BYTES = 4096;
+
+export interface SnapshotMarkdownTarget {
+  absPath: string;
+  uri: string;
+}
+
+export function resolveSnapshotMarkdownUri(cliHome: string, convId: string): SnapshotMarkdownTarget | null {
+  const safeId = sanitizeSessionId(convId);
+  if (safeId === null) {
+    return null;
+  }
+  const absPath = resolveCliSubdirFile(cliHome, 'cache', snapshotMarkdownFileName(safeId));
+  if (absPath === null) {
+    return null;
+  }
+  const uri = toSafeLocalFileUri(absPath, { maxBytes: MAX_OSC8_DATA_BYTES - 3 });
+  if (uri === null) {
+    return null;
+  }
+  return { absPath, uri };
+}
 
 export interface TranscriptStatFingerprint {
   ino: number;

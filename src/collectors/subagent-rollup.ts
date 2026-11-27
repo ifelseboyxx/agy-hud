@@ -1,12 +1,13 @@
 import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
+import { subagentsCacheFileName, telemetryCacheFileName } from '../core/cache-registry.ts';
+import { lstatIfPresentSync, readRegularJsonObjectSync, writeBoundedPrivateJsonCache } from '../core/fs-utils.ts';
 import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
+import { resolveCliSubdirFile, sanitizeSessionId } from '../core/safe-path.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { lstatIfPresentSync, readRegularJsonObjectSync, writeBoundedPrivateJsonCache } from '../fs-utils.ts';
 import type { SnapshotAgent, SubagentAggregateRollup, SubagentTelemetryRollup } from '../snapshot-types.ts';
 import type { SessionTelemetry } from '../types.ts';
-import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
 import { withReadonlyDb } from './sqlite-readonly.ts';
 import { loadSessionTelemetryFromRoot } from './telemetry.ts';
 
@@ -131,7 +132,7 @@ function readTranscriptChildLinks(dataRoot: string, parentConvId: string): Child
 function isSubagentTelemetrySettledInCache(cacheCliHome: string, childConvId: string): boolean {
   const safeChild = sanitizeSessionId(childConvId);
   if (safeChild === null) return false;
-  const telCachePath = resolveCliSubdirFile(cacheCliHome, 'cache', `agy_hud_telemetry_${safeChild}.json`);
+  const telCachePath = resolveCliSubdirFile(cacheCliHome, 'cache', telemetryCacheFileName(safeChild));
   if (telCachePath === null) return false;
   const parsed = readRegularJsonObjectSync(telCachePath, 16 * 1024 * 1024, { requirePrivateMode: true });
   return parsed !== null && parsed.v === 3 && parsed.settled === true;
@@ -140,7 +141,7 @@ function isSubagentTelemetrySettledInCache(cacheCliHome: string, childConvId: st
 function readCachedSubagentLinks(cacheCliHome: string, parentConvId: string): ChildLinkCandidate[] {
   const safeParent = sanitizeSessionId(parentConvId);
   if (safeParent === null) return [];
-  const cachePath = resolveCliSubdirFile(cacheCliHome, 'cache', `agy_hud_subagents_${safeParent}.json`);
+  const cachePath = resolveCliSubdirFile(cacheCliHome, 'cache', subagentsCacheFileName(safeParent));
   if (cachePath === null) return [];
   const parsed = readRegularJsonObjectSync(cachePath, MAX_SUBAGENT_LINKS_CACHE_BYTES, { requirePrivateMode: true });
   if (parsed === null || parsed.v !== SUBAGENT_LINKS_CACHE_VERSION || !Array.isArray(parsed.links)) return [];
@@ -169,7 +170,7 @@ function syncCachedSubagentLinks(
 ): void {
   const safeParent = sanitizeSessionId(parentConvId);
   if (safeParent === null) return;
-  const cachePath = resolveCliSubdirFile(cacheCliHome, 'cache', `agy_hud_subagents_${safeParent}.json`);
+  const cachePath = resolveCliSubdirFile(cacheCliHome, 'cache', subagentsCacheFileName(safeParent));
   if (cachePath === null) return;
   if (links.length === 0) {
     const st = lstatIfPresentSync(cachePath);

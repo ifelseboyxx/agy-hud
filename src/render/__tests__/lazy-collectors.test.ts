@@ -47,7 +47,7 @@ void describe('lazy collector skipping in renderHudLines', async () => {
     }
   });
 
-  await it('skips detectGitBranch when segments.git is false', () => {
+  await it('skips detectGitStatus when segments.git is false', () => {
     let gitCalls = 0;
     const cfg: HudConfig = {
       ...buildPresetConfig('zen'),
@@ -61,7 +61,7 @@ void describe('lazy collector skipping in renderHudLines', async () => {
       agentsSummary: { kind: 'agents', working: 0, waiting: 0, alive: 0, total: 0, entries: [] },
       todos: null,
       collectors: {
-        detectGitBranch: () => {
+        detectGitStatus: () => {
           gitCalls += 1;
           return { branch: 'should-not-run', dirty: false };
         },

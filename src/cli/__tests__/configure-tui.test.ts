@@ -6,9 +6,10 @@ import { stripAnsi } from '../../render/ansi.ts';
 import {
   buildConfigurePreviewLines,
   CONFIGURE_PRESET_DESCRIPTIONS,
+  getConfigureTier2Items,
   renderConfigureTuiFrame,
 } from '../configure-tui-render.ts';
-import { applyConfigureTuiKey, createConfigureTuiState, getConfigureTier2Items } from '../configure-tui.ts';
+import { applyConfigureTuiKey, createConfigureTuiState } from '../configure-tui.ts';
 
 void describe('configure TUI state machine', () => {
   void it('navigates Tier 1 presets with Up/Down while preserving maxAgentChips and osc8Links', () => {

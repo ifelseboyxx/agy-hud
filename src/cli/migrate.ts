@@ -7,14 +7,14 @@ import {
   getMcpConfigLockPath,
   withFileLocksSync,
 } from '../core/file-lock.ts';
-import { isPlainObject } from '../core/guards.ts';
-import { cloneHudConfig, hydrateHudConfig } from '../core/hud-config.ts';
-import { expandHome, resolveProfileRoots } from '../core/paths.ts';
 import {
   hasDanglingSymlinkInChainSync as hasDanglingSymlinkInChain,
   lstatIfPresentSync as lstatIfPresent,
   readJsonObjectSync as readJsonObject,
-} from '../fs-utils.ts';
+} from '../core/fs-utils.ts';
+import { isPlainObject, UNSAFE_OBJECT_KEYS as UNSAFE_KEYS } from '../core/guards.ts';
+import { cloneHudConfig, hydrateHudConfig } from '../core/hud-config.ts';
+import { expandHome, resolveProfileRoots } from '../core/paths.ts';
 import type {
   ExportedPluginEntry,
   ExportProfileOptions,
@@ -34,20 +34,7 @@ import {
   sanitizeRepoUrl,
   sanitizeSettingsTemplate,
   sanitizeStringValue,
-  UNSAFE_KEYS,
 } from './sanitize.ts';
-
-export {
-  commitPlannedOps,
-  type ExportedPluginEntry,
-  type ExportProfileOptions,
-  type ExportProfileResult,
-  type ImportMcpAction,
-  type ImportProfileOptions,
-  type ImportProfileResult,
-  type PlannedOp,
-  type PluginsManifest,
-};
 
 function extractRepoUrl(pluginJson: Record<string, unknown>): string | undefined {
   if (typeof pluginJson.repository === 'string') {

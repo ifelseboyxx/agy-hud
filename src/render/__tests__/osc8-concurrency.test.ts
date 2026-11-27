@@ -13,15 +13,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import {
-  readActivePidMarker,
-  readSnapshotEnvelope,
-  writeSnapshotEnvelope,
-} from '../../collectors/snapshot-envelope.ts';
+import { readSnapshotEnvelope, writeSnapshotEnvelope } from '../../collectors/snapshot-envelope.ts';
+import { readActivePidMarker } from '../../collectors/snapshot-pid-marker.ts';
 import { buildPresetConfig } from '../../core/hud-config.ts';
 import { runHudRender } from '../../hud-runner.ts';
-import { materializeSnapshotMarkdownIfNeeded } from '../../hud-snapshot-publish.ts';
-import { resolveSnapshotMarkdownUri } from '../osc8.ts';
+import { materializeSnapshotMarkdownIfNeeded, resolveSnapshotMarkdownUri } from '../../hud-snapshot-publish.ts';
 
 void describe('osc8 concurrency, TTL preservation, and required lock enforcement', () => {
   let tmpRoot = '';

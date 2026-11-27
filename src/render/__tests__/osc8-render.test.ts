@@ -19,9 +19,9 @@ import { fileURLToPath } from 'node:url';
 import { readSnapshotEnvelope } from '../../collectors/snapshot-envelope.ts';
 import { buildPresetConfig } from '../../core/hud-config.ts';
 import { runHudRender as renderHudLines } from '../../hud-runner.ts';
+import { resolveSnapshotMarkdownUri } from '../../hud-snapshot-publish.ts';
 import type { AgentsSummary, HudConfig, StatusLineData, TranscriptActivity } from '../../types.ts';
 import { GRAY, RESET, stripAnsi, visibleLen } from '../ansi.ts';
-import { resolveSnapshotMarkdownUri } from '../osc8.ts';
 
 const ESC = String.fromCharCode(0x1b);
 const LOCAL_ENV: NodeJS.ProcessEnv = { TERM: 'xterm-256color' };

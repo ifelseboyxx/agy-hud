@@ -4,10 +4,11 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
+import { lstatIfPresentSync, statIfPresentSync } from '../../core/fs-utils.ts';
+import { isSupportedNodeVersion, NODE_RANGE_LABEL } from '../../core/guards.ts';
 import { resolveCliHome } from '../../core/paths.ts';
-import { lstatIfPresentSync, statIfPresentSync } from '../../fs-utils.ts';
 import { PLUGIN_NAME, type InstallerOptions } from './args.ts';
-import { inspectStatusLineState, isSupportedNodeVersion, NODE_RANGE_LABEL } from './settings.ts';
+import { inspectStatusLineState } from './settings.ts';
 import { inspectCliShim, runCliShimSmoke } from './shim.ts';
 import { formatCliStorageLine, formatCliStorageNote, inspectCliStorageHealth } from './storage-check.ts';
 
@@ -29,7 +30,13 @@ export interface AgyValidateResult {
   output: string;
 }
 
-export interface DoctorRunOptions {
+export interface InstallerRuntimeContext {
+  readonly cliHome?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly stdout?: { write(chunk: string): boolean };
+}
+
+export interface DoctorRunOptions extends InstallerRuntimeContext {
   targetDir: string;
   quiet: boolean;
   packageRoot: string;
@@ -53,20 +60,35 @@ function tryRealpath(filePath: string): string {
   }
 }
 
-export function writeInstallerLine(line = ''): void {
-  process.stdout.write(`${line}\n`);
+export function writeInstallerLine(line = '', stdout?: { write(chunk: string): boolean }): void {
+  (stdout ?? process.stdout).write(`${line}\n`);
 }
 
-export function hasAgyCli(): boolean {
-  const res = spawnSync('agy', ['--version'], { stdio: 'ignore', timeout: AGY_PROBE_TIMEOUT_MS, windowsHide: true });
+export function hasAgyCli(env: NodeJS.ProcessEnv = process.env): boolean {
+  const res = spawnSync('agy', ['--version'], {
+    stdio: 'ignore',
+    timeout: AGY_PROBE_TIMEOUT_MS,
+    windowsHide: true,
+    env,
+  });
   return !res.error && res.status === 0;
 }
 
-export function toggleAgyPlugin(opts: InstallerOptions, action: 'enable' | 'disable', agyAvailable?: boolean): void {
-  if (opts.isProject || opts.isCustomTarget || opts.skipEnable || !(agyAvailable ?? hasAgyCli())) return;
-  const res = spawnSync('agy', ['plugin', action, PLUGIN_NAME], { stdio: 'ignore', timeout: AGY_COMMAND_TIMEOUT_MS });
+export function toggleAgyPlugin(
+  opts: InstallerOptions,
+  action: 'enable' | 'disable',
+  agyAvailable?: boolean,
+  runtime?: InstallerRuntimeContext,
+): void {
+  const env = runtime?.env ?? process.env;
+  if (opts.isProject || opts.isCustomTarget || opts.skipEnable || !(agyAvailable ?? hasAgyCli(env))) return;
+  const res = spawnSync('agy', ['plugin', action, PLUGIN_NAME], {
+    stdio: 'ignore',
+    timeout: AGY_COMMAND_TIMEOUT_MS,
+    env,
+  });
   if (action === 'enable' && !opts.quiet && (res.error || res.status !== 0)) {
-    writeInstallerLine(`Note: enable '${PLUGIN_NAME}' in Antigravity Customizations UI if needed.`);
+    writeInstallerLine(`Note: enable '${PLUGIN_NAME}' in Antigravity Customizations UI if needed.`, runtime?.stdout);
   }
 }
 
@@ -77,14 +99,19 @@ export interface HostPluginUninstallResult {
   readonly detail: string;
 }
 
-export function uninstallAgyPlugin(opts: InstallerOptions, agyAvailable?: boolean): HostPluginUninstallResult {
-  if (opts.isProject || opts.isCustomTarget || opts.skipEnable || !(agyAvailable ?? hasAgyCli())) {
+export function uninstallAgyPlugin(
+  opts: InstallerOptions,
+  agyAvailable?: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+): HostPluginUninstallResult {
+  if (opts.isProject || opts.isCustomTarget || opts.skipEnable || !(agyAvailable ?? hasAgyCli(env))) {
     return { attempted: false, ok: false, status: null, detail: '' };
   }
   const res = spawnSync('agy', ['plugin', 'uninstall', PLUGIN_NAME], {
     encoding: 'utf8',
     timeout: AGY_COMMAND_TIMEOUT_MS,
     windowsHide: true,
+    env,
   });
   const detail = res.error ? res.error.message : (res.stderr ?? '').trim() || (res.stdout ?? '').trim();
   return {
@@ -249,7 +276,8 @@ export function runDoctor(opts: DoctorRunOptions): { ok: boolean } {
     statIfPresentSync(hudPath)?.isFile() === true
       ? runHudStdinSmoke(hudPath, opts.packageRoot)
       : { ok: false, durationMs: 0, bytes: 0, detail: 'missing dist/hud.mjs' };
-  const cliHome = resolveCliHome();
+  const env = opts.env ?? process.env;
+  const cliHome = resolveCliHome(opts.cliHome, env);
   const slState = inspectStatusLineState(cliHome, resolvedTarget);
   const shimCheck = evaluateCliShimDoctor(
     opts.binDir,
@@ -259,41 +287,44 @@ export function runDoctor(opts: DoctorRunOptions): { ok: boolean } {
     opts.checkMalformedShim ?? false,
   );
   const agyValidate =
-    (opts.agyAvailable ?? hasAgyCli())
+    (opts.agyAvailable ?? hasAgyCli(env))
       ? runAgyPluginValidate(pluginBase, opts.packageRoot, AGY_COMMAND_TIMEOUT_MS)
       : null;
 
   const ok = sqliteOk && hudSmoke.ok && slState.valid && shimCheck.ok && (agyValidate === null || agyValidate.ok);
   if (!opts.quiet) {
+    const out = opts.stdout;
     const smokeDesc = hudSmoke.ok
       ? `OK (${hudSmoke.durationMs}ms, ${hudSmoke.bytes} bytes)`
       : `FAILED (${hudSmoke.detail})`;
-    writeInstallerLine('agy-hud doctor:');
+    writeInstallerLine('agy-hud doctor:', out);
     const baseSuffix = !targetExists
       ? ' (fallback to repo; not installed at target)'
       : isLinkInstall
         ? ` (Link Install -> ${tryRealpath(resolvedTarget)})`
         : '';
-    writeInstallerLine(`  - Plugin base  : ${pluginBase}${baseSuffix}`);
-    writeInstallerLine(`  - Node.js      : v${nodeVer} (OK)`);
-    writeInstallerLine(`  - node:sqlite  : ${sqliteOk ? 'OK' : 'FAILED'}`);
-    writeInstallerLine(`  - dist/hud.mjs : ${smokeDesc}`);
-    writeInstallerLine(`  - statusLine   : ${slState.state} (${slState.settingsPath})`);
-    writeInstallerLine(`  - CLI shim     : ${shimCheck.label}`);
+    writeInstallerLine(`  - Plugin base  : ${pluginBase}${baseSuffix}`, out);
+    writeInstallerLine(`  - Node.js      : v${nodeVer} (OK)`, out);
+    writeInstallerLine(`  - node:sqlite  : ${sqliteOk ? 'OK' : 'FAILED'}`, out);
+    writeInstallerLine(`  - dist/hud.mjs : ${smokeDesc}`, out);
+    writeInstallerLine(`  - statusLine   : ${slState.state} (${slState.settingsPath})`, out);
+    writeInstallerLine(`  - CLI shim     : ${shimCheck.label}`, out);
     const storageReport = inspectCliStorageHealth(cliHome, { sqliteOk });
-    writeInstallerLine(`  - CLI storage  : ${formatCliStorageLine(storageReport)}`);
+    writeInstallerLine(`  - CLI storage  : ${formatCliStorageLine(storageReport)}`, out);
     const storageNote = formatCliStorageNote(storageReport);
     if (storageNote !== null) {
-      writeInstallerLine(`  - Storage note : ${storageNote}`);
+      writeInstallerLine(`  - Storage note : ${storageNote}`, out);
     }
     if (agyValidate !== null) {
       writeInstallerLine(
         `  - agy validate : ${agyValidate.ok ? 'PASSED (--strict)' : `FAILED (${agyValidate.output})`}`,
+        out,
       );
     }
     if (isLinkInstall) {
       writeInstallerLine(
         '  - Link Install : to switch to zero-build Plugin Install, run `agy plugin uninstall agy-hud && agy plugin install https://github.com/ifelseboyxx/agy-hud`',
+        out,
       );
     }
   }

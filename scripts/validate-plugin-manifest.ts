@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { statIfPresentSync } from '../src/core/fs-utils.ts';
 import { isPlainObject } from '../src/core/guards.ts';
-import { statIfPresentSync } from '../src/fs-utils.ts';
 
 const EXPECTED_PLUGIN_SCHEMA = 'https://antigravity.google/schemas/v1/plugin.json';
 const ALLOWED_PLUGIN_KEYS = new Set([

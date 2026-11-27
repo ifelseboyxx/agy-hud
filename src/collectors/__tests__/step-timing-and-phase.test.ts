@@ -6,7 +6,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { formatRuntimeBadges } from '../../render/agents-render.ts';
-import { formatTelemetryDiagnostics, stripAnsi, visibleLen } from '../../render/ansi.ts';
+import { stripAnsi, visibleLen } from '../../render/ansi.ts';
+import { formatTelemetryDiagnostics } from '../../render/telemetry-format.ts';
 import { createEmptyStepTiming, updateStepTimingIncremental } from '../step-timing.ts';
 
 function encodeVarint(value: number): number[] {

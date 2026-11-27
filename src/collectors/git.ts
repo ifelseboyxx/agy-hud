@@ -4,15 +4,16 @@ import { closeSync, existsSync, fstatSync, openSync, readSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
+import { gitCacheFileName } from '../core/cache-registry.ts';
 import {
   DEFAULT_MAX_REGULAR_JSON_BYTES,
   readRegularJsonObjectSync,
   statIfPresentSync,
   writeBoundedPrivateJsonCache,
-} from '../fs-utils.ts';
+} from '../core/fs-utils.ts';
+import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
+import { resolveCliSubdirFile } from '../core/safe-path.ts';
 import type { GitStatusInfo, StatusLineVcs } from '../types.ts';
-import { resolveCliSubdirFile } from './safe-path.ts';
 
 export const GIT_CACHE_TTL_MS: number = 2_000;
 const GIT_CMD_TIMEOUT_MS = 150;
@@ -185,7 +186,7 @@ function statGitIndex(gitDir: string): { mtimeMs: number; size: number } {
 
 function resolveGitCachePath(cliHome: string, repoRoot: string): string | null {
   const hash = createHash('sha256').update(repoRoot).digest('hex').slice(0, 16);
-  return resolveCliSubdirFile(cliHome, 'cache', `agy_hud_git_${hash}.json`);
+  return resolveCliSubdirFile(cliHome, 'cache', gitCacheFileName(hash));
 }
 
 function parseNonNegInt(val: unknown): number {

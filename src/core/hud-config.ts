@@ -1,14 +1,32 @@
-import {
-  DEFAULT_HUD_CONFIG,
-  type HudConfig,
-  type HudCostCurrency,
-  type HudLineId,
-  type HudNarrowOverride,
-  type HudPreset,
-  type HudSegmentId,
-  type HudSegments,
+import type {
+  HudConfig,
+  HudCostCurrency,
+  HudLineId,
+  HudNarrowOverride,
+  HudPreset,
+  HudSegmentId,
+  HudSegments,
 } from '../types.ts';
 import { isFiniteNum, isPlainObject, UNSAFE_OBJECT_KEYS } from './guards.ts';
+
+export const DEFAULT_HUD_CONFIG: HudConfig = {
+  preset: 'full',
+  maxAgentChips: 8,
+  osc8Links: true,
+  costCurrency: 'usd',
+  usdToCnyRate: 7.25,
+  lines: ['mode', 'identity', 'usage', 'tools', 'skills', 'mcps', 'agents', 'todos'],
+  segments: {
+    model: true,
+    git: true,
+    duration: true,
+    badges: true,
+    cost: true,
+    perf: true,
+    context: true,
+    quota: true,
+  },
+};
 
 export const VALID_HUD_PRESETS: readonly HudPreset[] = ['zen', 'minimal', 'compact', 'swarm', 'full'];
 

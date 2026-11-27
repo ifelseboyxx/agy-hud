@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { PROC_CACHE_FILE, PROC_LOCK_FILE } from '../core/cache-registry.ts';
 import { isPidAlive, withFileLocksSync } from '../core/file-lock.ts';
+import { PRIVATE_FILE_MODE, readRegularJsonObjectSync, writeJsonAtomicSync } from '../core/fs-utils.ts';
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
-import { PRIVATE_FILE_MODE, readRegularJsonObjectSync, writeJsonAtomicSync } from '../fs-utils.ts';
-import { resolveCliSubdirFile } from './safe-path.ts';
+import { resolveCliSubdirFile } from '../core/safe-path.ts';
 
 const MAX_ANCESTOR_HOPS = 8;
 const PROC_CACHE_VERSION = 2;
@@ -421,7 +422,7 @@ export function detectAgyProcess(cliHome: string, options: DetectAgyProcessOptio
   const startPid = options.startPid ?? process.ppid;
   const checkAlive = options.isAlive ?? isPidAlive;
   const nowMs = options.nowMs ?? Date.now();
-  const cacheFile = resolveCliSubdirFile(cliHome, 'cache', 'agy_hud_proc.json');
+  const cacheFile = resolveCliSubdirFile(cliHome, 'cache', PROC_CACHE_FILE);
   const store = cacheFile !== null ? readProcCache(cacheFile) : emptyProcCache();
 
   const knownLiveAgyPid =
@@ -434,7 +435,7 @@ export function detectAgyProcess(cliHome: string, options: DetectAgyProcessOptio
   const cached = lookupProcCache(store, startPid, knownLiveAgyPid, checkAlive);
   if (cached !== null) return cached;
 
-  const lockFile = cacheFile !== null ? resolveCliSubdirFile(cliHome, 'cache', '.agy_hud_proc.lock') : null;
+  const lockFile = cacheFile !== null ? resolveCliSubdirFile(cliHome, 'cache', PROC_LOCK_FILE) : null;
   if (platform === 'win32') {
     if (cacheFile === null || lockFile === null) {
       return { agyPid: knownLiveAgyPid, bypass: false, cliMode: '' };

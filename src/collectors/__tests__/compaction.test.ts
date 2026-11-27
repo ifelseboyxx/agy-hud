@@ -5,10 +5,10 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { formatContextCapacity } from '../../render/ansi.ts';
+import { formatContextCapacity } from '../../render/telemetry-format.ts';
 import type { StatusLineData } from '../../types.ts';
-import { computeCompactedUsed, estimateCjkAwareTokens, isCompactionActive, parseKvStepIdx } from '../compaction.ts';
-import { parseGenMetadataBlob } from '../proto.ts';
+import { computeCompactedUsed, estimateCjkAwareTokens, isCompactionActive } from '../compaction.ts';
+import { parseGenMetadataBlob, parseKvStepIdx } from '../proto.ts';
 import { loadSessionTelemetry } from '../telemetry.ts';
 
 function encodeVarint(value: number): number[] {

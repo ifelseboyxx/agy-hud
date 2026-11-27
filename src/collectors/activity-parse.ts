@@ -1,10 +1,9 @@
 import { closeSync, openSync, readdirSync, readSync } from 'node:fs';
 import path from 'node:path';
 
-import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
-import { resolveSafeSkillFile, resolveTrustedCliDir } from './safe-path.ts';
+import { resolveSafeSkillFile, resolveTrustedCliDir } from '../core/safe-path.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 
-const MAX_TARGET_LEN = 20;
 const SKILL_HEAD_MAX_BYTES = 512;
 
 const SKILL_PATH_RE = /^(.*?\/skills\/([^/]+))\/(?:SKILL\.md$|references\/)/;
@@ -113,22 +112,6 @@ export function unwrapArg(val: unknown): string {
     return String(val);
   }
   return JSON.stringify(val);
-}
-
-export function shortenTarget(text: string, maxLen: number = MAX_TARGET_LEN): string {
-  let clean = sanitizeTerminalText(text).replaceAll('\\', '/').trim();
-  if (clean.length === 0) {
-    return '';
-  }
-  if (clean.includes('/')) {
-    const trimmed = clean.replace(/\/+$/, '');
-    const parts = trimmed.split('/');
-    const tail = parts[parts.length - 1];
-    if (tail !== undefined && tail.length > 0) {
-      clean = tail;
-    }
-  }
-  return clean.length <= maxLen ? clean : `${clean.slice(0, maxLen - 1)}…`;
 }
 
 function cleanMcpServerName(raw: string): string {

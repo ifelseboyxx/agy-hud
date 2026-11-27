@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { writeBoundedPrivateJsonCache } from '../../fs-utils.ts';
+import { writeBoundedPrivateJsonCache } from '../../core/fs-utils.ts';
 import type { SessionRecord } from '../../snapshot-types.ts';
 import { ACTIVITY_CACHE_SCHEMA_VERSION } from '../activity-cache.ts';
 import { loadTranscriptActivity } from '../activity.ts';
@@ -123,7 +123,7 @@ void describe('large (> 512 KiB) transcript with running suffix in-place rewrite
     assert.equal(existsSync(cachePath), false);
   });
 
-  void it('writes compact single-line JSON for snapshot transcript cache', () => {
+  void it('writes compact single-line JSON for unified v6 activity cache shared across HUD and snapshot', () => {
     const convId = 'act-snap-compact-json';
     const logsDir = path.join(cliHome, 'brain', convId, '.system_generated', 'logs');
     mkdirSync(logsDir, { recursive: true });
@@ -147,14 +147,20 @@ void describe('large (> 512 KiB) transcript with running suffix in-place rewrite
       ageLabel: '1s ago',
     };
     loadActivitySnapshot(session, { cacheCliHome: cliHome, nowMs: 1_700_000_001_000 });
-    const raw = readFileSync(path.join(cliHome, 'cache', `agy_hud_activity_snapshot_${convId}.json`), 'utf8');
+    const unifiedPath = path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
+    assert.equal(existsSync(path.join(cliHome, 'cache', `agy_hud_activity_snapshot_${convId}.json`)), false);
+    const raw = readFileSync(unifiedPath, 'utf8');
     assert.equal(raw.includes('\n'), false);
-    assert.equal((JSON.parse(raw) as { v: number }).v, 4);
+    assert.equal((JSON.parse(raw) as { v: number }).v, ACTIVITY_CACHE_SCHEMA_VERSION);
   });
 
-  void it('skips persisting snapshot cache payloads exceeding the byte budget', () => {
-    const cachePath = path.join(cliHome, 'cache', 'agy_hud_activity_snapshot_overbudget.json');
-    const wrote = writeBoundedPrivateJsonCache(cachePath, { v: 4, payload: 'x'.repeat(2048) }, 512);
+  void it('skips persisting cache payloads exceeding the byte budget', () => {
+    const cachePath = path.join(cliHome, 'cache', 'agy_hud_activity_overbudget_2.json');
+    const wrote = writeBoundedPrivateJsonCache(
+      cachePath,
+      { v: ACTIVITY_CACHE_SCHEMA_VERSION, payload: 'x'.repeat(2048) },
+      512,
+    );
     assert.equal(wrote, false);
     assert.equal(existsSync(cachePath), false);
   });

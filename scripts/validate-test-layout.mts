@@ -2,21 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isMainEntry } from '../src/core/paths.ts';
-import { walkFiles } from './lib/walk-files.mts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
+import { DEFAULT_SKIP_DIRS, walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP_DIRS = new Set([
-  'node_modules',
-  'dist',
-  '.git',
-  'coverage',
-  '.husky',
-  '.cache',
-  '.scratch',
-  '.agents',
-  '.workbench',
-]);
+const SKIP_DIRS = new Set([...DEFAULT_SKIP_DIRS, '.husky']);
 const TEST_FILE_RE = /\.test\.(?:mts|ts|mjs|cjs|js)$/;
 
 export function findMisplacedTests(projectRoot: string = root): string[] {

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { isSameOrDescendantPath } from '../core/paths.ts';
+import { hasC0C1ControlChars } from '../core/terminal-text.ts';
 
 const MAX_FILE_URI_BYTES = 4096;
 const SCHEME_PREFIX_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
@@ -20,13 +21,7 @@ function isUncPath(rawPath: string): boolean {
 }
 
 function hasUnsafeLinkChars(text: string): boolean {
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
-      return true;
-    }
-  }
-  return false;
+  return hasC0C1ControlChars(text);
 }
 
 function encodeMarkdownSafePathChars(segment: string): string {

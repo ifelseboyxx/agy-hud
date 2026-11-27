@@ -6,9 +6,9 @@
 import type { Hash } from 'node:crypto';
 import { closeSync, fstatSync, openSync } from 'node:fs';
 
+import { readFdRange } from '../core/fs-utils.ts';
 import { isFiniteNum, isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { readFdRange } from '../fs-utils.ts';
 import type { ActivityAgentEntry } from '../types.ts';
 import {
   extractToolTarget,

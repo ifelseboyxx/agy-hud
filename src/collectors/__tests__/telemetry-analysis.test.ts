@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { classifyModelErrorReason, formatErrorReasonShortCode } from '../../core/telemetry-error.ts';
-import type { GenMetadataRow } from '../proto.ts';
+import type { GenMetadataRow } from '../proto-wire.ts';
 import { computeEffectiveTps, evaluateSessionTelemetry } from '../telemetry-analysis.ts';
 
 function makeRow(overrides: Partial<GenMetadataRow> = {}): GenMetadataRow {

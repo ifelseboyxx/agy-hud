@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { DEFAULT_HUD_CONFIG, type GitStatusInfo, type StatusLineData } from '../../types.ts';
-import { fmtQuotaReset, stripAnsi } from '../ansi.ts';
-import { formatCostSegment, formatSessionCostText, formatSubagentCostText, resolveSessionCost } from '../cost.ts';
+import { resolveSessionCost } from '../../core/cost-utils.ts';
+import { DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
+import type { GitStatusInfo, StatusLineData } from '../../types.ts';
+import { stripAnsi } from '../ansi.ts';
+import { formatCostSegment, formatSessionCostText, formatSubagentCostText } from '../cost.ts';
 import { formatGitSegment } from '../git-render.ts';
 import { buildUsageLine } from '../modules.ts';
 import { formatCompactPrimaryQuotaTail, formatQuotaItem, formatRemainingQuotaPct } from '../quota.ts';
+import { fmtQuotaReset } from '../telemetry-format.ts';
 
 void describe('Option A quota formatting', () => {
   void it('formats compact day+hour reset durations accurately', () => {

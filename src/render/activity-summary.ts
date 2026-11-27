@@ -1,4 +1,4 @@
-import { aggregateCompletedTools } from '../collectors/activity-aggregate.ts';
+import { aggregateCompletedTools } from '../core/activity-aggregate.ts';
 import { isFiniteNum, selectNewestFirst } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { AgentsSummary, CompletedToolAggregate, HudLineId, TranscriptActivity } from '../types.ts';

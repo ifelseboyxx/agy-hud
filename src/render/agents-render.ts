@@ -1,6 +1,5 @@
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
-import { normalizeHostAgentState } from '../core/quota-pace.ts';
-import { formatErrorReasonShortCode } from '../core/telemetry-error.ts';
+import { formatErrorReasonShortCode, normalizeHostAgentState } from '../core/telemetry-error.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { AgentEntry, AgentsSummary, SessionTelemetry, StatusLineData } from '../types.ts';
 import {

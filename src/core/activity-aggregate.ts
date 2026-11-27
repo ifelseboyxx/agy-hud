@@ -1,5 +1,3 @@
-import { nonEmptyStr } from '../core/guards.ts';
-import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
 import type {
   SnapshotAgent,
   SnapshotCompletedTool,
@@ -14,12 +12,14 @@ import type {
   CompletedToolAggregate,
   TranscriptToolEntry,
 } from '../types.ts';
-import { shortenTarget } from './activity-parse.ts';
-import { cleanAgentLabel } from './agents.ts';
-import { formatRelativeAge } from './snapshot-envelope.ts';
-import { SNAPSHOT_TARGET_DISPLAY_LEN } from './snapshot-transcript.ts';
+import { formatRelativeAge, nonEmptyStr } from './guards.ts';
+import { sanitizeTerminalLabel, sanitizeTerminalText } from './terminal-text.ts';
+
+const MAX_TARGET_LEN = 20;
+export const SNAPSHOT_TARGET_DISPLAY_LEN: number = 34;
 
 const MAX_RECENT_TARGETS = 6;
+const MAX_AGENT_LABEL_LEN = 28;
 
 export interface AggregatableToolCall {
   name: string;
@@ -52,6 +52,58 @@ export interface AggregatedToolActivity {
 export interface MergedActivityAgents {
   kind: AgentsKind;
   entries: SnapshotAgent[];
+}
+
+export function shortenTarget(text: string, maxLen: number = MAX_TARGET_LEN): string {
+  let clean = sanitizeTerminalText(text).replaceAll('\\', '/').trim();
+  if (clean.length === 0) {
+    return '';
+  }
+  if (clean.includes('/')) {
+    const trimmed = clean.replace(/\/+$/, '');
+    const parts = trimmed.split('/');
+    const tail = parts[parts.length - 1];
+    if (tail !== undefined && tail.length > 0) {
+      clean = tail;
+    }
+  }
+  return clean.length <= maxLen ? clean : `${clean.slice(0, maxLen - 1)}…`;
+}
+
+export function cleanAgentLabel(rawName: unknown, rawRole: unknown, rawType: unknown = ''): string {
+  const strip = (val: unknown): string => {
+    if (typeof val !== 'string') {
+      return '';
+    }
+    const firstLine = val.trim().split(/\r?\n/, 1)[0] ?? '';
+    return sanitizeTerminalText(firstLine)
+      .trim()
+      .replace(/^[` ]+|[` ]+$/g, '');
+  };
+
+  const name = strip(rawName);
+  const role = strip(rawRole);
+  const agentType = strip(rawType);
+
+  let chosen: string;
+  if (role.length > 0 && role.length <= MAX_AGENT_LABEL_LEN) {
+    chosen = role;
+  } else if (name.length > 0 && name.length <= MAX_AGENT_LABEL_LEN) {
+    chosen = name;
+  } else if (role.length > 0) {
+    chosen = role;
+  } else if (name.length > 0) {
+    chosen = name;
+  } else if (agentType.length > 0) {
+    chosen = agentType;
+  } else {
+    chosen = 'subagent';
+  }
+
+  if (chosen.length > MAX_AGENT_LABEL_LEN) {
+    return `${chosen.slice(0, MAX_AGENT_LABEL_LEN - 1).trimEnd()}…`;
+  }
+  return chosen;
 }
 
 function resolveToolMcpPair(

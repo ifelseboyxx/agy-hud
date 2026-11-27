@@ -1,19 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 
+import { aggregateCompletedTools, shortenTarget } from '../core/activity-aggregate.ts';
 import { nonEmptyStr } from '../core/guards.ts';
+import { resolveCliSubdirFile, resolveConversationId, resolveSafeTranscriptFile } from '../core/safe-path.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { writeBoundedPrivateJsonCache } from '../fs-utils.ts';
 import type { StatusLineData, TodoSummary, TranscriptActivity, TranscriptToolEntry } from '../types.ts';
-import { aggregateCompletedTools } from './activity-aggregate.ts';
-import {
-  ACTIVITY_CACHE_SCHEMA_VERSION,
-  type ActivityCacheRecord,
-  MAX_ACTIVITY_CACHE_BYTES,
-  readActivityCache,
-} from './activity-cache.ts';
-import { listMcpServers, shortenTarget } from './activity-parse.ts';
-import { resolveCliSubdirFile, resolveConversationId, resolveSafeTranscriptFile } from './safe-path.ts';
-import { scanTranscriptWithCache, type ScannedToolCall } from './transcript-scanner.ts';
+import { loadCanonicalTranscriptActivity } from './activity-cache.ts';
+import { listMcpServers } from './activity-parse.ts';
+import type { ScannedToolCall } from './transcript-scanner.ts';
 
 const TASK_LINE_RE = /^\s*[-*]\s*\[([ xX/])\]\s+(.+)$/;
 
@@ -49,53 +43,26 @@ export function loadTranscriptActivity(cliHome: string, data: StatusLineData): T
     return null;
   }
 
-  const convId = resolveConversationId(data) ?? 'default';
-  const cacheFile = resolveCliSubdirFile(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
-  const cached = cacheFile !== null ? readActivityCache(cacheFile) : null;
-
-  const scanned = scanTranscriptWithCache<TranscriptToolEntry>({
+  const canonical = loadCanonicalTranscriptActivity({
     transcriptPath,
+    cacheCliHome: cliHome,
+    cacheId: resolveConversationId(data) ?? 'default',
     skillRootDir: cliHome,
     workspaceDir: nonEmptyStr(data.workspace?.current_dir) ?? nonEmptyStr(data.cwd),
     mcpServers: listMcpServers(cliHome),
-    seed:
-      cached !== null
-        ? {
-            meta: cached,
-            tools: cached.data.tools,
-            skills: cached.data.skills,
-            mcps: cached.data.mcps,
-            agents: cached.data.agents,
-            lastModel: '',
-          }
-        : null,
-    projectToolCall: projectHudToolCall,
   });
-  if (scanned === null) {
+  if (canonical === null) {
     return null;
   }
-  if (scanned.cacheHit && cached !== null) {
-    return cached.data;
-  }
 
-  const activity: TranscriptActivity = {
-    tools: scanned.tools,
-    skills: scanned.skills,
-    mcps: scanned.mcps,
-    agents: scanned.agents,
-    completedTools: aggregateCompletedTools(scanned.tools, scanned.skills.length > 0),
+  const tools = canonical.tools.map(projectHudToolCall);
+  return {
+    tools,
+    skills: canonical.skills,
+    mcps: canonical.mcps,
+    agents: canonical.agents,
+    completedTools: aggregateCompletedTools(tools, canonical.skills.length > 0),
   };
-
-  if (cacheFile !== null && scanned.cacheable) {
-    const nextRecord: ActivityCacheRecord = {
-      v: ACTIVITY_CACHE_SCHEMA_VERSION,
-      ...scanned.meta,
-      data: activity,
-    };
-    writeBoundedPrivateJsonCache(cacheFile, nextRecord, MAX_ACTIVITY_CACHE_BYTES);
-  }
-
-  return activity;
 }
 
 function parseTaskFileCounts(taskFile: string): { total: number; completed: number; current: string } | null {

@@ -5,8 +5,6 @@ import type { SnapshotCost } from '../snapshot-types.ts';
 import type { HudCostCurrency, StatusLineCost } from '../types.ts';
 import { BRIGHT_YELLOW, GRAY, RESET } from './ansi.ts';
 
-export { resolveSessionCost };
-
 export interface CostFormatOptions {
   readonly currency?: HudCostCurrency;
   readonly usdToCnyRate?: number;

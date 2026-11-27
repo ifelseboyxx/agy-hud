@@ -18,7 +18,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { runHudRender as renderHudLines } from '../../hud-runner.ts';
 import type { StatusLineData } from '../../types.ts';
-import { readSnapshotEnvelope, sweepStaleSnapshotFiles, writeSnapshotEnvelope } from '../snapshot-envelope.ts';
+import { sweepStaleSnapshotFiles } from '../snapshot-cache-sweep.ts';
+import { readSnapshotEnvelope, writeSnapshotEnvelope } from '../snapshot-envelope.ts';
 import { loadSessionTelemetryFromRoot } from '../telemetry.ts';
 
 function encodeVarint(value: number): number[] {

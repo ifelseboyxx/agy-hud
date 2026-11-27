@@ -1,5 +1,4 @@
-import { aggregateCompletedTools } from '../collectors/activity-aggregate.ts';
-import { shortenTarget } from '../collectors/activity-parse.ts';
+import { aggregateCompletedTools, shortenTarget } from '../core/activity-aggregate.ts';
 import { nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { CompletedToolAggregate, TodoSummary, TranscriptToolEntry } from '../types.ts';

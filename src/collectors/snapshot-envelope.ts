@@ -3,21 +3,23 @@
  * - Envelopes (`agy_hud_snapshot_<id>.json`, <= 512 KiB, 0o600) bridge CLI metadata (PID, title, cost) to snapshot commands.
  * - Monotonic `pidSwitchSeq` + `ActivePidMarker` disambiguate `/resume` switches within one `agy` PID and clock rollbacks.
  */
+import { snapshotEnvelopeFileName, snapshotLockFileName } from '../core/cache-registry.ts';
 import { resolveSessionCost } from '../core/cost-utils.ts';
 import { withFileLocksSync } from '../core/file-lock.ts';
-import { formatRelativeAge, isFiniteNum, nonEmptyStr } from '../core/guards.ts';
-import { normalizeHostAgentState, sanitizeQuotaGroup } from '../core/quota-pace.ts';
-import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import {
   PRIVATE_FILE_MODE,
   readRegularJsonObjectSync,
   writeBufferAtomicSync,
   writeJsonAtomicSync,
-} from '../fs-utils.ts';
+} from '../core/fs-utils.ts';
+import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
+import { sanitizeQuotaGroup } from '../core/quota-pace.ts';
+import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from '../core/safe-path.ts';
+import { normalizeHostAgentState } from '../core/telemetry-error.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { SessionRecord, SnapshotEnvelope } from '../snapshot-types.ts';
 import type { StatusLineData } from '../types.ts';
-import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
-import { SNAPSHOT_TTL_MS, sweepStaleSnapshotFiles } from './snapshot-cache-sweep.ts';
+import { sweepStaleSnapshotFiles } from './snapshot-cache-sweep.ts';
 import {
   ENVELOPE_VERSION,
   fitEnvelopeToByteBudget,
@@ -37,22 +39,13 @@ import {
   type ActivePidMarker,
 } from './snapshot-pid-marker.ts';
 
-export {
-  readActivePidMarker,
-  resolveLivePidOwners,
-  type ActivePidMarker,
-  type LivePidCandidate,
-} from './snapshot-pid-marker.ts';
-
-export { parseEnvelopeRecord, SNAPSHOT_TTL_MS, sweepStaleSnapshotFiles };
-
 const ENVELOPE_HEARTBEAT_INTERVAL_MS: number = 30_000;
 export const SNAPSHOT_HOT_PATH_LOCK_TIMEOUT_MS: number = 30;
 
 function resolveSnapshotLockPath(cliHome: string, convId: string): string | null {
   const safeId = sanitizeSessionId(convId);
   if (safeId === null) return null;
-  return resolveCliSubdirFile(cliHome, 'cache', `.agy_hud_snapshot_${safeId}.lock`);
+  return resolveCliSubdirFile(cliHome, 'cache', snapshotLockFileName(safeId));
 }
 
 export interface SnapshotLockPlan {
@@ -90,8 +83,6 @@ export interface WriteSnapshotEnvelopeOptions {
   rejectSuperseded?: boolean;
 }
 
-export { formatRelativeAge };
-
 export function isExitedCliProcess(envPid: number | null, livePid: number | null): boolean {
   return envPid !== null && livePid === null;
 }
@@ -103,7 +94,7 @@ export function isExitedCliSession(session: Pick<SessionRecord, 'envelope' | 'li
 export function readSnapshotEnvelope(cliHome: string, convId: string): SnapshotEnvelope | null {
   const safeId = sanitizeSessionId(convId);
   if (safeId === null) return null;
-  const filePath = resolveCliSubdirFile(cliHome, 'cache', `agy_hud_snapshot_${safeId}.json`);
+  const filePath = resolveCliSubdirFile(cliHome, 'cache', snapshotEnvelopeFileName(safeId));
   if (filePath === null) return null;
   const raw = readRegularJsonObjectSync(filePath);
   return raw !== null ? parseEnvelopeRecord(raw) : null;
@@ -199,7 +190,7 @@ export function writeSnapshotEnvelope(
 ): SnapshotEnvelope | null {
   const convId = resolveConversationId(data);
   if (convId === null) return null;
-  const filePath = resolveCliSubdirFile(cliHome, 'cache', `agy_hud_snapshot_${convId}.json`);
+  const filePath = resolveCliSubdirFile(cliHome, 'cache', snapshotEnvelopeFileName(convId));
   if (filePath === null) return null;
 
   const lockPlan = resolveSnapshotLockPlan(cliHome, convId, agyPid, options);

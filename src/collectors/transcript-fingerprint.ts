@@ -1,7 +1,7 @@
 import { createHash, type Hash } from 'node:crypto';
 import { readSync } from 'node:fs';
 
-import { readFdRange } from '../fs-utils.ts';
+import { readFdRange } from '../core/fs-utils.ts';
 
 const HASH_CHUNK_BYTES = 65_536;
 export const FULL_HASH_MAX_BYTES: number = 512 * 1024;

@@ -132,7 +132,7 @@ void describe('narrow split-pane overrides and cost config', () => {
     assert.throws(() => sanitizeHudConfigTemplate({ usdToCnyRate: -5 }), /Invalid 'usdToCnyRate'/);
     assert.throws(() => sanitizeHudConfigTemplate({ narrow: 'bad' }), /Invalid 'narrow'/);
     assert.throws(() => sanitizeHudConfigTemplate({ narrow: { lines: ['identty'] } }), /Invalid line ID/);
-    assert.throws(() => sanitizeHudConfigTemplate({ narrow: { segments: { bogus: false } } }), /Invalid segment ID/);
+    assert.throws(() => sanitizeHudConfigTemplate({ narrow: { segments: { bogus: false } } }), /Unknown segment ID/);
   });
 
   void it('skips telemetry, activity, and agent collectors when narrow.lines hides their host rows', () => {

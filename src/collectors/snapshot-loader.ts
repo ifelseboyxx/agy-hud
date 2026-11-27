@@ -1,14 +1,18 @@
+import {
+  aggregateActivityTools,
+  mergeActivityAgents,
+  SNAPSHOT_TARGET_DISPLAY_LEN,
+} from '../core/activity-aggregate.ts';
 import { nonEmptyStr } from '../core/guards.ts';
 import { resolveSnapshotQuotaBuckets } from '../core/quota-pace.ts';
 import { resolveTurnPhase } from '../core/telemetry-error.ts';
 import type { ActivitySnapshot, SessionRecord, SiblingSessionHint, SnapshotResolutionTier } from '../snapshot-types.ts';
 import type { StatusLineData } from '../types.ts';
-import { aggregateActivityTools, mergeActivityAgents } from './activity-aggregate.ts';
 import { loadTodos } from './activity.ts';
 import { collectAgentsSummary } from './agents.ts';
 import { readCliFallbackModel, readCliSettings } from './settings.ts';
 import { isExitedCliSession } from './snapshot-envelope.ts';
-import { loadSnapshotTranscript, SNAPSHOT_TARGET_DISPLAY_LEN } from './snapshot-transcript.ts';
+import { loadSnapshotTranscript } from './snapshot-transcript.ts';
 import { attachSubagentTelemetryRollups } from './subagent-rollup.ts';
 import { loadSessionTelemetryFromRoot } from './telemetry.ts';
 

@@ -114,7 +114,10 @@ void describe('agy-hud snapshot CLI', () => {
   });
 
   void it('rejects unknown filters and missing -s option value', () => {
-    assert.throws(() => parseSnapshotArgs(['bogus-filter']), /Unknown snapshot filter/);
+    assert.throws(
+      () => parseSnapshotArgs(['bogus-filter']),
+      /Unknown snapshot filter "bogus-filter" \(expected: all \| context \(ctx\) \| tools \| skills \| mcps \| agents \| swarm\)/,
+    );
     assert.throws(() => parseSnapshotArgs(['-s']), /Missing value after -s/);
   });
 

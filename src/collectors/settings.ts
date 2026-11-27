@@ -1,19 +1,17 @@
 import path from 'node:path';
 
-import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
-import { mergeHudConfig } from '../core/hud-config.ts';
-import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import { SESSIONS_CACHE_FILE } from '../core/cache-registry.ts';
 import {
   DEFAULT_MAX_REGULAR_JSON_BYTES,
   readBoundedJsonObjectSync,
   readRegularJsonObjectSync,
   writeBoundedPrivateJsonCache,
-} from '../fs-utils.ts';
-import type { CliSettings, GitBranchInfo, HudConfig, StatusLineData, StatusLineVcs } from '../types.ts';
-import { readGitRepoHeadBranch } from './git.ts';
-import { resolveCliSubdirFile, sanitizeSessionId } from './safe-path.ts';
-
-export type { GitBranchInfo };
+} from '../core/fs-utils.ts';
+import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
+import { mergeHudConfig } from '../core/hud-config.ts';
+import { resolveCliSubdirFile, sanitizeSessionId } from '../core/safe-path.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import type { CliSettings, HudConfig, StatusLineData } from '../types.ts';
 
 const SESSION_TTL_SECONDS = 7 * 86400;
 
@@ -29,15 +27,6 @@ export function readCliFallbackModel(cliHome: string): string {
 export function readHudConfig(cliHome: string): HudConfig {
   const loaded = readBoundedJsonObjectSync(path.join(cliHome, 'hud-config.json'));
   return mergeHudConfig(loaded);
-}
-
-export function detectGitBranch(cwd: string | undefined, stdinVcs?: StatusLineVcs): GitBranchInfo {
-  const dirty = Boolean(stdinVcs?.dirty);
-  const stdinBranch = nonEmptyStr(stdinVcs?.branch);
-  if (stdinBranch !== undefined) {
-    return { branch: stdinBranch, dirty };
-  }
-  return { branch: readGitRepoHeadBranch(cwd), dirty };
 }
 
 export function getSessionElapsedSeconds(
@@ -67,7 +56,7 @@ export function getSessionElapsedSeconds(
     return null;
   }
 
-  const cacheFile = resolveCliSubdirFile(cliHome, 'cache', 'agy_hud_sessions.json');
+  const cacheFile = resolveCliSubdirFile(cliHome, 'cache', SESSIONS_CACHE_FILE);
   if (cacheFile === null) {
     return null;
   }

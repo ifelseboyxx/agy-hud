@@ -1,13 +1,13 @@
 import { readdirSync, realpathSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
-import { isSameOrDescendantPath } from '../../src/core/paths.ts';
 import {
   captureEntrySnapshotSync,
   type EntrySnapshotSync,
   lstatIfPresentSync,
   restoreEntrySnapshotSync,
-} from '../../src/fs-utils.ts';
+} from '../../src/core/fs-utils.ts';
+import { isSameOrDescendantPath } from '../../src/core/paths.ts';
 import { EXPECTED_DIST_FILES } from './dist-manifest.mts';
 
 export interface DistSnapshotState {

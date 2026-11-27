@@ -5,20 +5,16 @@ import path from 'node:path';
 import { parseSync, Visitor } from 'oxc-parser';
 
 import { getTargetLockPath, withFileLocksSync } from '../../src/core/file-lock.ts';
-import { getErrCode } from '../../src/core/guards.ts';
-import {
-  isSameOrDescendantPath,
-  realpathExistingPrefixSync,
-  toComparePath,
-  toPosixPath,
-} from '../../src/core/paths.ts';
 import {
   captureEntrySnapshotSync,
+  type EntrySnapshotSync,
   lstatIfPresentSync,
+  realpathExistingPrefixSync,
   restoreEntrySnapshotSync,
   writeBufferAtomicSync,
-  type EntrySnapshotSync,
-} from '../../src/fs-utils.ts';
+} from '../../src/core/fs-utils.ts';
+import { getErrCode } from '../../src/core/guards.ts';
+import { isSameOrDescendantPath, toComparePath, toPosixPath } from '../../src/core/paths.ts';
 import { EXPECTED_DIST_FILES } from './dist-manifest.mts';
 
 const OWNED_CHUNKS_DIR = 'chunks';

@@ -2,8 +2,14 @@ import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { realpathExistingPrefixSync } from '../../core/fs-utils.ts';
 import { nonEmptyStr } from '../../core/guards.ts';
-import { realpathExistingPrefixSync, SAFE_POSIX_SHELL_PATH_RE } from '../../core/paths.ts';
+import {
+  assertNoLineBreaks,
+  isSameOrDescendantPath,
+  quotePosixSh,
+  SAFE_POSIX_SHELL_PATH_RE,
+} from '../../core/paths.ts';
 import { isSameCanonicalFilePath } from '../../core/statusline-ownership.ts';
 
 export const SHIM_HEADER_VERSION = 'agy-hud-shim:v1';
@@ -83,8 +89,7 @@ function expandPlatformHome(
 function isContainedInDir(parentDir: string, candidateDir: string, pathApi: path.PlatformPath, ci: boolean): boolean {
   const normParent = ci ? pathApi.resolve(parentDir).toLowerCase() : pathApi.resolve(parentDir);
   const normCand = ci ? pathApi.resolve(candidateDir).toLowerCase() : pathApi.resolve(candidateDir);
-  const rel = pathApi.relative(normParent, normCand);
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(rel));
+  return isSameOrDescendantPath(normParent, normCand, pathApi);
 }
 
 export function resolveShimBinDir(
@@ -167,7 +172,7 @@ export function isDirOnPath(
 }
 
 export function formatPathHint(binDir: string, platform: NodeJS.Platform = process.platform): string {
-  assertNoNewlines('binDir', binDir);
+  assertNoLineBreaks('binDir', binDir);
   if (platform === 'win32') {
     return `Note: add "${binDir}" to PATH to invoke 'agy-hud' directly.`;
   }
@@ -176,17 +181,6 @@ export function formatPathHint(binDir: string, platform: NodeJS.Platform = proce
   }
   const quoted = quotePosixSh(binDir);
   return `Note: add ${quoted} to PATH to invoke 'agy-hud' directly (e.g., export PATH=${quoted}:"$PATH").`;
-}
-
-function assertNoNewlines(label: string, value: string): void {
-  if (value.includes('\n') || value.includes('\r') || value.includes('\0')) {
-    throw new Error(`Invalid ${label}: path must not contain newline or NUL characters.`);
-  }
-}
-
-export function quotePosixSh(value: string): string {
-  assertNoNewlines('shell path', value);
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function escapeCmdSetValue(value: string): string {
@@ -209,9 +203,9 @@ function resolvePluginDirFromCliPath(cliMjsPath: string, pathApi: path.PlatformP
 }
 
 export function formatShimScriptPosix(cliMjsPath: string, installNodePath: string, shimPath: string): string {
-  assertNoNewlines('cliMjsPath', cliMjsPath);
-  assertNoNewlines('installNodePath', installNodePath);
-  assertNoNewlines('shimPath', shimPath);
+  assertNoLineBreaks('cliMjsPath', cliMjsPath);
+  assertNoLineBreaks('installNodePath', installNodePath);
+  assertNoLineBreaks('shimPath', shimPath);
   const pathApi = isWindowsPathStyle(cliMjsPath) ? path.win32 : path.posix;
   const pluginDir = resolvePluginDirFromCliPath(cliMjsPath, pathApi);
   const missingMsg = `agy-hud plugin not found at ${pluginDir}. If uninstalled via 'agy plugin uninstall', remove this stale CLI shim: rm -- ${quotePosixSh(shimPath)}`;
@@ -233,9 +227,9 @@ export function formatShimScriptPosix(cliMjsPath: string, installNodePath: strin
 }
 
 export function formatShimScriptCmd(cliMjsPath: string, installNodePath: string, shimPath: string): string {
-  assertNoNewlines('cliMjsPath', cliMjsPath);
-  assertNoNewlines('installNodePath', installNodePath);
-  assertNoNewlines('shimPath', shimPath);
+  assertNoLineBreaks('cliMjsPath', cliMjsPath);
+  assertNoLineBreaks('installNodePath', installNodePath);
+  assertNoLineBreaks('shimPath', shimPath);
   const pathApi = isWindowsPathStyle(cliMjsPath) ? path.win32 : path.posix;
   const pluginDir = resolvePluginDirFromCliPath(cliMjsPath, pathApi);
   const missingMsg = `agy-hud plugin not found at ${pluginDir}. If uninstalled via 'agy plugin uninstall', remove this stale CLI shim: del "${shimPath}"`;

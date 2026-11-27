@@ -3,7 +3,6 @@ import { closeSync, constants as fsConstants, fstatSync, openSync, unlinkSync } 
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 
-import { getErrCode } from '../../core/guards.ts';
 import {
   captureEntrySnapshotSync,
   type EntrySnapshotSync,
@@ -13,32 +12,19 @@ import {
   restoreOwnedEntrySnapshotSync,
   statIfPresentSync,
   writeBufferAtomicSync,
-} from '../../fs-utils.ts';
+} from '../../core/fs-utils.ts';
+import { getErrCode } from '../../core/guards.ts';
 import { isSameStatIdentity, makeRollbackError, runRollbackSteps, type RollbackStep } from './fs-ops.ts';
 import {
   expectedCliMjsPath,
-  formatPathHint,
   formatShimScriptCmd,
   formatShimScriptPosix,
   isDirOnPath,
   parseShimHeader,
   resolveInstallNodePath,
-  resolveShimBinDir,
   resolveShimPaths,
-  SHIM_HEADER_VERSION,
   type ShimPaths,
 } from './shim-format.ts';
-
-export {
-  formatPathHint,
-  formatShimScriptCmd,
-  formatShimScriptPosix,
-  isDirOnPath,
-  resolveShimBinDir,
-  resolveShimPaths,
-  SHIM_HEADER_VERSION,
-  type ShimPaths,
-};
 
 const SHIM_FILE_MODE = 0o755;
 const EXEC_BIT_MASK = 0o111;

@@ -11,11 +11,11 @@ import {
   BRIGHT_WHITE,
   BRIGHT_YELLOW,
   colorForRemainingPct,
-  fmtQuotaReset,
   GRAY,
   RESET,
   visibleLen,
 } from './ansi.ts';
+import { fmtQuotaReset } from './telemetry-format.ts';
 
 const SECONDARY_QUOTA_MIN_WIDTH = 120;
 const FULL_QUOTA_PCT_THRESHOLD = 99.995;

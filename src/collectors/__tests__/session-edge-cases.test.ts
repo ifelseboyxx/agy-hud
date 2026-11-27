@@ -8,7 +8,8 @@ import { pathToFileURL } from 'node:url';
 
 import { discoverSessions } from '../session-discovery.ts';
 import { resolveSession } from '../session-index.ts';
-import { readActivePidMarker, writeSnapshotEnvelope } from '../snapshot-envelope.ts';
+import { writeSnapshotEnvelope } from '../snapshot-envelope.ts';
+import { readActivePidMarker } from '../snapshot-pid-marker.ts';
 
 function writeSummaryRow(
   rootDir: string,

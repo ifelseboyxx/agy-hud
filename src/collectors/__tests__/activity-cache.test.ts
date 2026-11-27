@@ -75,9 +75,9 @@ void describe('transcript activity v4 cache and target persistence', () => {
 
     const cachePath = path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
     const cachedJson = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>;
-    assert.equal(cachedJson.v, 5);
+    assert.equal(cachedJson.v, 6);
 
-    // Second call hits v4 disk cache and returns identical persisted fullTarget and completedTools.
+    // Second call hits v6 disk cache and returns identical persisted fullTarget and completedTools.
     const second = loadTranscriptActivity(cliHome, { conversation_id: convId });
     assert.deepEqual(second, first);
   });
@@ -104,12 +104,12 @@ void describe('transcript activity v4 cache and target persistence', () => {
     const cachePath = path.join(cliHome, 'cache', `agy_hud_activity_${convId}.json`);
     const v4Record = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>;
 
-    // Downgrade on-disk cache to v4 without sanitized-name schema upgrade.
+    // Downgrade on-disk cache to v5 without unified v6 canonical schema.
     writeFileSync(
       cachePath,
       JSON.stringify({
         ...v4Record,
-        v: 4,
+        v: 5,
         data: {
           tools: [{ name: 'read_file', disp: 'read_file', target: 'ansi.ts', running: false, isSkillRead: false }],
           skills: [],
@@ -125,7 +125,7 @@ void describe('transcript activity v4 cache and target persistence', () => {
     assert.equal(reloaded.tools[0]?.fullTarget, targetPath);
     assert.equal(reloaded.completedTools?.[0]?.fullTarget, targetPath);
     const upgraded = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>;
-    assert.equal(upgraded.v, 5);
+    assert.equal(upgraded.v, 6);
   });
 
   void it('falls back to rescanning when v4 cache has invalid fullTarget or completedTools types', () => {

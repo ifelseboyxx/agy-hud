@@ -14,8 +14,8 @@ import {
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 
-import { toComparePath } from '../../core/paths.ts';
-import { lstatIfPresentSync, readJsonObjectSync, statIfPresentSync } from '../../fs-utils.ts';
+import { lstatIfPresentSync, readJsonObjectSync, statIfPresentSync } from '../../core/fs-utils.ts';
+import { isStrictDescendantPath, toComparePath } from '../../core/paths.ts';
 
 const EXECUTABLE_FILE_MODE = 0o755;
 const RM_MAX_RETRIES = 3;
@@ -46,8 +46,7 @@ export function runRollbackSteps(steps: readonly RollbackStep[]): string[] {
 }
 
 function isStrictAncestorPath(ancestorPath: string, descendantPath: string): boolean {
-  const rel = path.relative(ancestorPath, descendantPath);
-  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+  return isStrictDescendantPath(ancestorPath, descendantPath);
 }
 
 export function assertRuntimeFilesPresent(srcRoot: string, runtimeFiles: readonly string[]): void {

@@ -2,8 +2,8 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isMainEntry } from '../src/core/fs-utils.ts';
 import { isPlainObject } from '../src/core/guards.ts';
-import { isMainEntry } from '../src/core/paths.ts';
 
 export interface AgyValidateFinding {
   readonly severity?: string;

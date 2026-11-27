@@ -8,7 +8,7 @@ import type {
   StatusLineData,
 } from '../types.ts';
 import { computeCompactedUsed, type CompactionCheckpoint } from './compaction.ts';
-import type { GenMetadataRow, TailGenExtras } from './proto.ts';
+import type { GenMetadataRow, TailGenExtras } from './proto-wire.ts';
 
 interface ModelGroupAcc {
   model: string;

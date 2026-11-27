@@ -2,13 +2,16 @@ import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, unlinkSync, wr
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 
-import { lstatIfPresentSync, makeTempSuffix } from '../fs-utils.ts';
+import {
+  CLI_SETTINGS_LOCK_FILE,
+  MCP_CONFIG_LOCK_FILE,
+  SHIM_BIN_LOCK_FILE,
+  targetLockFileName,
+} from './cache-registry.ts';
+import { lstatIfPresentSync, makeTempSuffix, realpathExistingPrefixSync } from './fs-utils.ts';
 import { getErrCode, isPlainObject } from './guards.ts';
-import { realpathExistingPrefixSync, toComparePath } from './paths.ts';
+import { toComparePath } from './paths.ts';
 
-const CLI_LOCK_NAME = '.agy-hud-settings.lock';
-const MCP_LOCK_NAME = '.agy-hud-mcp.lock';
-const SHIM_LOCK_NAME = '.agy-hud-shim.lock';
 const LOCK_POLL_MIN_MS = 25;
 const LOCK_POLL_JITTER_MS = 35;
 const SHORT_LOCK_TIMEOUT_THRESHOLD_MS = 100;
@@ -45,20 +48,19 @@ export function getTargetLockPath(targetDir: string): string {
   const parent = path.dirname(resolved);
   const canonicalParent = parent === resolved ? resolved : realpathExistingPrefixSync(parent);
   const baseName = path.basename(resolved);
-  const lockName = baseName.length > 0 ? `.${baseName}.agy-hud.lock` : '.agy-hud-target.lock';
-  return path.join(canonicalParent, lockName);
+  return path.join(canonicalParent, targetLockFileName(baseName));
 }
 
 export function getCliHomeLockPath(cliHome: string): string {
-  return path.join(realpathExistingPrefixSync(cliHome), CLI_LOCK_NAME);
+  return path.join(realpathExistingPrefixSync(cliHome), CLI_SETTINGS_LOCK_FILE);
 }
 
 export function getMcpConfigLockPath(geminiRoot: string): string {
-  return path.join(realpathExistingPrefixSync(geminiRoot), MCP_LOCK_NAME);
+  return path.join(realpathExistingPrefixSync(geminiRoot), MCP_CONFIG_LOCK_FILE);
 }
 
 export function getShimBinLockPath(binDir: string): string {
-  return path.join(realpathExistingPrefixSync(binDir), SHIM_LOCK_NAME);
+  return path.join(realpathExistingPrefixSync(binDir), SHIM_BIN_LOCK_FILE);
 }
 
 export function isPidAlive(pid: number): boolean {

@@ -1,14 +1,19 @@
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
 
+import {
+  pidLockFileName,
+  pidMarkerFileName,
+  SNAPSHOT_ENVELOPE_FILE_RE,
+  snapshotEnvelopeFileName,
+} from '../core/cache-registry.ts';
+import { readRegularJsonObjectSync } from '../core/fs-utils.ts';
 import { isFiniteNum } from '../core/guards.ts';
-import { readRegularJsonObjectSync } from '../fs-utils.ts';
+import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from '../core/safe-path.ts';
 import type { SnapshotEnvelope } from '../snapshot-types.ts';
-import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
 
 export const MAX_MARKER_FUTURE_SKEW_MS: number = 5 * 60 * 1000;
 export const MAX_PID_SWITCH_SEQ: number = 1_000_000_000;
-const SNAPSHOT_ENVELOPE_FILE_RE = /^agy_hud_snapshot_.+\.json$/;
 
 export interface ActivePidMarker {
   convId: string;
@@ -28,12 +33,12 @@ export interface PidSwitchContext {
 }
 
 export function resolvePidMarkerPath(cliHome: string, agyPid: number): string | null {
-  return resolveCliSubdirFile(cliHome, 'cache', `agy_hud_pid_${agyPid}.json`);
+  return resolveCliSubdirFile(cliHome, 'cache', pidMarkerFileName(agyPid));
 }
 
 export function resolvePidLockPath(cliHome: string, agyPid: number): string | null {
   if (!Number.isInteger(agyPid) || agyPid <= 1) return null;
-  return resolveCliSubdirFile(cliHome, 'cache', `.agy_hud_pid_${agyPid}.lock`);
+  return resolveCliSubdirFile(cliHome, 'cache', pidLockFileName(agyPid));
 }
 
 export function parsePidSwitchSeq(raw: unknown): number | null {
@@ -93,7 +98,7 @@ function scanOtherPidEnvelopes(
   } catch {
     return { maxOtherSeq: 0, hasOther: false };
   }
-  const excludeName = `agy_hud_snapshot_${excludeConvId}.json`;
+  const excludeName = snapshotEnvelopeFileName(excludeConvId);
   const maxAllowedHeartbeatMs = nowMs + MAX_MARKER_FUTURE_SKEW_MS;
   let maxOtherSeq = 0;
   let hasOther = false;

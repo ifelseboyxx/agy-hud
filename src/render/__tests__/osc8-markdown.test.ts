@@ -7,12 +7,11 @@ import { describe, it } from 'node:test';
 import { loadTranscriptActivity } from '../../collectors/activity.ts';
 import { collectAgentsSummary } from '../../collectors/agents.ts';
 import { loadActivitySnapshot } from '../../collectors/snapshot-loader.ts';
-import { materializeSnapshotMarkdownIfNeeded } from '../../hud-snapshot-publish.ts';
+import { materializeSnapshotMarkdownIfNeeded, resolveSnapshotMarkdownUri } from '../../hud-snapshot-publish.ts';
 import type { SessionRecord } from '../../snapshot-types.ts';
 import type { AgentsSummary, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
 import { stripAnsi } from '../ansi.ts';
 import { renderSnapshotMarkdown } from '../osc8-markdown.ts';
-import { resolveSnapshotMarkdownUri } from '../osc8.ts';
 
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
 

@@ -18,20 +18,22 @@ import { afterEach, describe, it } from 'node:test';
 
 import { runRollbackSteps } from '../fs-ops.ts';
 import {
-  assertShimWritablePreflight,
-  createShimRemovalRollbackSteps,
-  createShimRollbackSteps,
   formatPathHint,
   formatShimScriptCmd,
   formatShimScriptPosix,
-  inspectCliShim,
-  installCliShim,
   isDirOnPath,
-  removeOwnedCliShim,
   resolveShimBinDir,
   resolveShimPaths,
-  runCliShimSmoke,
   SHIM_HEADER_VERSION,
+} from '../shim-format.ts';
+import {
+  assertShimWritablePreflight,
+  createShimRemovalRollbackSteps,
+  createShimRollbackSteps,
+  inspectCliShim,
+  installCliShim,
+  removeOwnedCliShim,
+  runCliShimSmoke,
 } from '../shim.ts';
 
 const tempDirs: string[] = [];

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
-import { DEFAULT_HUD_CONFIG } from '../../types.ts';
+import { DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
 import { exportProfile, importProfile } from '../migrate.ts';
 
 const tempDirs: string[] = [];

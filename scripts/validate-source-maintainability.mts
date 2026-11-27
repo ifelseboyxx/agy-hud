@@ -2,12 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isMainEntry } from '../src/core/paths.ts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
 import { walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_ROOTS = ['src', 'scripts', 'tests'] as const;
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage', '.cache', '.scratch', '.agents', '.workbench']);
 const SOURCE_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
 
 const MAX_LINES = 500;
@@ -26,7 +25,7 @@ function collectSourceFiles(projectRoot: string): string[] {
     walkFiles(
       path.join(projectRoot, rel),
       projectRoot,
-      { skipDirs: SKIP_DIRS, includeFile: (_rel, name) => SOURCE_EXTS.has(path.extname(name)) },
+      { includeFile: (_rel, name) => SOURCE_EXTS.has(path.extname(name)) },
       files,
     );
   }

@@ -2,9 +2,9 @@ import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 
-import { nonEmptyStr, UNSAFE_OBJECT_KEYS } from '../core/guards.ts';
-import { expandHome } from '../core/paths.ts';
 import type { StatusLineData } from '../types.ts';
+import { nonEmptyStr, UNSAFE_OBJECT_KEYS } from './guards.ts';
+import { expandHome, isStrictDescendantPath } from './paths.ts';
 
 const SAFE_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -26,16 +26,6 @@ export function sanitizeSessionId(raw: string | undefined): string | null {
 
 export function resolveConversationId(data: StatusLineData): string | null {
   return sanitizeSessionId(nonEmptyStr(data.conversation_id) ?? nonEmptyStr(data.session_id));
-}
-
-function isDescendantOrSame(rootPath: string, targetPath: string): boolean {
-  const rel = path.relative(rootPath, targetPath);
-  return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
-}
-
-function isStrictDescendant(rootPath: string, targetPath: string): boolean {
-  const rel = path.relative(rootPath, targetPath);
-  return rel !== '' && isDescendantOrSame(rootPath, targetPath);
 }
 
 function lstatOutcome(p: string): LstatOutcome {
@@ -76,7 +66,7 @@ function isRegularFileAt(p: string): boolean {
 function checkExistingSegment(stat: Stats, curPath: string, realRoot: string, isLast: boolean): boolean {
   if (stat.isSymbolicLink()) {
     const realCur = realpathIfExists(curPath);
-    if (realCur === null || !isStrictDescendant(realRoot, realCur)) {
+    if (realCur === null || !isStrictDescendantPath(realRoot, realCur)) {
       return false;
     }
     return isLast ? isRegularFileAt(realCur) : isDirectoryAt(realCur);
@@ -85,11 +75,11 @@ function checkExistingSegment(stat: Stats, curPath: string, realRoot: string, is
 }
 
 function verifySegmentsInsideRealRoot(resolvedRoot: string, realRoot: string, resolvedCandidate: string): boolean {
-  const rel = path.relative(resolvedRoot, resolvedCandidate);
-  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+  if (!isStrictDescendantPath(resolvedRoot, resolvedCandidate)) {
     return false;
   }
 
+  const rel = path.relative(resolvedRoot, resolvedCandidate);
   const segments = rel.split(path.sep);
   let cur = resolvedRoot;
   for (let i = 0; i < segments.length; i += 1) {
@@ -105,7 +95,7 @@ function verifySegmentsInsideRealRoot(resolvedRoot: string, realRoot: string, re
   }
 
   const finalReal = realpathIfExists(resolvedCandidate);
-  return finalReal !== null && isStrictDescendant(realRoot, finalReal) && isRegularFileAt(finalReal);
+  return finalReal !== null && isStrictDescendantPath(realRoot, finalReal) && isRegularFileAt(finalReal);
 }
 
 function resolveCanonicalParent(parentDir: string): TrustedRoot | null {
@@ -145,7 +135,7 @@ function resolveTrustedSubdir(parentDir: string, subSegments: readonly string[])
   for (const seg of subSegments) {
     logicalCur = path.resolve(logicalCur, seg);
     expectedRealCur = path.join(expectedRealCur, seg);
-    if (!isStrictDescendant(base.logical, logicalCur)) {
+    if (!isStrictDescendantPath(base.logical, logicalCur)) {
       return null;
     }
     const outcome = lstatOutcome(logicalCur);

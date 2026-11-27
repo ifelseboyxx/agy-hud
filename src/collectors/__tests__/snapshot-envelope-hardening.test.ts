@@ -15,15 +15,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { DEFAULT_MAX_REGULAR_JSON_BYTES } from '../../fs-utils.ts';
-import { materializeSnapshotMarkdownIfNeeded } from '../../hud-snapshot-publish.ts';
-import { resolveSnapshotMarkdownUri } from '../../render/osc8.ts';
-import {
-  readActivePidMarker,
-  readSnapshotEnvelope,
-  sweepStaleSnapshotFiles,
-  writeSnapshotEnvelope,
-} from '../snapshot-envelope.ts';
+import { DEFAULT_MAX_REGULAR_JSON_BYTES } from '../../core/fs-utils.ts';
+import { materializeSnapshotMarkdownIfNeeded, resolveSnapshotMarkdownUri } from '../../hud-snapshot-publish.ts';
+import { sweepStaleSnapshotFiles } from '../snapshot-cache-sweep.ts';
+import { readSnapshotEnvelope, writeSnapshotEnvelope } from '../snapshot-envelope.ts';
+import { readActivePidMarker } from '../snapshot-pid-marker.ts';
 
 void describe('snapshot-envelope temp cleanup, rollback exemption, and size budget', () => {
   let tmpRoot = '';

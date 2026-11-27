@@ -16,7 +16,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
-import { isSameCommandPath } from '../core/statusline-ownership.ts';
 import {
   captureEntrySnapshotSync,
   makeTempSuffix,
@@ -27,6 +26,7 @@ import {
   touchRegularFileTimesSync,
   writeBufferAtomicSync,
 } from '../fs-utils.ts';
+import { isSameCommandPath } from '../statusline-ownership.ts';
 
 const tempDirs: string[] = [];
 

@@ -1,9 +1,4 @@
-import type {
-  HostAgentState,
-  QuotaPaceForecast,
-  ResolvedSnapshotQuotaBucket,
-  SnapshotQuotaBucket,
-} from '../snapshot-types.ts';
+import type { QuotaPaceForecast, ResolvedSnapshotQuotaBucket, SnapshotQuotaBucket } from '../snapshot-types.ts';
 import type { QuotaBucketGroup, QuotaBucketItem } from '../types.ts';
 import { isFiniteNum, isPlainObject, nonEmptyStr, parseIsoTimestampSec, UNSAFE_OBJECT_KEYS } from './guards.ts';
 import { sanitizeTerminalLabel } from './terminal-text.ts';
@@ -20,16 +15,6 @@ const SETTLING_MIN_USED_FRACTION = 0.1;
 const IMMEDIATE_WARN_USED_FRACTION = 0.5;
 const DEPLETING_PROJECTION_THRESHOLD = 1.05;
 const MAX_ENVELOPE_QUOTA_BUCKETS = 16;
-
-const VALID_HOST_AGENT_STATES: ReadonlySet<HostAgentState> = new Set([
-  'idle',
-  'initializing',
-  'working',
-  'tool_use',
-  'reviewing',
-  'authenticating',
-  'error',
-]);
 
 const KNOWN_QUOTA_LABELS: ReadonlyArray<readonly [string, string]> = [
   ['gemini-5h', 'Gemini 5h'],
@@ -66,20 +51,6 @@ function resolveQuotaWindowSpec(bucketKey: string): QuotaWindowSpec | null {
 
 function isSnapshotQuotaBucket(entry: QuotaEntryLike): entry is SnapshotQuotaBucket {
   return 'remainingFraction' in entry || 'resetTimeSec' in entry || 'resetTimeIso' in entry;
-}
-
-export function normalizeHostAgentState(raw: unknown): HostAgentState | null {
-  let candidate: string | undefined;
-  if (typeof raw === 'string') {
-    candidate = raw;
-  } else if (isPlainObject(raw)) {
-    candidate = nonEmptyStr(raw.state) ?? nonEmptyStr(raw.phase) ?? nonEmptyStr(raw.status);
-  }
-  const normalized = candidate?.trim().toLowerCase();
-  if (normalized === undefined || !VALID_HOST_AGENT_STATES.has(normalized as HostAgentState)) {
-    return null;
-  }
-  return normalized as HostAgentState;
 }
 
 export function resolveQuotaReset(entry: QuotaEntryLike, nowSec: number = Date.now() / 1000): QuotaResetInfo {

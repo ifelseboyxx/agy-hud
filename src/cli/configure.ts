@@ -2,29 +2,22 @@ import path from 'node:path';
 
 import { DEFAULT_CLI_LOCK_TIMEOUT_MS, withCliHomeLockSync } from '../core/file-lock.ts';
 import {
+  hasDanglingSymlinkInChainSync,
+  readJsonObjectSync,
+  readJsonObjectWithHashSync,
+  writeJsonAtomicSync,
+} from '../core/fs-utils.ts';
+import {
   buildPresetConfig,
   cloneHudConfig,
+  DEFAULT_HUD_CONFIG,
   hydrateHudConfig,
   isHudPreset,
   VALID_HUD_PRESETS,
 } from '../core/hud-config.ts';
 import { resolveCliHome } from '../core/paths.ts';
-import {
-  hasDanglingSymlinkInChainSync,
-  readJsonObjectSync,
-  readJsonObjectWithHashSync,
-  writeJsonAtomicSync,
-} from '../fs-utils.ts';
-import {
-  DEFAULT_HUD_CONFIG,
-  type ConfigureHudOptions,
-  type ConfigureHudResult,
-  type HudConfig,
-  type HudPreset,
-} from '../types.ts';
+import type { ConfigureHudOptions, ConfigureHudResult, HudConfig, HudPreset } from '../types.ts';
 import { applyConfigureMutations } from './configure-mutations.ts';
-
-export { type ConfigureHudOptions, type ConfigureHudResult };
 
 export interface ConfigureCliArgs {
   help: boolean;

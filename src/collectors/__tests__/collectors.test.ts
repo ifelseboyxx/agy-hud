@@ -5,18 +5,21 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
+import { cleanAgentLabel } from '../../core/activity-aggregate.ts';
+import { DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
 import { parseModelAndEffort, resolveOrchestratorDisplay } from '../../core/model-names.ts';
 import { resolveCliHome } from '../../core/paths.ts';
 import { resolveQuotaReset } from '../../core/quota-pace.ts';
 import { formatAgentsBadge, formatRuntimeBadges } from '../../render/agents-render.ts';
-import { formatContextCapacity, stripAnsi } from '../../render/ansi.ts';
+import { stripAnsi } from '../../render/ansi.ts';
+import { formatContextCapacity } from '../../render/telemetry-format.ts';
 import type { StatusLineData } from '../../types.ts';
-import { DEFAULT_HUD_CONFIG } from '../../types.ts';
 import { BUILTIN_SLASH_CMDS } from '../activity-parse.ts';
 import { loadTodos, loadTranscriptActivity } from '../activity.ts';
-import { cleanAgentLabel, collectAgentsSummary, syncSwarmFromStdin, transcriptTurnEnded } from '../agents.ts';
+import { collectAgentsSummary, syncSwarmFromStdin, transcriptTurnEnded } from '../agents.ts';
+import { detectGitStatus, readGitRepoHeadBranch } from '../git.ts';
 import { parseGenMetadataBlob } from '../proto.ts';
-import { detectGitBranch, getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../settings.ts';
+import { getSessionElapsedSeconds, readCliSettings, readHudConfig } from '../settings.ts';
 import { loadSessionTelemetry } from '../telemetry.ts';
 
 function encodeVarint(value: number): number[] {
@@ -129,17 +132,16 @@ void describe('collectors', () => {
     mkdirSync(path.join(repoDir, '.git'), { recursive: true });
     mkdirSync(nestedDir, { recursive: true });
     writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/feat/agy-hud\n', 'utf8');
-    assert.deepEqual(detectGitBranch(nestedDir), { branch: 'feat/agy-hud', dirty: false });
+    assert.equal(readGitRepoHeadBranch(nestedDir), 'feat/agy-hud');
   });
 
   void it('prefers stdin vcs metadata over git directory lookup', () => {
     const repoDir = path.join(tmpRoot, 'repo-vcs');
     mkdirSync(path.join(repoDir, '.git'), { recursive: true });
     writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/feat/agy-hud\n', 'utf8');
-    assert.deepEqual(detectGitBranch(repoDir, { branch: 'main', dirty: true }), {
-      branch: 'main',
-      dirty: true,
-    });
+    const status = detectGitStatus(cliHome, repoDir, { branch: 'main', dirty: true });
+    assert.equal(status.branch, 'main');
+    assert.equal(status.dirty, true);
   });
 
   void it('returns zero elapsed seconds when duration_ms is zero', () => {

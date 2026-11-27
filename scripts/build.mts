@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 import { build as viteBuild, type LogLevel } from 'vite';
 
+import { isMainEntry, makeTempSuffix, realpathExistingPrefixSync } from '../src/core/fs-utils.ts';
 import { getErrCode } from '../src/core/guards.ts';
-import { isMainEntry, isSameOrDescendantPath, realpathExistingPrefixSync, toComparePath } from '../src/core/paths.ts';
-import { makeTempSuffix } from '../src/fs-utils.ts';
+import { isSameOrDescendantPath, toComparePath } from '../src/core/paths.ts';
 import { createViteBuildConfig, HUD_ENTRY_INPUT, SHARED_ENTRY_INPUTS } from '../vite.config.ts';
 import {
   assertValidTargetDir,

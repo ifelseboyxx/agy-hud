@@ -4,23 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
-import { isMainEntry } from '../src/core/paths.ts';
-import { walkFiles } from './lib/walk-files.mts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
+import { DEFAULT_SKIP_DIRS, walkFiles } from './lib/walk-files.mts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_ROOTS = ['src', 'scripts', 'tests'] as const;
-const SKIP_DIRS = new Set([
-  'node_modules',
-  'vendor',
-  '.cache',
-  'dist',
-  '__pycache__',
-  '.git',
-  'coverage',
-  '.scratch',
-  '.agents',
-  '.workbench',
-]);
+const SKIP_DIRS = new Set([...DEFAULT_SKIP_DIRS, 'vendor', '__pycache__']);
 const SOURCE_EXTENSIONS = new Set(['.mts', '.ts', '.cts', '.tsx']);
 
 export interface TypecheckProject {

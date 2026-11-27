@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
-import { DEFAULT_HUD_CONFIG } from '../../types.ts';
+import { DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
 import { configureHud, parseConfigureArgs } from '../configure.ts';
 import { sanitizeHudConfigTemplate } from '../sanitize.ts';
 
@@ -26,18 +26,17 @@ afterEach(() => {
 });
 
 void describe('sanitizeHudConfigTemplate', async () => {
-  await it('whitelists canonical fields while dropping unknown keys', () => {
+  await it('whitelists canonical fields while dropping unknown top-level keys', () => {
     const sanitized = sanitizeHudConfigTemplate({
       preset: 'swarm',
       maxAgentChips: 6,
       osc8Links: false,
       autoWireStatusLine: true,
       secretNote: 'drop-me',
-      lines: ['usage', 'identity', 'unknown_cmd', 'usage', 'agents'],
+      lines: ['usage', 'identity', 'usage', 'agents'],
       segments: {
         cost: false,
         perf: false,
-        secretSegment: 'drop-me',
       },
     });
 
@@ -51,16 +50,17 @@ void describe('sanitizeHudConfigTemplate', async () => {
     assert.equal(segments.cost, false);
     assert.equal(segments.perf, false);
     assert.equal(segments.model, true);
-    assert.equal('secretSegment' in segments, false);
   });
 
-  await it('rejects invalid field types during sanitization', () => {
+  await it('rejects invalid field types and unknown line or segment IDs during sanitization', () => {
     assert.throws(() => sanitizeHudConfigTemplate({ preset: 'ultra' }), /Invalid 'preset'/);
     assert.throws(() => sanitizeHudConfigTemplate({ maxAgentChips: 25 }), /Invalid 'maxAgentChips'/);
     assert.throws(() => sanitizeHudConfigTemplate({ osc8Links: 'yes' }), /Invalid boolean 'osc8Links'/);
     assert.throws(() => sanitizeHudConfigTemplate({ lines: 'identity' }), /Invalid 'lines'/);
     assert.throws(() => sanitizeHudConfigTemplate({ lines: ['identity', { bad: true }] }), /Invalid line ID/);
+    assert.throws(() => sanitizeHudConfigTemplate({ lines: ['identity', 'unknown_cmd'] }), /Invalid line ID/);
     assert.throws(() => sanitizeHudConfigTemplate({ segments: ['cost'] }), /Invalid 'segments'/);
+    assert.throws(() => sanitizeHudConfigTemplate({ segments: { secretSegment: 'drop-me' } }), /Unknown segment ID/);
     assert.throws(() => sanitizeHudConfigTemplate({ segments: { cost: 'no' } }), /Invalid boolean 'segments\.cost'/);
     assert.throws(
       () => sanitizeHudConfigTemplate({ segments: { cost: { nestedSecret: 'leak' } } }),

@@ -17,9 +17,9 @@ import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { FileLockTimeoutError, withFileLocksSync } from '../core/file-lock.ts';
+import { FileLockTimeoutError, withFileLocksSync } from '../file-lock.ts';
 
-const FILE_LOCK_MODULE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'core', 'file-lock.ts');
+const FILE_LOCK_MODULE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'file-lock.ts');
 const tempDirs: string[] = [];
 
 function makeTempDir(prefix: string): string {

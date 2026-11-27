@@ -22,8 +22,6 @@ import {
   UTF8_DECODER,
 } from './proto-wire.ts';
 
-export { MAX_PROTO_BLOB_BYTES, type ContextBreakdownCounts, type GenMetadataRow, type TailGenExtras };
-
 const INT_STR_RE = /^-?\d+$/;
 
 export interface ParsedGenMetadataWithTail {

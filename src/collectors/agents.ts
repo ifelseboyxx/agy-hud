@@ -1,8 +1,10 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync } from 'node:fs';
 
+import { cleanAgentLabel } from '../core/activity-aggregate.ts';
+import { readRegularJsonObjectSync } from '../core/fs-utils.ts';
 import { isPlainObject, nonEmptyStr, parseIsoTimestampSec } from '../core/guards.ts';
-import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
-import { readRegularJsonObjectSync } from '../fs-utils.ts';
+import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from '../core/safe-path.ts';
+import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type {
   ActivityAgentEntry,
   AgentEntry,
@@ -12,10 +14,8 @@ import type {
   StatusLineData,
   SubagentStdinItem,
 } from '../types.ts';
-import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
 
 const TAIL_READ_BYTES = 16384;
-const MAX_AGENT_LABEL_LEN = 28;
 const MAX_SWARM_ROSTER_BYTES = 1024 * 1024;
 
 const WORKING_STATES: ReadonlySet<string> = new Set([
@@ -44,42 +44,6 @@ function classifyStatus(rawStatus: unknown): AgentState {
     return 'waiting';
   }
   return 'done';
-}
-
-export function cleanAgentLabel(rawName: unknown, rawRole: unknown, rawType: unknown = ''): string {
-  const strip = (val: unknown): string => {
-    if (typeof val !== 'string') {
-      return '';
-    }
-    const firstLine = val.trim().split(/\r?\n/, 1)[0] ?? '';
-    return sanitizeTerminalText(firstLine)
-      .trim()
-      .replace(/^[` ]+|[` ]+$/g, '');
-  };
-
-  const name = strip(rawName);
-  const role = strip(rawRole);
-  const agentType = strip(rawType);
-
-  let chosen: string;
-  if (role.length > 0 && role.length <= MAX_AGENT_LABEL_LEN) {
-    chosen = role;
-  } else if (name.length > 0 && name.length <= MAX_AGENT_LABEL_LEN) {
-    chosen = name;
-  } else if (role.length > 0) {
-    chosen = role;
-  } else if (name.length > 0) {
-    chosen = name;
-  } else if (agentType.length > 0) {
-    chosen = agentType;
-  } else {
-    chosen = 'subagent';
-  }
-
-  if (chosen.length > MAX_AGENT_LABEL_LEN) {
-    return `${chosen.slice(0, MAX_AGENT_LABEL_LEN - 1).trimEnd()}…`;
-  }
-  return chosen;
 }
 
 export function readTailLines(filePath: string, maxBytes: number = TAIL_READ_BYTES): string[] {

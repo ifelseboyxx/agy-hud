@@ -1,13 +1,14 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import { parseSnapshotCostRecord } from '../core/cost-utils.ts';
+import { DEFAULT_MAX_REGULAR_JSON_BYTES, serializeJsonBuffer } from '../core/fs-utils.ts';
 import { isFiniteNum, isPlainObject, nonEmptyStr } from '../core/guards.ts';
-import { normalizeHostAgentState, parseSnapshotQuotaRecord } from '../core/quota-pace.ts';
+import { parseSnapshotQuotaRecord } from '../core/quota-pace.ts';
+import { sanitizeSessionId } from '../core/safe-path.ts';
+import { normalizeHostAgentState } from '../core/telemetry-error.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { DEFAULT_MAX_REGULAR_JSON_BYTES, serializeJsonBuffer } from '../fs-utils.ts';
 import type { SnapshotEnvelope } from '../snapshot-types.ts';
 import type { SubagentStdinItem } from '../types.ts';
-import { sanitizeSessionId } from './safe-path.ts';
 import { parsePidSwitchSeq } from './snapshot-pid-marker.ts';
 
 export const ENVELOPE_VERSION = 2;

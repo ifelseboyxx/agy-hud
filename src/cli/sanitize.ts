@@ -1,9 +1,7 @@
 import { isPlainObject, UNSAFE_OBJECT_KEYS as UNSAFE_KEYS } from '../core/guards.ts';
-import { hydrateHudConfig, isHudLineId, isHudSegmentId } from '../core/hud-config.ts';
-import { DEFAULT_HUD_CONFIG } from '../types.ts';
+import { hydrateHudConfig } from '../core/hud-config.ts';
 
 const REDACTED_PLACEHOLDER = '<SET_IN_ENV>';
-export { UNSAFE_KEYS };
 
 const SECRET_KEY_RE = /token|key|secret|pass|pwd|auth|cred|cookie|session|bearer|private|cert|pat|sig|dsn|webhook/i;
 const SENSITIVE_QUERY_KEY_RE = /token|key|secret|pass|pwd|auth|sig|signature|cred|cookie|session/i;
@@ -42,8 +40,6 @@ const ALLOWED_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   'thinkingLevel',
   'effort',
 ]);
-
-const ALLOWED_HUD_KEYS: ReadonlySet<string> = new Set([...Object.keys(DEFAULT_HUD_CONFIG), 'narrow']);
 
 const ALLOWED_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
   'command',
@@ -239,90 +235,7 @@ export function sanitizeSettingsTemplate(raw: Record<string, unknown>): Record<s
 }
 
 export function sanitizeHudConfigTemplate(raw: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(raw)) {
-    if (UNSAFE_KEYS.has(key) || !ALLOWED_HUD_KEYS.has(key)) continue;
-    if (key === 'lines') {
-      if (!Array.isArray(val)) {
-        throw new Error("Invalid 'lines' in hud-config.json (expected array of line IDs)");
-      }
-      const deduped: string[] = [];
-      const seen = new Set<string>();
-      for (const item of val) {
-        if (typeof item !== 'string') {
-          throw new Error(`Invalid line ID '${String(item)}' in hud-config.json (expected string)`);
-        }
-        if (isHudLineId(item) && !seen.has(item)) {
-          seen.add(item);
-          deduped.push(item);
-        }
-      }
-      out.lines = deduped;
-      continue;
-    }
-    if (key === 'segments') {
-      if (!isPlainObject(val)) {
-        throw new Error("Invalid 'segments' in hud-config.json (expected object of segment booleans)");
-      }
-      const cleanSegments: Record<string, unknown> = {};
-      for (const [segKey, segVal] of Object.entries(val)) {
-        if (UNSAFE_KEYS.has(segKey) || !isHudSegmentId(segKey)) continue;
-        cleanSegments[segKey] = cloneValue(segVal);
-      }
-      out.segments = cleanSegments;
-      continue;
-    }
-    if (key === 'narrow') {
-      if (!isPlainObject(val)) {
-        throw new Error("Invalid 'narrow' in hud-config.json (expected object with optional 'lines' and 'segments')");
-      }
-      const cleanNarrow: Record<string, unknown> = {};
-      if (val.lines !== undefined) {
-        if (!Array.isArray(val.lines)) {
-          throw new Error("Invalid 'narrow.lines' in hud-config.json (expected array of line IDs)");
-        }
-        const deduped: string[] = [];
-        const seen = new Set<string>();
-        for (const item of val.lines) {
-          if (typeof item !== 'string') {
-            throw new Error(`Invalid line ID '${String(item)}' in hud-config.json 'narrow.lines' (expected string)`);
-          }
-          if (!isHudLineId(item)) {
-            throw new Error(`Invalid line ID '${item}' in hud-config.json 'narrow.lines'`);
-          }
-          if (!seen.has(item)) {
-            seen.add(item);
-            deduped.push(item);
-          }
-        }
-        cleanNarrow.lines = deduped;
-      }
-      if (val.segments !== undefined) {
-        if (!isPlainObject(val.segments)) {
-          throw new Error("Invalid 'narrow.segments' in hud-config.json (expected object of segment booleans)");
-        }
-        const cleanNarrowSegs: Record<string, unknown> = {};
-        for (const [segKey, segVal] of Object.entries(val.segments)) {
-          if (UNSAFE_KEYS.has(segKey) || !isHudSegmentId(segKey)) {
-            throw new Error(`Invalid segment ID '${segKey}' in hud-config.json 'narrow.segments'`);
-          }
-          if (typeof segVal !== 'boolean') {
-            throw new Error(`Invalid boolean 'narrow.segments.${segKey}' in hud-config.json`);
-          }
-          cleanNarrowSegs[segKey] = segVal;
-        }
-        if (Object.keys(cleanNarrowSegs).length > 0) {
-          cleanNarrow.segments = cleanNarrowSegs;
-        }
-      }
-      if (Object.keys(cleanNarrow).length > 0) {
-        out.narrow = cleanNarrow;
-      }
-      continue;
-    }
-    out[key] = cloneValue(val);
-  }
-  const hydrated = hydrateHudConfig(out);
+  const hydrated = hydrateHudConfig(raw);
   return {
     preset: hydrated.preset,
     maxAgentChips: hydrated.maxAgentChips,

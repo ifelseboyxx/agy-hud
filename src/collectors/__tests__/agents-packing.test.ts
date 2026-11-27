@@ -4,9 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
+import { DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
 import { formatAgentsSection } from '../../render/agents-render.ts';
 import { GRAY, RESET, stripAnsi, visibleLen } from '../../render/ansi.ts';
-import { type AgentEntry, type AgentsSummary, DEFAULT_HUD_CONFIG } from '../../types.ts';
+import type { AgentEntry, AgentsSummary } from '../../types.ts';
 import { collectAgentsSummary } from '../agents.ts';
 
 const ESC = String.fromCharCode(0x1b);

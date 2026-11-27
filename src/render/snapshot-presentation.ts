@@ -1,7 +1,7 @@
 import { isFiniteNum } from '../core/guards.ts';
 import type { SnapshotAgent, SubagentAggregateRollup, SubagentTelemetryRollup } from '../snapshot-types.ts';
 import type { AgentsKind, ContextBreakdownSummary, SessionTelemetry } from '../types.ts';
-import { fmtTokens } from './ansi.ts';
+import { fmtTokens } from './telemetry-format.ts';
 
 export type ContextCategoryKey = 'system' | 'rules' | 'skills' | 'tools' | 'mcp' | 'messages' | 'free';
 

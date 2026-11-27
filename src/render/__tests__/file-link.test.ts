@@ -4,10 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { createWorkspaceRegularFileChecker } from '../../fs-utils.ts';
+import { createWorkspaceRegularFileChecker } from '../../core/fs-utils.ts';
+import { resolveSnapshotMarkdownUri } from '../../hud-snapshot-publish.ts';
 import { resolveMarkdownFileTargetLink, toSafeLocalFileUri } from '../file-link.ts';
 import { renderSnapshotMarkdownWithDigest } from '../osc8-markdown.ts';
-import { resolveSnapshotMarkdownUri } from '../osc8.ts';
 
 void describe('hardened OSC 8 and Markdown local file:/// links', () => {
   let tmpRoot = '';

@@ -3,12 +3,12 @@ import { describe, it } from 'node:test';
 
 import {
   computeQuotaPace,
-  normalizeHostAgentState,
   parseSnapshotQuotaRecord,
   resolveQuotaReset,
   resolveSnapshotQuotaBuckets,
   sanitizeQuotaGroup,
 } from '../quota-pace.ts';
+import { normalizeHostAgentState } from '../telemetry-error.ts';
 
 void describe('clean-room Quota Pace forecasting and envelope quota sanitization', () => {
   const NOW = 1_780_000_000;

@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 import { Marked, type Renderer, type Tokens } from 'marked';
 
+import { isMainEntry } from '../src/core/fs-utils.ts';
 import { getErrCode, isFiniteNum, nonEmptyStr } from '../src/core/guards.ts';
-import { isMainEntry, isSameOrDescendantPath, toPosixPath } from '../src/core/paths.ts';
+import { isSameOrDescendantPath, toPosixPath } from '../src/core/paths.ts';
 
 const DEFAULT_ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const GITHUB_CSS_REL = path.join('node_modules', 'github-markdown-css', 'github-markdown.css');

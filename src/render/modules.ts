@@ -22,12 +22,8 @@ import {
   BRIGHT_RED,
   BRIGHT_WHITE,
   BRIGHT_YELLOW,
-  buildPerfSegments,
   colorForUsedPct,
   DEFAULT_TERM_WIDTH,
-  fitPerfCapsule,
-  fmtDuration,
-  formatContextCapacity,
   GRAY,
   renderBar,
   RESET,
@@ -38,9 +34,7 @@ import { type ColorLevel, detectColorLevel, formatModelSegment, isActiveShimmerS
 import { formatGitSegment } from './git-render.ts';
 import { type ActivityLineFormatOptions, resolveLineBudget } from './pack-line.ts';
 import { appendQuotaUsageItems, formatCompactPrimaryQuotaTail } from './quota.ts';
-
-export { formatActivitySummaryLine, type ActivitySummaryInput } from './activity-summary.ts';
-export { type FormatQuotaItemOptions } from './quota.ts';
+import { buildPerfSegments, fitPerfCapsule, fmtDuration, formatContextCapacity } from './telemetry-format.ts';
 
 const CTX_CAPACITY_MIN_WIDTH = 95;
 const ACTIVITY_LINE_SET: ReadonlySet<HudLineId> = new Set(['activity', 'tools', 'skills', 'mcps', 'agents']);

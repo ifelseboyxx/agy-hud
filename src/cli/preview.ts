@@ -1,12 +1,12 @@
 import path from 'node:path';
 
+import { readJsonObjectSync } from '../core/fs-utils.ts';
 import { buildPresetConfig, isHudPreset, parseHudConfig, VALID_HUD_PRESETS } from '../core/hud-config.ts';
 import { resolveCliHome } from '../core/paths.ts';
-import { readJsonObjectSync } from '../fs-utils.ts';
+import { shouldUseTerminalColor } from '../core/terminal-text.ts';
 import { DEFAULT_TERM_WIDTH, GRAY, RESET } from '../render/ansi.ts';
 import { renderHudPreviewLines } from '../render/preview-fixture.ts';
 import type { HudPreset } from '../types.ts';
-import { shouldUseSnapshotColor } from './snapshot-render.ts';
 
 const MIN_PREVIEW_COLS: number = 40;
 const MAX_PREVIEW_COLS: number = 400;
@@ -134,7 +134,7 @@ export function runPreviewCommand(argv: readonly string[], options: PreviewRunOp
   const cliHome = resolveCliHome(options.cliHome, env);
   const configPath = path.join(cliHome, 'hud-config.json');
   const activeConfig = parseHudConfig(readJsonObjectSync(configPath, true), true);
-  const useColor = shouldUseSnapshotColor(parsed.noColor, env);
+  const useColor = shouldUseTerminalColor(parsed.noColor, env);
 
   const fallbackCols =
     options.stdoutColumns !== undefined &&

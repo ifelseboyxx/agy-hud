@@ -1,14 +1,12 @@
 import { readdirSync, rmSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 
-import { resolveTrustedCliDir } from '../../collectors/safe-path.ts';
-import { TRANSIENT_HUD_CACHE_RE, TRANSIENT_HUD_TMP_RE } from '../../collectors/snapshot-cache-sweep.ts';
+import { HUD_CACHE_LOCK_RE, TRANSIENT_HUD_CACHE_RE, TRANSIENT_HUD_TMP_RE } from '../../core/cache-registry.ts';
 import { tryReclaimStaleLock } from '../../core/file-lock.ts';
+import { lstatIfPresentSync } from '../../core/fs-utils.ts';
 import { getErrCode } from '../../core/guards.ts';
-import { lstatIfPresentSync } from '../../fs-utils.ts';
+import { resolveTrustedCliDir } from '../../core/safe-path.ts';
 import { purgeOrphanedStatusLineBackup } from './settings.ts';
-
-const HUD_LOCK_RE = /^\.agy_hud_.+\.lock$/;
 
 export interface CleanupReceipt {
   readonly removedCaches: readonly string[];
@@ -38,7 +36,7 @@ export function sweepTransientHudCaches(cliHome: string): string[] {
   const removed: string[] = [];
   for (const name of entries.sort()) {
     const isCache = TRANSIENT_HUD_CACHE_RE.test(name) || TRANSIENT_HUD_TMP_RE.test(name);
-    const isLock = HUD_LOCK_RE.test(name);
+    const isLock = HUD_CACHE_LOCK_RE.test(name);
     if (!isCache && !isLock) continue;
     const fullPath = path.join(cacheDir, name);
     const st = lstatIfPresentSync(fullPath);

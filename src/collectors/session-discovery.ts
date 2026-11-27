@@ -6,27 +6,27 @@
 import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
+import { SNAPSHOT_ENVELOPE_FILE_RE } from '../core/cache-registry.ts';
 import { isPidAlive } from '../core/file-lock.ts';
-import { isPlainObject } from '../core/guards.ts';
-import { realpathExistingPrefixSync, resolveCliHome, toComparePath } from '../core/paths.ts';
-import { normalizeHostAgentState } from '../core/quota-pace.ts';
-import { resolveTurnPhase } from '../core/telemetry-error.ts';
-import { lstatIfPresentSync, readRegularJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
+import {
+  lstatIfPresentSync,
+  readRegularJsonObjectSync,
+  realpathExistingPrefixSync,
+  statIfPresentSync,
+} from '../core/fs-utils.ts';
+import { formatRelativeAge, isPlainObject } from '../core/guards.ts';
+import { resolveCliHome, toComparePath } from '../core/paths.ts';
+import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from '../core/safe-path.ts';
+import { normalizeHostAgentState, resolveTurnPhase } from '../core/telemetry-error.ts';
 import type { SessionRecord, SnapshotEnvelope } from '../snapshot-types.ts';
 import { RUNNING_STEP_STATUSES } from './activity-parse.ts';
 import { readTailLines } from './agents.ts';
-import { resolveCliSubdirFile, resolveTrustedCliDir, sanitizeSessionId } from './safe-path.ts';
 import { loadSummaryDbSnapshot } from './session-summary-db.ts';
-import {
-  formatRelativeAge,
-  isExitedCliProcess,
-  isExitedCliSession,
-  parseEnvelopeRecord,
-  resolveLivePidOwners,
-} from './snapshot-envelope.ts';
+import { parseEnvelopeRecord } from './snapshot-envelope-codec.ts';
+import { isExitedCliProcess, isExitedCliSession } from './snapshot-envelope.ts';
+import { resolveLivePidOwners } from './snapshot-pid-marker.ts';
 import { readSessionTailPhaseFallback } from './step-timing.ts';
 
-const ENVELOPE_FILE_RE = /^agy_hud_snapshot_(.+)\.json$/;
 const MAX_LIST_SQLITE_PHASE_PROBES = 8;
 const ACTIVE_SUBAGENT_STATUSES: ReadonlySet<string> = new Set([
   'running',
@@ -167,7 +167,7 @@ function scanSnapshotEnvelopes(
     return;
   }
   for (const name of entries) {
-    if (!ENVELOPE_FILE_RE.test(name)) continue;
+    if (!SNAPSHOT_ENVELOPE_FILE_RE.test(name)) continue;
     const fullPath = path.join(cacheDir, name);
     const raw = readRegularJsonObjectSync(fullPath);
     if (raw === null) continue;

@@ -1,5 +1,5 @@
+import { isMainEntry } from '../src/core/fs-utils.ts';
 import { isSupportedNodeVersion, NODE_RANGE_LABEL } from '../src/core/guards.ts';
-import { isMainEntry } from '../src/core/paths.ts';
 
 export function checkRuntimeEnvironment(): string[] {
   const errors: string[] = [];

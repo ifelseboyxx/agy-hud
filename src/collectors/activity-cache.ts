@@ -1,18 +1,42 @@
+import { activityCacheFileName } from '../core/cache-registry.ts';
+import { readRegularJsonObjectSync, writeBoundedPrivateJsonCache } from '../core/fs-utils.ts';
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
+import { resolveCliSubdirFile } from '../core/safe-path.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import { readRegularJsonObjectSync } from '../fs-utils.ts';
-import type { ActivityAgentEntry, CompletedToolAggregate, TranscriptActivity, TranscriptToolEntry } from '../types.ts';
-import { parseTranscriptCacheMeta, type TranscriptCacheMeta } from './transcript-scanner.ts';
+import type { ActivityAgentEntry } from '../types.ts';
+import {
+  parseTranscriptCacheMeta,
+  scanTranscriptWithCache,
+  type ScannedToolCall,
+  type TranscriptCacheMeta,
+} from './transcript-scanner.ts';
 
-export const ACTIVITY_CACHE_SCHEMA_VERSION: number = 5;
+export const ACTIVITY_CACHE_SCHEMA_VERSION: number = 6;
 export const MAX_ACTIVITY_CACHE_BYTES: number = 16 * 1024 * 1024;
+
+export interface CanonicalTranscriptActivity {
+  tools: ScannedToolCall[];
+  skills: string[];
+  mcps: string[];
+  agents: ActivityAgentEntry[];
+  lastModel: string;
+}
 
 export interface ActivityCacheRecord extends TranscriptCacheMeta {
   v: number;
-  data: TranscriptActivity;
+  data: CanonicalTranscriptActivity;
 }
 
-export function parseSanitizedStringList(value: unknown): string[] | null {
+export interface LoadCanonicalTranscriptOptions {
+  readonly transcriptPath: string;
+  readonly cacheCliHome: string;
+  readonly cacheId: string;
+  readonly skillRootDir: string;
+  readonly workspaceDir: string | undefined;
+  readonly mcpServers: readonly string[];
+}
+
+function parseSanitizedStringList(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   const items: string[] = [];
   for (const item of value) {
@@ -23,31 +47,6 @@ export function parseSanitizedStringList(value: unknown): string[] | null {
     }
   }
   return items;
-}
-
-function isTranscriptToolEntry(value: unknown): value is TranscriptToolEntry {
-  return (
-    isPlainObject(value) &&
-    typeof value.name === 'string' &&
-    typeof value.disp === 'string' &&
-    typeof value.target === 'string' &&
-    (value.fullTarget === undefined || typeof value.fullTarget === 'string') &&
-    typeof value.running === 'boolean' &&
-    typeof value.isSkillRead === 'boolean'
-  );
-}
-
-function isCompletedToolAggregate(value: unknown): value is CompletedToolAggregate {
-  if (
-    !isPlainObject(value) ||
-    typeof value.disp !== 'string' ||
-    !isFiniteNum(value.count) ||
-    typeof value.latestTarget !== 'string' ||
-    typeof value.fullTarget !== 'string'
-  ) {
-    return false;
-  }
-  return Array.isArray(value.recentTargets) && value.recentTargets.every((item) => typeof item === 'string');
 }
 
 function isActivityAgentEntry(value: unknown): value is ActivityAgentEntry {
@@ -61,7 +60,7 @@ function isActivityAgentEntry(value: unknown): value is ActivityAgentEntry {
   );
 }
 
-export function parseActivityAgents(value: unknown): ActivityAgentEntry[] | null {
+function parseActivityAgents(value: unknown): ActivityAgentEntry[] | null {
   if (!Array.isArray(value)) return null;
   const agents: ActivityAgentEntry[] = [];
   for (const entry of value) {
@@ -77,60 +76,131 @@ export function parseActivityAgents(value: unknown): ActivityAgentEntry[] | null
   return agents;
 }
 
-function parseTranscriptActivity(value: unknown): TranscriptActivity | null {
-  if (!isPlainObject(value) || !Array.isArray(value.tools)) {
+function parseScannedToolCall(value: unknown): ScannedToolCall | null {
+  if (
+    !isPlainObject(value) ||
+    typeof value.name !== 'string' ||
+    typeof value.disp !== 'string' ||
+    typeof value.fullTarget !== 'string' ||
+    typeof value.targetLinkable !== 'boolean' ||
+    typeof value.running !== 'boolean' ||
+    typeof value.isSkillRead !== 'boolean'
+  ) {
+    return null;
+  }
+  const mcpServer =
+    typeof value.mcpServer === 'string'
+      ? sanitizeTerminalLabel(value.mcpServer)
+      : value.mcpServer === null
+        ? null
+        : undefined;
+  const mcpSubtool =
+    typeof value.mcpSubtool === 'string'
+      ? sanitizeTerminalLabel(value.mcpSubtool)
+      : value.mcpSubtool === null
+        ? null
+        : undefined;
+  if (mcpServer === undefined || mcpSubtool === undefined) return null;
+  const cleanFullTarget = sanitizeTerminalLabel(value.fullTarget);
+  const targetLinkable = value.targetLinkable && cleanFullTarget.length > 0 && value.fullTarget === cleanFullTarget;
+  return {
+    name: sanitizeTerminalLabel(value.name),
+    disp: sanitizeTerminalLabel(value.disp),
+    fullTarget: cleanFullTarget,
+    targetLinkable,
+    running: value.running,
+    isSkillRead: value.isSkillRead,
+    mcpServer: mcpServer !== null && mcpServer.length > 0 ? mcpServer : null,
+    mcpSubtool: mcpSubtool !== null && mcpSubtool.length > 0 ? mcpSubtool : null,
+  };
+}
+
+function parseCanonicalTranscriptActivity(value: unknown): CanonicalTranscriptActivity | null {
+  if (!isPlainObject(value) || !Array.isArray(value.tools) || typeof value.lastModel !== 'string') {
     return null;
   }
   const skills = parseSanitizedStringList(value.skills);
   const mcps = parseSanitizedStringList(value.mcps);
   const agents = parseActivityAgents(value.agents);
   if (skills === null || mcps === null || agents === null) return null;
-  const tools: TranscriptToolEntry[] = [];
+  const tools: ScannedToolCall[] = [];
   for (const entry of value.tools) {
-    if (!isTranscriptToolEntry(entry)) return null;
-    tools.push({
-      name: sanitizeTerminalLabel(entry.name),
-      disp: sanitizeTerminalLabel(entry.disp),
-      target: sanitizeTerminalLabel(entry.target),
-      ...(entry.fullTarget !== undefined ? { fullTarget: sanitizeTerminalLabel(entry.fullTarget) } : {}),
-      running: entry.running,
-      isSkillRead: entry.isSkillRead,
-    });
+    const rec = parseScannedToolCall(entry);
+    if (rec === null) return null;
+    tools.push(rec);
   }
-  let completedTools: CompletedToolAggregate[] | undefined;
-  if (value.completedTools !== undefined) {
-    if (!Array.isArray(value.completedTools)) return null;
-    completedTools = [];
-    for (const entry of value.completedTools) {
-      if (!isCompletedToolAggregate(entry)) return null;
-      const recentTargets = parseSanitizedStringList(entry.recentTargets);
-      if (recentTargets === null) return null;
-      completedTools.push({
-        disp: sanitizeTerminalLabel(entry.disp),
-        count: entry.count,
-        latestTarget: sanitizeTerminalLabel(entry.latestTarget),
-        fullTarget: sanitizeTerminalLabel(entry.fullTarget),
-        recentTargets,
-      });
-    }
-  }
-  return completedTools !== undefined
-    ? { tools, skills, mcps, agents, completedTools }
-    : { tools, skills, mcps, agents };
+  return {
+    tools,
+    skills,
+    mcps,
+    agents,
+    lastModel: sanitizeTerminalLabel(value.lastModel),
+  };
 }
 
-export function readActivityCache(cacheFile: string): ActivityCacheRecord | null {
+function readActivityCache(cacheFile: string): ActivityCacheRecord | null {
   const parsed = readRegularJsonObjectSync(cacheFile, MAX_ACTIVITY_CACHE_BYTES, { requirePrivateMode: true });
   if (parsed === null || parsed.v !== ACTIVITY_CACHE_SCHEMA_VERSION) {
     return null;
   }
   const meta = parseTranscriptCacheMeta(parsed);
   if (meta === null) return null;
-  const data = parseTranscriptActivity(parsed.data);
+  const data = parseCanonicalTranscriptActivity(parsed.data);
   if (data === null) return null;
   return {
     v: parsed.v,
     ...meta,
     data,
   };
+}
+
+export function loadCanonicalTranscriptActivity(
+  options: LoadCanonicalTranscriptOptions,
+): CanonicalTranscriptActivity | null {
+  const cacheFile = resolveCliSubdirFile(options.cacheCliHome, 'cache', activityCacheFileName(options.cacheId));
+  const cached = cacheFile !== null ? readActivityCache(cacheFile) : null;
+
+  const scanned = scanTranscriptWithCache<ScannedToolCall>({
+    transcriptPath: options.transcriptPath,
+    skillRootDir: options.skillRootDir,
+    workspaceDir: options.workspaceDir,
+    mcpServers: options.mcpServers,
+    seed:
+      cached !== null
+        ? {
+            meta: cached,
+            tools: cached.data.tools,
+            skills: cached.data.skills,
+            mcps: cached.data.mcps,
+            agents: cached.data.agents,
+            lastModel: cached.data.lastModel,
+          }
+        : null,
+    projectToolCall: (call) => call,
+  });
+  if (scanned === null) {
+    return null;
+  }
+  if (scanned.cacheHit && cached !== null) {
+    return cached.data;
+  }
+
+  const data: CanonicalTranscriptActivity = {
+    tools: scanned.tools,
+    skills: scanned.skills,
+    mcps: scanned.mcps,
+    agents: scanned.agents,
+    lastModel: scanned.lastModel,
+  };
+
+  if (cacheFile !== null && scanned.cacheable) {
+    const nextRecord: ActivityCacheRecord = {
+      v: ACTIVITY_CACHE_SCHEMA_VERSION,
+      ...scanned.meta,
+      data,
+    };
+    writeBoundedPrivateJsonCache(cacheFile, nextRecord, MAX_ACTIVITY_CACHE_BYTES);
+  }
+
+  return data;
 }

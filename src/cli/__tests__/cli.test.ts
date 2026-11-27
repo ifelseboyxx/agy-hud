@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, it } from 'node:test';
 
 import { runCliEntry, runCliEntryAsync } from '../../cli-entry.ts';
-import { DEFAULT_HUD_CONFIG } from '../../types.ts';
+import { DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
 import { configureHud, parseConfigureArgs } from '../configure.ts';
 
 const tempDirs: string[] = [];
@@ -158,6 +158,18 @@ void describe('runCliEntry', async () => {
       const parsed = JSON.parse(out) as { preset: string };
       assert.equal(parsed.preset, 'minimal');
       assert.equal(existsSync(path.join(isolatedCliHome, 'hud-config.json')), true);
+
+      let installerOut = '';
+      const helpCode = runCliEntry(['install', '--help'], {
+        stdout: {
+          write(chunk: string): boolean {
+            installerOut += chunk;
+            return true;
+          },
+        },
+      });
+      assert.equal(helpCode, 0);
+      assert.ok(installerOut.includes('agy-hud installer'));
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }

@@ -15,7 +15,7 @@ import {
   runSnapshotCommand,
   type SnapshotRunOptions,
 } from './cli/snapshot.ts';
-import { isMainEntry } from './core/paths.ts';
+import { isMainEntry } from './core/fs-utils.ts';
 
 export { runInstallerCli };
 
@@ -197,10 +197,6 @@ function executeParsedConfigure(parsed: ConfigureCliArgs, options?: CliEntryOpti
   return 0;
 }
 
-function runConfigureCommand(args: readonly string[], options?: CliEntryOptions): number {
-  return executeParsedConfigure(parseConfigureArgs(args), options);
-}
-
 function runExportCommand(args: readonly string[], options?: CliEntryOptions): void {
   const parsed = parseValueFlag(args, '--out');
   if (parsed.help) {
@@ -256,79 +252,104 @@ function runImportCommand(args: readonly string[], options?: CliEntryOptions): v
   }
 }
 
-export function runCliEntry(argv: readonly string[] = process.argv.slice(2), options: CliEntryOptions = {}): number {
+type CliRoute =
+  | { readonly kind: 'help' }
+  | { readonly kind: 'installer'; readonly argv: readonly string[] }
+  | { readonly kind: 'snapshot'; readonly args: readonly string[] }
+  | { readonly kind: 'preview'; readonly args: readonly string[] }
+  | { readonly kind: 'configure'; readonly args: readonly string[] }
+  | { readonly kind: 'export-profile'; readonly args: readonly string[] }
+  | { readonly kind: 'import-profile'; readonly args: readonly string[] }
+  | { readonly kind: 'unknown'; readonly command: string };
+
+function resolveCliRoute(argv: readonly string[]): CliRoute {
   const command = argv[0];
   if (command === '-h' || command === '--help' || command === 'help') {
-    printMainHelp(options);
-    return 0;
+    return { kind: 'help' };
   }
-
-  try {
-    if (!command) {
-      writeOut(runSnapshotCommand([], toSnapshotOptions(options)).output, options);
-      return 0;
-    }
-    if (isSnapshotFlag(command) || isSnapshotFilter(command)) {
-      writeOut(runSnapshotCommand(argv, toSnapshotOptions(options)).output, options);
-      return 0;
-    }
-    const rest = argv.slice(1);
-    if (isInstallerCommand(command)) {
-      return runInstallerCli(argv);
-    }
-    switch (command) {
-      case 'snapshot':
-      case 'snap':
-        writeOut(runSnapshotCommand(rest, toSnapshotOptions(options)).output, options);
-        return 0;
-      case 'preview':
-        writeOut(
-          runPreviewCommand(rest, {
-            cliHome: options.cliHome,
-            env: options.env,
-            stdoutColumns: (options.stdout as { columns?: number } | undefined)?.columns ?? process.stdout.columns,
-          }),
-          options,
-        );
-        return 0;
-      case 'configure':
-        return runConfigureCommand(rest, options);
-      case 'export-profile':
-        runExportCommand(rest, options);
-        return 0;
-      case 'import-profile':
-        runImportCommand(rest, options);
-        return 0;
-      default:
-        throw new Error(`Unknown command: ${command}. Run with --help for usage.`);
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    writeErr(`Error: ${message}\n`, options);
-    return 1;
+  if (!command) {
+    return { kind: 'snapshot', args: [] };
+  }
+  if (isSnapshotFlag(command) || isSnapshotFilter(command)) {
+    return { kind: 'snapshot', args: argv };
+  }
+  if (isInstallerCommand(command)) {
+    return { kind: 'installer', argv };
+  }
+  const rest = argv.slice(1);
+  switch (command) {
+    case 'snapshot':
+    case 'snap':
+      return { kind: 'snapshot', args: rest };
+    case 'preview':
+      return { kind: 'preview', args: rest };
+    case 'configure':
+      return { kind: 'configure', args: rest };
+    case 'export-profile':
+      return { kind: 'export-profile', args: rest };
+    case 'import-profile':
+      return { kind: 'import-profile', args: rest };
+    default:
+      return { kind: 'unknown', command };
   }
 }
 
-function resolveInteractiveSnapshotArgs(argv: readonly string[]): readonly string[] | null {
-  const command = argv[0];
-  if (!command) return null;
-  if (command === 'snapshot' || command === 'snap') {
-    return argv.slice(1);
+function writeCliError(err: unknown, options?: CliEntryOptions): number {
+  const message = err instanceof Error ? err.message : String(err);
+  writeErr(`Error: ${message}\n`, options);
+  return 1;
+}
+
+function executeNonInteractiveRoute(route: CliRoute, options: CliEntryOptions): number {
+  switch (route.kind) {
+    case 'help':
+      printMainHelp(options);
+      return 0;
+    case 'installer':
+      return runInstallerCli(route.argv, options);
+    case 'snapshot':
+      writeOut(runSnapshotCommand(route.args, toSnapshotOptions(options)).output, options);
+      return 0;
+    case 'preview':
+      writeOut(
+        runPreviewCommand(route.args, {
+          cliHome: options.cliHome,
+          env: options.env,
+          stdoutColumns: (options.stdout as { columns?: number } | undefined)?.columns ?? process.stdout.columns,
+        }),
+        options,
+      );
+      return 0;
+    case 'configure':
+      return executeParsedConfigure(parseConfigureArgs(route.args), options);
+    case 'export-profile':
+      runExportCommand(route.args, options);
+      return 0;
+    case 'import-profile':
+      runImportCommand(route.args, options);
+      return 0;
+    case 'unknown':
+      throw new Error(`Unknown command: ${route.command}. Run with --help for usage.`);
   }
-  if (isSnapshotFlag(command) || isSnapshotFilter(command)) {
-    return argv;
+}
+
+export function runCliEntry(argv: readonly string[] = process.argv.slice(2), options: CliEntryOptions = {}): number {
+  const route = resolveCliRoute(argv);
+  try {
+    return executeNonInteractiveRoute(route, options);
+  } catch (err) {
+    return writeCliError(err, options);
   }
-  return null;
 }
 
 export async function runCliEntryAsync(
   argv: readonly string[] = process.argv.slice(2),
   options: CliAsyncEntryOptions = {},
 ): Promise<number> {
-  const errStream = options.stderr ?? process.stderr;
-  if (argv[0] === 'configure') {
-    try {
-      const parsed = parseConfigureArgs(argv.slice(1));
+  const route = resolveCliRoute(argv);
+  try {
+    if (route.kind === 'configure') {
+      const parsed = parseConfigureArgs(route.args);
       if (!parsed.help && parsed.interactive) {
         return await runConfigureInteractive({
           cliHome: options.cliHome,
@@ -337,33 +358,24 @@ export async function runCliEntryAsync(
           configureOptions: parsed.options,
           stdin: options.stdin,
           stdout: options.stdout,
-          stderr: errStream,
+          stderr: options.stderr ?? process.stderr,
           escTimeoutMs: options.escTimeoutMs,
         });
       }
       return executeParsedConfigure(parsed, options);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errStream.write(`Error: ${message}\n`);
-      return 1;
     }
-  }
-  const snapArgs = resolveInteractiveSnapshotArgs(argv);
-  if (snapArgs !== null) {
-    try {
-      const parsed = parseSnapshotArgs(snapArgs);
+    if (route.kind === 'snapshot') {
+      const parsed = parseSnapshotArgs(route.args);
       if (!parsed.help && !parsed.listSessions && !parsed.json && parsed.keybindings === undefined && parsed.popup) {
         return await executeParsedSnapshotPopupCommand(parsed, options);
       }
       writeOut(executeParsedSnapshotCommand(parsed, toSnapshotOptions(options)).output, options);
       return 0;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errStream.write(`Error: ${message}\n`);
-      return 1;
     }
+    return executeNonInteractiveRoute(route, options);
+  } catch (err) {
+    return writeCliError(err, options);
   }
-  return runCliEntry(argv, options);
 }
 
 if (isMainEntry(import.meta.url)) {

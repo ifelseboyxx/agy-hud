@@ -5,7 +5,17 @@ import { fileURLToPath } from 'node:url';
 import { parseSync, Visitor } from 'oxc-parser';
 import { ResolverFactory } from 'oxc-resolver';
 
-import { isMainEntry, toPosixPath } from '../src/core/paths.ts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
+import { toPosixPath } from '../src/core/paths.ts';
+import {
+  classifySrcLayer,
+  findDependencyCycleErrors,
+  findLayerMatrixErrors,
+  findTransitivePurityErrors,
+  FORBIDDEN_PURE_RUNTIME_BUILTINS,
+  PURE_PREVIEW_MODULES,
+  type SrcModuleGraphNode,
+} from './lib/architecture-graph.ts';
 import { createStatusLineFenceTracker, STATUSLINE_SINGLE_WRITER } from './lib/statusline-writer-fence.ts';
 import { createUnusedExportsTracker, type UnusedExportsTracker } from './lib/unused-exports-fence.ts';
 import { walkFiles } from './lib/walk-files.mts';
@@ -13,16 +23,6 @@ import { walkFiles } from './lib/walk-files.mts';
 const DEFAULT_ARCH_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_DESC_MIN = 24;
 const SKILL_DESC_MAX = 240;
-const IGNORED_DIRS = new Set([
-  'node_modules',
-  'dist',
-  '.git',
-  'coverage',
-  '.cache',
-  '.scratch',
-  '.agents',
-  '.workbench',
-]);
 const AST_EXTS = new Set(['.ts', '.mts', '.cts', '.tsx', '.js', '.mjs', '.cjs']);
 const FORBIDDEN_RENDER_CALLS = new Set([
   'writeFileSync',
@@ -34,14 +34,6 @@ const FORBIDDEN_RENDER_CALLS = new Set([
   'writeBufferAtomicSync',
   'writeJsonAtomicSync',
   'touchRegularFileTimesSync',
-]);
-const FORBIDDEN_RENDER_MODULES = new Set(['node:child_process', 'child_process', 'node:sqlite', 'node:fs', 'fs']);
-const FORBIDDEN_RENDER_TARGETS = new Set([
-  'src/hud-runner.ts',
-  'src/hud-snapshot-publish.ts',
-  'src/core/file-lock.ts',
-  'src/collectors/snapshot-envelope.ts',
-  'src/fs-utils.ts',
 ]);
 
 // 跨模块重复顶层函数的棘轮基线：已清零，禁止新增跨模块重复定义。
@@ -194,6 +186,7 @@ function inspectTypeScriptAst(
   errors: string[],
   functionDefs: Map<string, string[]>,
   unusedExports: UnusedExportsTracker,
+  srcGraph: Map<string, SrcModuleGraphNode>,
 ): void {
   const parsed = parseSync(fullPath, content);
   if (parsed.errors.length > 0) {
@@ -213,18 +206,30 @@ function inspectTypeScriptAst(
   const checkRelativeImports = isResolverTarget(relPosix);
   const checkStatusLineOwnership = isDuplicateScanTarget(relPosix) && relPosix !== STATUSLINE_SINGLE_WRITER;
   const specifiers = new Set<string>();
+  const runtimeSpecifiers = new Set<string>();
   const dynamicRelativeSpecifiers = new Set<string>();
 
   for (const imp of parsed.module.staticImports) {
-    specifiers.add(imp.moduleRequest.value);
+    const req = imp.moduleRequest.value;
+    specifiers.add(req);
+    const isTypeOnly = imp.entries.length > 0 && imp.entries.every((entry) => entry.isType);
+    if (!isTypeOnly) {
+      runtimeSpecifiers.add(req);
+    }
   }
   for (const exp of parsed.module.staticExports) {
     for (const entry of exp.entries) {
-      if (entry.moduleRequest?.value) specifiers.add(entry.moduleRequest.value);
+      if (entry.moduleRequest?.value) {
+        specifiers.add(entry.moduleRequest.value);
+        if (!entry.isType) {
+          runtimeSpecifiers.add(entry.moduleRequest.value);
+        }
+      }
     }
   }
 
-  const isRenderModule = relPosix.startsWith('src/render/') && !relPosix.includes('/__tests__/');
+  const isRenderModule =
+    (relPosix.startsWith('src/render/') && !relPosix.includes('/__tests__/')) || PURE_PREVIEW_MODULES.has(relPosix);
   let consoleLogCount = 0;
   const forbiddenGlobalNetworks = new Set<string>();
   const forbiddenRenderCalls = new Set<string>();
@@ -235,6 +240,7 @@ function inspectTypeScriptAst(
     ImportExpression(node): void {
       if (node.source.type === 'Literal' && typeof node.source.value === 'string') {
         specifiers.add(node.source.value);
+        runtimeSpecifiers.add(node.source.value);
         if (node.source.value.startsWith('./') || node.source.value.startsWith('../')) {
           dynamicRelativeSpecifiers.add(node.source.value);
         }
@@ -261,6 +267,7 @@ function inspectTypeScriptAst(
         typeof node.arguments[0].value === 'string'
       ) {
         specifiers.add(node.arguments[0].value);
+        runtimeSpecifiers.add(node.arguments[0].value);
       }
       if (!checkConsoleLog || node.callee.type !== 'MemberExpression') return;
       if (node.callee.object.type !== 'Identifier' || node.callee.object.name !== 'console') return;
@@ -283,25 +290,37 @@ function inspectTypeScriptAst(
   }
   errors.push(...statusLineFence.collectErrors(relPosix));
 
-  const isCollectorModule = relPosix.startsWith('src/collectors/') && !relPosix.includes('/__tests__/');
+  const isTrackedSrc = classifySrcLayer(relPosix) !== null;
+  const graphNode: SrcModuleGraphNode | null = isTrackedSrc
+    ? { allDeps: new Set<string>(), runtimeDeps: new Set<string>(), runtimeBuiltins: new Set<string>() }
+    : null;
+  if (graphNode !== null) {
+    srcGraph.set(relPosix, graphNode);
+  }
+
   for (const spec of specifiers) {
     if (checkNetworkFence && NETWORK_MODULES.has(spec)) {
       errors.push(`${relPosix}: network import '${spec}' is forbidden by AST import fence`);
     }
-    if (isRenderModule && FORBIDDEN_RENDER_MODULES.has(spec)) {
+    if (isRenderModule && FORBIDDEN_PURE_RUNTIME_BUILTINS.has(spec) && runtimeSpecifiers.has(spec)) {
       errors.push(`${relPosix}: pure src/render/ module may not import '${spec}'`);
     }
-    if (checkRelativeImports && (spec.startsWith('./') || spec.startsWith('../'))) {
+    const isRelative = spec.startsWith('./') || spec.startsWith('../');
+    if (!isRelative) {
+      if (graphNode !== null && runtimeSpecifiers.has(spec)) {
+        graphNode.runtimeBuiltins.add(spec);
+      }
+      continue;
+    }
+    if (checkRelativeImports) {
       const resolved = resolver.resolveFileSync(fullPath, spec);
       if (resolved.error || !resolved.path || !resolved.path.startsWith(rootDir)) {
         errors.push(`${relPosix}: unresolved relative import '${spec}' (${resolved.error ?? 'missing target'})`);
-      } else {
+      } else if (graphNode !== null) {
         const targetRel = toPosixPath(path.relative(rootDir, resolved.path));
-        if (isCollectorModule && targetRel.startsWith('src/render/')) {
-          errors.push(`${relPosix}: collectors may not import from src/render/ ('${spec}')`);
-        }
-        if (isRenderModule && FORBIDDEN_RENDER_TARGETS.has(targetRel)) {
-          errors.push(`${relPosix}: pure src/render/ module may not import I/O/lock module '${targetRel}' ('${spec}')`);
+        graphNode.allDeps.add(targetRel);
+        if (runtimeSpecifiers.has(spec)) {
+          graphNode.runtimeDeps.add(targetRel);
         }
       }
     }
@@ -314,7 +333,6 @@ export function collectArchitectureErrors(
 ): { errors: string[]; fileCount: number; skillCount: number } {
   const errors: string[] = [];
   const files = walkFiles(rootDir, rootDir, {
-    skipDirs: IGNORED_DIRS,
     includeFile: (relPosix, name) => AST_EXTS.has(path.extname(name)) && isResolverTarget(relPosix),
   }).sort();
   const resolver = new ResolverFactory({
@@ -324,11 +342,15 @@ export function collectArchitectureErrors(
 
   const functionDefs = new Map<string, string[]>();
   const unusedExports = createUnusedExportsTracker();
+  const srcGraph = new Map<string, SrcModuleGraphNode>();
   for (const fullPath of files) {
     const relPosix = toPosixPath(path.relative(rootDir, fullPath));
     const content = readFileSync(fullPath, 'utf8');
-    inspectTypeScriptAst(rootDir, fullPath, relPosix, content, resolver, errors, functionDefs, unusedExports);
+    inspectTypeScriptAst(rootDir, fullPath, relPosix, content, resolver, errors, functionDefs, unusedExports, srcGraph);
   }
+  errors.push(...findLayerMatrixErrors(srcGraph));
+  errors.push(...findTransitivePurityErrors(srcGraph));
+  errors.push(...findDependencyCycleErrors(srcGraph));
   errors.push(...findDuplicateFunctionErrors(functionDefs));
   if (options.checkUnusedExports !== false) {
     errors.push(...unusedExports.collectErrors());

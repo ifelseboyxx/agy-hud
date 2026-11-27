@@ -1,7 +1,7 @@
 import { nonEmptyStr } from '../core/guards.ts';
 import { resolveEffortPeakFlags } from '../core/model-names.ts';
-import { normalizeHostAgentState } from '../core/quota-pace.ts';
-import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
+import { normalizeHostAgentState } from '../core/telemetry-error.ts';
+import { isColorDisabledByEnv, sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { StatusLineData } from '../types.ts';
 import { BOLD, BRIGHT_CYAN, BRIGHT_WHITE, BRIGHT_YELLOW, CYAN, GRAY, NO_BOLD, RESET, WHITE, YELLOW } from './ansi.ts';
 
@@ -70,13 +70,10 @@ export interface ModelSegmentStyleOptions {
 }
 
 export function detectColorLevel(env: NodeJS.ProcessEnv = process.env): ColorLevel {
-  if (env.NO_COLOR !== undefined) {
+  if (isColorDisabledByEnv(env)) {
     return 'none';
   }
   const term = nonEmptyStr(env.TERM)?.toLowerCase() ?? '';
-  if (term === 'dumb') {
-    return 'none';
-  }
   const colorTerm = nonEmptyStr(env.COLORTERM)?.toLowerCase() ?? '';
   if (colorTerm === 'truecolor' || colorTerm === '24bit') {
     return 'truecolor';

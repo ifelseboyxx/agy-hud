@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isMainEntry } from '../src/core/paths.ts';
+import { isMainEntry } from '../src/core/fs-utils.ts';
 import { type PnpmSpawnSpec, resolvePnpmSpawnSpec } from './lib/pnpm-spawn.mts';
 
 export { type PnpmSpawnSpec, resolvePnpmSpawnSpec };

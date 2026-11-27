@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { DEFAULT_HUD_CONFIG, type HudConfig, type HudPreset } from '../../types.ts';
+import type { HudConfig, HudPreset } from '../../types.ts';
 import {
   buildPresetConfig,
+  DEFAULT_HUD_CONFIG,
   HUD_LINE_IDS,
   HUD_SEGMENT_IDS,
   hydrateHudConfig,

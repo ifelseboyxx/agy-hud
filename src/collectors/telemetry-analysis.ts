@@ -9,7 +9,7 @@ import type {
   TailStepPhase,
 } from '../types.ts';
 import { computeCompactedUsed, isCompactionActive, type CompactionCheckpoint } from './compaction.ts';
-import type { GenMetadataRow, TailGenExtras } from './proto.ts';
+import type { GenMetadataRow, TailGenExtras } from './proto-wire.ts';
 import { evaluateContextAndRoles } from './telemetry-context.ts';
 
 const MIN_STREAM_WINDOW_SEC = 0.5;

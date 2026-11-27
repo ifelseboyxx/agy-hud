@@ -1,10 +1,9 @@
 #!/usr/bin/env node
+import { isMainEntry } from './core/fs-utils.ts';
 import { isPlainObject, UNSAFE_OBJECT_KEYS } from './core/guards.ts';
-import { isMainEntry, resolveCliHome } from './core/paths.ts';
+import { resolveCliHome } from './core/paths.ts';
 import { runHudRender } from './hud-runner.ts';
 import type { RenderHudOptions, StatusLineData } from './types.ts';
-
-export type { RenderHudOptions } from './types.ts';
 
 function stripUnsafeKeys(raw: Record<string, unknown>): Record<string, unknown> {
   const clean: Record<string, unknown> = {};

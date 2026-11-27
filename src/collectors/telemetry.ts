@@ -1,8 +1,10 @@
 import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { telemetryCacheFileName } from '../core/cache-registry.ts';
+import { readRegularJsonObjectSync, writeBoundedPrivateJsonCache } from '../core/fs-utils.ts';
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
-import { readRegularJsonObjectSync, writeBoundedPrivateJsonCache } from '../fs-utils.ts';
+import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from '../core/safe-path.ts';
 import type { CliSettings, SessionTelemetry, StatusLineData, TailStepPhase } from '../types.ts';
 import { MAX_ACTIVITY_CACHE_BYTES } from './activity-cache.ts';
 import { fetchLatestCheckpoint, isCompactionCheckpoint, type CompactionCheckpoint } from './compaction.ts';
@@ -11,11 +13,9 @@ import {
   type ContextBreakdownCounts,
   type GenMetadataRow,
   MAX_PROTO_BLOB_BYTES,
-  parseGenMetadataBlob,
-  parseGenMetadataBlobWithTail,
   type TailGenExtras,
-} from './proto.ts';
-import { resolveCliSubdirFile, resolveConversationId, sanitizeSessionId } from './safe-path.ts';
+} from './proto-wire.ts';
+import { parseGenMetadataBlob, parseGenMetadataBlobWithTail } from './proto.ts';
 import { readSqliteVersionTag, withReadonlyDb } from './sqlite-readonly.ts';
 import {
   createEmptyStepTiming,
@@ -282,7 +282,7 @@ function loadDbRows(
   };
   const safeId = sanitizeSessionId(convId);
   if (safeId === null) return empty;
-  const cacheFile = resolveCliSubdirFile(cacheCliHome, 'cache', `agy_hud_telemetry_${safeId}.json`);
+  const cacheFile = resolveCliSubdirFile(cacheCliHome, 'cache', telemetryCacheFileName(safeId));
   if (cacheFile === null) return empty;
 
   if (cacheOnly) {

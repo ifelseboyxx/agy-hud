@@ -2,9 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { isFiniteNum, isPlainObject } from '../core/guards.ts';
 import { parseCheckpointPayloadProto } from './proto-steps.ts';
-import { MAX_PROTO_BLOB_BYTES, type ContextBreakdownCounts, type GenMetadataRow } from './proto.ts';
-
-export { parseKvStepIdx } from './proto.ts';
+import { type ContextBreakdownCounts, type GenMetadataRow, MAX_PROTO_BLOB_BYTES } from './proto-wire.ts';
 
 const STEP_TYPE_CHECKPOINT = 23;
 const STEP_TYPE_PLANNER = 15;

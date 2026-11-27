@@ -6,14 +6,14 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { buildPresetConfig } from '../../core/hud-config.ts';
+import { buildPresetConfig, DEFAULT_HUD_CONFIG } from '../../core/hud-config.ts';
 import { renderHudFromData } from '../../hud-entry.ts';
 import type { AgentsSummary, HudConfig, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
-import { DEFAULT_HUD_CONFIG } from '../../types.ts';
 import { formatToolsLine } from '../activity-lines.ts';
-import { buildPerfSegments, fitPerfCapsule, renderBar, stripAnsi, visibleLen } from '../ansi.ts';
+import { renderBar, stripAnsi, visibleLen } from '../ansi.ts';
 import { formatHudLines, resolveEffectiveExceeds200k } from '../format-hud.ts';
 import { buildModeLine, buildUsageLine } from '../modules.ts';
+import { buildPerfSegments, fitPerfCapsule } from '../telemetry-format.ts';
 
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
 

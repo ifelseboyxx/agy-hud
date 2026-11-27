@@ -257,25 +257,37 @@ void test('架构守卫拦截 collectors 导入 render 层', (t) => {
   assert.ok(errors.some((e) => e.includes('rogue-collector.ts') && e.includes('src/render/')));
 });
 
-void test('架构守卫强制保持 src/render/ 纯净', (t) => {
+void test('架构守卫强制保持 src/render/ 与预览模块传递纯净并拦截环依赖', (t) => {
   const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'arch-pure-render-')));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
   writeFixtureFiles(tmp, {
     'src/core/file-lock.ts': 'export function withFileLocksSync(): void {}\n',
-    'src/render/clean.ts': 'export const CLEAN = 1;\n',
+    'src/core/pure-helper.ts': 'export function formatTag(v: string): string { return v; }\n',
+    'src/render/clean.ts':
+      "import { formatTag } from '../core/pure-helper.ts';\nexport const CLEAN: string = formatTag('ok');\n",
   });
   assert.deepEqual(collectArchitectureErrors(tmp, { checkSkills: false, checkUnusedExports: false }).errors, []);
 
+  // Direct impure import + transitive node:fs leak through core-pure + circular dependency.
   writeFixtureFiles(tmp, {
+    'src/core/leaky-core.ts':
+      "import { existsSync } from 'node:fs';\nexport function checkPath(p: string): boolean { return existsSync(p); }\n",
     'src/render/impure.ts': [
       "import { writeFileSync } from 'node:fs';",
       "import { withFileLocksSync } from '../core/file-lock.ts';",
-      'export function leak(): void { withFileLocksSync(); writeFileSync("/tmp/x", "1"); }',
+      "import { checkPath } from '../core/leaky-core.ts';",
+      'export function leak(): boolean { withFileLocksSync(); writeFileSync("/tmp/x", "1"); return checkPath("/tmp"); }',
     ].join('\n'),
+    'src/core/cycle-a.ts': "import { b } from './cycle-b.ts';\nexport const a: number = b + 1;\n",
+    'src/core/cycle-b.ts': "import { a } from './cycle-a.ts';\nexport const b: number = a + 1;\n",
   });
-  const { errors } = collectArchitectureErrors(tmp, { checkSkills: false });
+  const { errors } = collectArchitectureErrors(tmp, { checkSkills: false, checkUnusedExports: false });
   assert.ok(errors.some((e) => e.includes('impure.ts') && e.includes('src/core/file-lock.ts')));
   assert.ok(errors.some((e) => e.includes('impure.ts') && e.includes('writeFileSync')));
+  assert.ok(errors.some((e) => e.includes('impure.ts') && e.includes('node:fs') && e.includes('leaky-core.ts')));
+  assert.ok(
+    errors.some((e) => e.includes('circular dependency') && e.includes('cycle-a.ts') && e.includes('cycle-b.ts')),
+  );
 });
 
 void test('零 Emoji 守卫同时覆盖测试文件', (t) => {
@@ -294,11 +306,11 @@ void test('架构守卫拦截经由 getSettingsPaths 解构或别名写入 statu
   writeFixtureFiles(tmp, {
     'src/core/statusline-ownership.ts':
       'export function getSettingsPaths(_h: string): { settingsPath: string; backupPath: string } { return { settingsPath: "", backupPath: "" }; }\n',
-    'src/fs-utils.ts':
+    'src/core/fs-utils.ts':
       'export function writeJsonAtomicSync(_p: string, _d: unknown): void {}\nexport function writeBufferAtomicSync(_p: string, _b: Buffer): void {}\n',
     'src/cli/rogue-destructured.ts': [
       "import { getSettingsPaths } from '../core/statusline-ownership.ts';",
-      "import { writeJsonAtomicSync } from '../fs-utils.ts';",
+      "import { writeJsonAtomicSync } from '../core/fs-utils.ts';",
       'export function hijack(cliHome: string): void {',
       '  const { settingsPath, backupPath } = getSettingsPaths(cliHome);',
       '  writeJsonAtomicSync(settingsPath, { statusLine: { enabled: false } });',
@@ -308,7 +320,7 @@ void test('架构守卫拦截经由 getSettingsPaths 解构或别名写入 statu
     'src/cli/rogue-alias.ts': [
       "import { renameSync, copyFileSync, rmSync } from 'node:fs';",
       "import { getSettingsPaths as resolvePaths } from '../core/statusline-ownership.ts';",
-      "import { writeBufferAtomicSync } from '../fs-utils.ts';",
+      "import { writeBufferAtomicSync } from '../core/fs-utils.ts';",
       'export function overwrite(cliHome: string): void {',
       '  const paths = resolvePaths(cliHome);',
       '  const localSettings = paths.settingsPath as string;',

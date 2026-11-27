@@ -23,9 +23,10 @@ import {
 } from 'node:fs';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { getErrCode, isPlainObject } from './core/guards.ts';
-import { isSameOrDescendantPath } from './core/paths.ts';
+import { getErrCode, isPlainObject } from './guards.ts';
+import { isSameOrDescendantPath } from './paths.ts';
 
 const TEMP_SUFFIX_RANDOM_BYTES = 8;
 export const POSIX_MODE_MASK: number = 0o777;
@@ -36,6 +37,33 @@ const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 export function decodeStrictUtf8(buf: Uint8Array): string {
   return STRICT_UTF8_DECODER.decode(buf);
+}
+
+export function realpathExistingPrefixSync(dirPath: string): string {
+  const resolved = path.resolve(dirPath);
+  const tail: string[] = [];
+  let cur = resolved;
+  while (true) {
+    try {
+      const real = realpathSync(cur);
+      return tail.length > 0 ? path.join(real, ...tail) : real;
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return resolved;
+      tail.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+export function isMainEntry(metaUrl: string): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(metaUrl));
+  } catch {
+    return false;
+  }
 }
 
 export type EntrySnapshotSync =
