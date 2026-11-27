@@ -29,6 +29,28 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback
     if (n >= 1000) return Math.round(n / 1000) + "k";
     return String(n);
   }
+  function renderCostPill(d) {
+    if (d.costFormatted && typeof d.costFormatted === "object" && typeof d.costFormatted.text === "string" && d.costFormatted.text.length > 0) {
+      var preTitle = typeof d.costFormatted.title === "string" ? d.costFormatted.title : "";
+      return '<span title="' + esc(preTitle) + '">Cost <strong>' + esc(d.costFormatted.text) + "</strong></span>";
+    }
+    var c = d.cost;
+    if (!c || typeof c !== "object") return "";
+    var totalUsd = safeFinite(c.totalUsd);
+    if (totalUsd == null || totalUsd < 0) return "";
+    var fmtU = function (u) { return u >= 10 ? "$" + u.toFixed(2) : "$" + u.toFixed(3); };
+    var rateVal = safeFinite(d.usdToCnyRate);
+    var rate = rateVal != null && rateVal > 0 ? rateVal : 7.25;
+    var fmtY = function (u) { return "\u00a5" + (Math.round((u * rate + 1e-12) * 100) / 100).toFixed(2); };
+    var prefix = c.estimated === true ? "~" : "";
+    var cur = d.costCurrency === "cny" || d.costCurrency === "both" ? d.costCurrency : "usd";
+    var text = prefix + (cur === "cny" ? fmtY(totalUsd) : cur === "both" ? fmtU(totalUsd) + " / " + fmtY(totalUsd) : fmtU(totalUsd));
+    var subUsd = safeFinite(c.subagentUsd);
+    var titleParts = ["Session cost: " + prefix + fmtU(totalUsd) + " / " + fmtY(totalUsd)];
+    if (subUsd != null && subUsd > 0) titleParts.push("Subagents: " + fmtU(subUsd) + " / " + fmtY(subUsd));
+    if (c.estimated === true) titleParts.push("Estimated pricing");
+    return '<span title="' + esc(titleParts.join(" · ")) + '">Cost <strong>' + esc(text) + "</strong></span>";
+  }
   function toneForCtx(pct) {
     if (pct == null) return "ok";
     return pct >= 85 ? "danger" : pct >= 68 ? "warn" : "ok";
@@ -285,7 +307,8 @@ export const INSPECTOR_RENDER_SCRIPT: string = `  function pickStr(val, fallback
       "<span>TPS <strong>" + (tpsVal != null ? tpsVal.toFixed(0) : "\u2014") + "</strong></span>" +
       "<span>TTFT <strong>" + (ttftVal != null ? ttftVal.toFixed(2) + "s" : "\u2014") + "</strong></span>" +
       '<span>Cache <strong style="color:var(--accent-' + cacheTone + ')">' +
-      (cachePctVal != null ? cachePctVal.toFixed(0) + "%" : "\u2014") + "</strong></span></div>" +
+      (cachePctVal != null ? cachePctVal.toFixed(0) + "%" : "\u2014") + "</strong></span>" +
+      renderCostPill(d) + "</div>" +
       '<nav class="va-tabs" role="tablist">' +
       tabBtn("overview", "Overview", null) +
       tabBtn("tools", "Tools", runningCount + completedCount) +

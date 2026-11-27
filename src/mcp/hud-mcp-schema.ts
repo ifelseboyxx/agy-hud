@@ -1,8 +1,10 @@
 import { isPlainObject } from '../core/guards.ts';
 import type { SessionSourceFilter } from '../snapshot-types.ts';
+import { MCP_INSPECTOR_VERSION } from './hud-inspector-script.ts';
 import { INSPECTOR_MIME_TYPE, INSPECTOR_RESOURCE_URI } from './hud-inspector-ui.ts';
 import type { HudPollArgs } from './hud-mcp-snapshot.ts';
 
+export { MCP_INSPECTOR_VERSION };
 export const MAX_SESSION_ID_LENGTH: number = 128;
 export const MAX_ETAG_BYTES: number = 64;
 

@@ -2,15 +2,18 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { computeSwarmStateDigest } from '../collectors/agents.ts';
 import { resolveCliSubdirFile, sanitizeSessionId } from '../collectors/safe-path.ts';
 import { resolveSession, SessionResolutionError, type ResolveSessionOptions } from '../collectors/session-index.ts';
-import { readCliFallbackModel } from '../collectors/settings.ts';
+import { readCliFallbackModel, readHudConfig } from '../collectors/settings.ts';
 import { loadActivitySnapshot } from '../collectors/snapshot-loader.ts';
 import { readSqliteVersionTag } from '../collectors/sqlite-readonly.ts';
-import { computeFileContentHash } from '../collectors/transcript-scanner.ts';
-import { isPlainObject, nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
+import { computeFileContentHash } from '../collectors/transcript-fingerprint.ts';
+import { selectNewestFirst } from '../core/guards.ts';
+import { DEFAULT_USD_TO_CNY_RATE } from '../core/hud-config.ts';
 import { resolveProfileRoots } from '../core/paths.ts';
-import { readRegularJsonObjectSync, statIfPresentSync } from '../fs-utils.ts';
+import { statIfPresentSync } from '../fs-utils.ts';
+import { formatCnyAmount, formatSessionCostText, formatUsdAmount } from '../render/cost.ts';
 import type {
   ActivitySnapshot,
   SessionRecord,
@@ -19,12 +22,13 @@ import type {
   SiblingSessionHint,
   SnapshotAgent,
   SnapshotCompletedTool,
+  SnapshotCost,
   SnapshotEnvelope,
   SnapshotMcpServer,
   SnapshotResolutionTier,
   SnapshotRunningTool,
 } from '../snapshot-types.ts';
-import type { AgentsKind, SessionTelemetry, TodoSummary } from '../types.ts';
+import type { AgentsKind, HudCostCurrency, SessionTelemetry, TodoSummary } from '../types.ts';
 import { capInspectorPayload, HARD_MAX_MCP_RESPONSE_BYTES, MAX_MCP_PAYLOAD_BYTES } from './hud-mcp-cap.ts';
 
 export { capInspectorPayload, HARD_MAX_MCP_RESPONSE_BYTES, MAX_MCP_PAYLOAD_BYTES };
@@ -71,6 +75,10 @@ export interface HudInspectorSnapshotPayload {
   siblingCandidates: SiblingSessionHint[];
   siblingHint: string;
   telemetry: HudInspectorTelemetry;
+  cost: SnapshotCost | null;
+  costFormatted?: { readonly text: string; readonly title: string } | null;
+  costCurrency: HudCostCurrency;
+  usdToCnyRate: number;
   runningTools: HudInspectorRunningTool[];
   completedTools: HudInspectorToolItem[];
   totalToolCalls: number;
@@ -182,6 +190,7 @@ function computeEnvelopeSemanticKey(env: SnapshotEnvelope | null): string {
       env.workspaceCurrentDir,
       env.workspaceProjectDir,
       env.taskCount,
+      env.cost ?? null,
       env.mdDigest,
       env.subagents,
     ]),
@@ -201,36 +210,25 @@ function computeSessionListKeyEntry(s: SessionRecord): string {
   ].join('\0');
 }
 
-function computeSwarmStateDigest(dataRoot: string, safeId: string): string {
-  const rosterPath = resolveCliSubdirFile(dataRoot, 'brain', safeId, '.system_generated', 'swarm', 'members.json');
-  if (rosterPath === null) return '';
-  const rosterHash = computeFileContentHash(rosterPath);
-  if (rosterHash.length === 0) return '';
-
-  const parts: string[] = [rosterHash];
-  const roster = readRegularJsonObjectSync(rosterPath);
-  if (roster !== null && isPlainObject(roster.members)) {
-    const memberNames = Object.keys(roster.members).sort();
-    for (const name of memberNames) {
-      const member = roster.members[name];
-      if (!isPlainObject(member)) continue;
-      const role = typeof member.role === 'string' ? member.role.trim().toLowerCase() : '';
-      if (name === 'coordinator' || role === 'coordinator' || member.killed === true) continue;
-      const memberConvId = sanitizeSessionId(nonEmptyStr(member.conversation_id));
-      if (memberConvId === null) continue;
-      const workerTranscript = resolveCliSubdirFile(
-        dataRoot,
-        'brain',
-        memberConvId,
-        '.system_generated',
-        'logs',
-        'transcript.jsonl',
-      );
-      const workerHash = workerTranscript !== null ? computeFileContentHash(workerTranscript) : '';
-      parts.push(`${name}:${memberConvId}:${workerHash}`);
-    }
+function formatInspectorCostFields(
+  cost: SnapshotCost | null | undefined,
+  currency: HudCostCurrency,
+  usdToCnyRate: number,
+): { readonly text: string; readonly title: string } | null {
+  if (!cost) return null;
+  const rate = Number.isFinite(usdToCnyRate) && usdToCnyRate > 0 ? usdToCnyRate : DEFAULT_USD_TO_CNY_RATE;
+  const text = formatSessionCostText(cost, { currency, usdToCnyRate: rate });
+  const prefix = cost.estimated ? '~' : '';
+  const titleParts = [
+    `Session cost: ${prefix}${formatUsdAmount(cost.totalUsd, false)} / ${formatCnyAmount(cost.totalUsd, rate)}`,
+  ];
+  if (cost.subagentUsd !== null && cost.subagentUsd > 0) {
+    titleParts.push(
+      `Subagents: ${formatUsdAmount(cost.subagentUsd, false)} / ${formatCnyAmount(cost.subagentUsd, rate)}`,
+    );
   }
-  return hashShortSha256(parts.join('\0'));
+  if (cost.estimated) titleParts.push('Estimated pricing');
+  return { text, title: titleParts.join(' · ') };
 }
 
 function computeSiblingsSemanticKey(siblings: readonly SiblingSessionHint[]): string {
@@ -245,6 +243,8 @@ function computeSessionStatEtag(
   source: SessionSourceFilter,
   resolutionTier: SnapshotResolutionTier,
   siblings: readonly SiblingSessionHint[],
+  costCurrency: HudCostCurrency,
+  usdToCnyRate: number,
 ): string {
   const safeId = sanitizeSessionId(session.convId);
   const tPath =
@@ -264,9 +264,11 @@ function computeSessionStatEtag(
   const listKey = sessions.slice(0, MAX_SESSIONS_LIST).map(computeSessionListKeyEntry).join('\x1e');
 
   const raw = [
-    'v5',
+    'v6',
     source,
     resolutionTier,
+    costCurrency,
+    String(usdToCnyRate),
     session.convId,
     session.surface,
     session.title,
@@ -286,7 +288,11 @@ function computeSessionStatEtag(
   return hashShortSha256(raw);
 }
 
-function enrichActivitySnapshot(snapshot: ActivitySnapshot): HudInspectorSnapshotPayload {
+function enrichActivitySnapshot(
+  snapshot: ActivitySnapshot,
+  costCurrency: HudCostCurrency,
+  usdToCnyRate: number,
+): HudInspectorSnapshotPayload {
   const { ctxUsed, ctxMax } = snapshot.telemetry;
   const ctxPct =
     ctxUsed !== null && ctxMax !== null && ctxMax > 0
@@ -336,6 +342,10 @@ function enrichActivitySnapshot(snapshot: ActivitySnapshot): HudInspectorSnapsho
     siblingCandidates: snapshot.siblingCandidates,
     siblingHint: snapshot.siblingHint,
     telemetry: { ...snapshot.telemetry, ctxPct },
+    cost: snapshot.cost ?? null,
+    costFormatted: formatInspectorCostFields(snapshot.cost, costCurrency, usdToCnyRate),
+    costCurrency,
+    usdToCnyRate,
     runningTools,
     completedTools,
     totalToolCalls: snapshot.totalToolCalls,
@@ -384,7 +394,16 @@ export function pollHudSnapshot(args: HudPollArgs = {}, options: HudPollOptions 
     throw err;
   }
 
-  const etag = computeSessionStatEtag(resolved.session, resolved.sessions, source, resolved.tier, resolved.siblings);
+  const hudCfg = readHudConfig(cliHome);
+  const etag = computeSessionStatEtag(
+    resolved.session,
+    resolved.sessions,
+    source,
+    resolved.tier,
+    resolved.siblings,
+    hudCfg.costCurrency,
+    hudCfg.usdToCnyRate,
+  );
   if (args.etag !== undefined && args.etag === etag) {
     return { unchanged: true, etag };
   }
@@ -401,7 +420,7 @@ export function pollHudSnapshot(args: HudPollArgs = {}, options: HudPollOptions 
     etag,
     source,
     sessions: resolved.sessions.slice(0, MAX_SESSIONS_LIST).map(toInspectorSessionItem),
-    snapshot: enrichActivitySnapshot(rawSnapshot),
+    snapshot: enrichActivitySnapshot(rawSnapshot, hudCfg.costCurrency, hudCfg.usdToCnyRate),
   };
   return capInspectorPayload(payload);
 }

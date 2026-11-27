@@ -354,6 +354,9 @@ void describe('MCP ETag stability, invalidation, and JSON-RPC error byte cap', (
         siblingCandidates: [],
         siblingHint: '',
         telemetry: { genCount: 1, tps: 90, ttft: 1, cachePct: 90, ctxUsed: 1000, ctxMax: 100_000, ctxPct: 1 },
+        cost: null,
+        costCurrency: 'usd',
+        usdToCnyRate: 7.25,
         runningTools: [],
         completedTools: [],
         totalToolCalls: 0,
@@ -399,6 +402,9 @@ void describe('MCP ETag stability, invalidation, and JSON-RPC error byte cap', (
         siblingCandidates: [],
         siblingHint: '',
         telemetry: { genCount: 1, tps: 90, ttft: 1, cachePct: 90, ctxUsed: 1000, ctxMax: 100_000, ctxPct: 1 },
+        cost: null,
+        costCurrency: 'usd',
+        usdToCnyRate: 7.25,
         runningTools: [
           {
             name: 'edit_file',

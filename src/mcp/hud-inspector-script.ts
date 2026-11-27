@@ -1,6 +1,8 @@
 import { INSPECTOR_RENDER_SCRIPT } from './hud-inspector-render-script.ts';
 import { INSPECTOR_STATE_SCRIPT } from './hud-inspector-state-script.ts';
 
+export const MCP_INSPECTOR_VERSION = '0.1.0';
+
 export const INSPECTOR_SCRIPT: string = `(function () {
   var POLL_INTERVAL_MS = 2000;
   var REQUEST_TIMEOUT_MS = 10000;
@@ -378,7 +380,7 @@ ${INSPECTOR_STATE_SCRIPT}
 
   renderAll();
   sendRequest("ui/initialize", {
-    appInfo: { name: "HUD Inspector", version: "0.1.0" },
+    appInfo: { name: "HUD Inspector", version: "${MCP_INSPECTOR_VERSION}" },
     appCapabilities: {},
     protocolVersion: SEP_PROTOCOL_VERSION
   }, REQUEST_TIMEOUT_MS)

@@ -14,7 +14,13 @@ import {
   type JsonRpcResponse,
   type JsonRpcSuccessResponse,
 } from './hud-mcp-cap.ts';
-import { extractErrorCorrelation, MCP_RESOURCES, MCP_TOOLS, parsePollToolArgs } from './hud-mcp-schema.ts';
+import {
+  extractErrorCorrelation,
+  MCP_INSPECTOR_VERSION,
+  MCP_RESOURCES,
+  MCP_TOOLS,
+  parsePollToolArgs,
+} from './hud-mcp-schema.ts';
 import {
   capInspectorPayload,
   pollHudSnapshot,
@@ -26,7 +32,7 @@ export type { JsonRpcErrorObject, JsonRpcErrorResponse, JsonRpcId, JsonRpcRespon
 
 const DEFAULT_PROTOCOL_VERSION = '2025-03-26';
 const SERVER_NAME = 'agy-hud-inspector';
-const SERVER_VERSION = '0.1.0';
+const SERVER_VERSION = MCP_INSPECTOR_VERSION;
 const MAX_MCP_REQUEST_BYTES = HARD_MAX_MCP_RESPONSE_BYTES;
 const OVERSIZED_REQUEST_REPLY = JSON.stringify(
   makeRpcError(null, -32600, 'Invalid Request: message exceeds 1 MiB limit'),
