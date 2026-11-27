@@ -56,9 +56,3 @@ export function formatRelativeAge(deltaMs: number): string {
   if (hr < 24) return `${hr}h ago`;
   return `${Math.floor(hr / 24)}d ago`;
 }
-
-export function formatSurfaceBadge(surface: 'cli' | 'app' | 'ide'): string {
-  if (surface === 'cli') return 'CLI';
-  if (surface === 'ide') return 'IDE';
-  return 'APP';
-}

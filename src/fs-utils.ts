@@ -13,6 +13,7 @@ import {
   readFileSync,
   readSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -24,6 +25,7 @@ import type { Stats } from 'node:fs';
 import path from 'node:path';
 
 import { getErrCode, isPlainObject } from './core/guards.ts';
+import { isSameOrDescendantPath } from './core/paths.ts';
 
 const TEMP_SUFFIX_RANDOM_BYTES = 8;
 export const POSIX_MODE_MASK: number = 0o777;
@@ -346,7 +348,7 @@ export function writeBufferAtomicSync(
   );
 }
 
-export function writeSymlinkAtomicSync(filePath: string, linkTarget: string): void {
+function writeSymlinkAtomicSync(filePath: string, linkTarget: string): void {
   writeTempAtomicSync(filePath, (tmpPath, markCreated) => {
     symlinkSync(linkTarget, tmpPath);
     markCreated();
@@ -403,4 +405,48 @@ export function restoreOwnedEntrySnapshotSync(snap: EntrySnapshotSync | null, ex
     return;
   }
   restoreEntrySnapshotSync(snap);
+}
+
+export function createWorkspaceRegularFileChecker(workspace: string | undefined): (absPath: string) => boolean {
+  if (workspace === undefined || workspace.length === 0) {
+    return () => false;
+  }
+  let realWs: string;
+  try {
+    realWs = realpathSync(workspace);
+  } catch {
+    return () => false;
+  }
+  const cache = new Map<string, boolean>();
+  return (absPath: string): boolean => {
+    const cached = cache.get(absPath);
+    if (cached !== undefined) return cached;
+    let ok = false;
+    try {
+      const st = lstatIfPresentSync(absPath);
+      if (st !== null && !st.isSymbolicLink() && st.isFile()) {
+        const realFile = realpathSync(absPath);
+        ok = isSameOrDescendantPath(realWs, realFile);
+      }
+    } catch {
+      ok = false;
+    }
+    cache.set(absPath, ok);
+    return ok;
+  };
+}
+
+export function writeBoundedPrivateJsonCache(
+  cacheFile: string,
+  record: unknown,
+  maxBytes: number = DEFAULT_MAX_REGULAR_JSON_BYTES,
+): boolean {
+  try {
+    const serialized = Buffer.from(JSON.stringify(record), 'utf8');
+    if (serialized.byteLength > maxBytes) return false;
+    writeBufferAtomicSync(cacheFile, serialized, PRIVATE_FILE_MODE);
+    return true;
+  } catch {
+    return false;
+  }
 }
