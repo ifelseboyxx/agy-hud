@@ -303,7 +303,7 @@ export function formatTodosLine(todoInfo: TodoSummary | null | undefined): strin
   }
   const bgSuffix =
     typeof todoInfo.taskCount === 'number' && todoInfo.taskCount > 0
-      ? ` ${GRAY}│${RESET} ${CYAN}BG ${todoInfo.taskCount}${RESET}`
+      ? ` ${GRAY}│${RESET} ${CYAN}Bg Tasks ${todoInfo.taskCount}${RESET}`
       : '';
 
   if (typeof todoInfo.total === 'number') {

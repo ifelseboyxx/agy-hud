@@ -12,6 +12,7 @@ import type {
 } from '../types.ts';
 import { formatTodosLine } from './activity-lines.ts';
 import { DEFAULT_TERM_WIDTH } from './ansi.ts';
+import { type ColorLevel, detectColorLevel } from './effort-style.ts';
 import {
   type HudModuleRenderContext,
   type IdentityLineOptions,
@@ -30,6 +31,8 @@ export interface FormatHudLinesInput {
   readonly todos: TodoSummary | null;
   readonly termWidth?: number;
   readonly nowSec: number;
+  readonly colorLevel?: ColorLevel;
+  readonly env?: NodeJS.ProcessEnv;
   readonly modeOptions: ModeLineOptions;
   readonly identityOptions: IdentityLineOptions;
   readonly activityLineOptions?: ActivityLineFormatOptions;
@@ -40,6 +43,9 @@ export function resolveEffectiveExceeds200k(
   data: StatusLineData,
   telemetry: SessionTelemetry | null | undefined,
 ): boolean {
+  if (telemetry !== null && telemetry !== undefined && telemetry.genCount > 0 && isFiniteNum(telemetry.ctxUsed)) {
+    return telemetry.ctxUsed > 200_000;
+  }
   if (telemetry?.compacted === true && isFiniteNum(telemetry.ctxUsed) && telemetry.ctxUsed <= 200_000) {
     return false;
   }
@@ -81,6 +87,7 @@ export function formatHudLines(input: FormatHudLinesInput): string[] {
     hasTodosLine,
     termWidth,
     nowSec: input.nowSec,
+    colorLevel: input.colorLevel ?? detectColorLevel(input.env ?? process.env),
     modeOptions: input.modeOptions,
     identityOptions: input.identityOptions,
     activityLineOptions: input.activityLineOptions,

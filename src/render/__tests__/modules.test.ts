@@ -116,7 +116,7 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     const lines = renderHudLines(cliHome, makeRichData(tmpRoot), baseRenderOpts(buildPresetConfig('zen')));
     assert.equal(lines.length, 1);
     const plain = stripAnsi(lines[0] ?? '');
-    assert.ok(plain.includes('[G4 Carbon ◑ high]'));
+    assert.ok(plain.includes('[G4 Carbon ● high]'));
     assert.ok(plain.includes('git:(feat/bar*)'));
     assert.ok(plain.includes('Swarm 2/3'));
     assert.ok(plain.includes('Ctx 42%'));
@@ -129,13 +129,13 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
 
   await it('omits zen 5h tail then Ctx tail when terminal_width is too narrow', () => {
     const zen = buildPresetConfig('zen');
-    const medium = renderHudLines(cliHome, makeRichData(tmpRoot, { terminal_width: 76 }), baseRenderOpts(zen));
+    const medium = renderHudLines(cliHome, makeRichData(tmpRoot, { terminal_width: 82 }), baseRenderOpts(zen));
     const mediumPlain = stripAnsi(medium[0] ?? '');
     assert.ok(mediumPlain.includes('Ctx 42%'));
     assert.equal(mediumPlain.includes('5h 88%'), false);
-    assert.ok(visibleLen(medium[0] ?? '') <= 75);
+    assert.ok(visibleLen(medium[0] ?? '') <= 81);
 
-    const tight = renderHudLines(cliHome, makeRichData(tmpRoot, { terminal_width: 68 }), baseRenderOpts(zen));
+    const tight = renderHudLines(cliHome, makeRichData(tmpRoot, { terminal_width: 72 }), baseRenderOpts(zen));
     const tightPlain = stripAnsi(tight[0] ?? '');
     assert.equal(tightPlain.includes('Ctx 42%'), false);
     assert.equal(tightPlain.includes('5h 88%'), false);
@@ -157,7 +157,7 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     assert.equal(lines.length, 2);
     const l0 = stripAnsi(lines[0] ?? '');
     const l1 = stripAnsi(lines[1] ?? '');
-    assert.ok(l0.includes('[G4 Carbon ◑ high]'));
+    assert.ok(l0.includes('[G4 Carbon ● high]'));
     assert.equal(l0.includes('Cost'), false);
     assert.equal(l0.includes('112 token/s'), false);
     assert.equal(l0.includes('Ctx 42%'), false);
@@ -192,7 +192,7 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     assert.equal(lines.length, 5);
     const joined = stripAnsi(lines.join('\n'));
     assert.ok(joined.includes('Swarm (2/3):'));
-    assert.ok(joined.includes('Build module registry (2/4) │ BG 2'));
+    assert.ok(joined.includes('Build module registry (2/4) │ Bg Tasks 2'));
     assert.equal(joined.includes('Skills (2):'), false);
     assert.equal(joined.includes('MCPs (1):'), false);
     assert.equal(joined.includes('Read ×2'), false);
@@ -229,7 +229,7 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     };
     const lines = renderHudLines(cliHome, makeRichData(tmpRoot), baseRenderOpts(cfg));
     assert.equal(lines.length, 1);
-    assert.ok(stripAnsi(lines[0] ?? '').includes('[G4 Carbon ◑ high]'));
+    assert.ok(stripAnsi(lines[0] ?? '').includes('[G4 Carbon ● high]'));
   });
 
   await it('omits categories from Activity Summary whose dedicated Activity Lines are also enabled', () => {

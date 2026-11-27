@@ -8,10 +8,11 @@ import type {
   TranscriptActivity,
 } from '../types.ts';
 import { stripAnsi } from './ansi.ts';
+import { detectColorLevel } from './effort-style.ts';
 import { formatHudLines } from './format-hud.ts';
 import { formatActivitySummarySnapshotTail, formatOsc8Overflow } from './osc8.ts';
 
-export const PREVIEW_NOW_SEC: number = 1_780_000_000;
+const PREVIEW_NOW_SEC: number = 1_780_000_000;
 const PREVIEW_OSC8_URI = 'file:///preview/agy-hud-snapshot.md';
 const MIN_PREVIEW_WIDTH = 40;
 
@@ -29,7 +30,7 @@ export interface RenderHudPreviewOptions {
   readonly color: boolean;
 }
 
-export function createHudPreviewFixture(termWidth: number): HudPreviewFixture {
+function createHudPreviewFixture(termWidth: number): HudPreviewFixture {
   const reset5hIso = new Date((PREVIEW_NOW_SEC + 8_100) * 1000).toISOString();
   const reset7dIso = new Date((PREVIEW_NOW_SEC + 367_200) * 1000).toISOString();
   const reset3p7dIso = new Date((PREVIEW_NOW_SEC + 302_400) * 1000).toISOString();
@@ -37,7 +38,8 @@ export function createHudPreviewFixture(termWidth: number): HudPreviewFixture {
   const data: StatusLineData = {
     model: { id: 'gemini-4-carbon', display_name: 'Gemini 4 Carbon', effort: 'high' },
     workspace: { current_dir: '/workspace/agy-hud', project_dir: '/workspace/agy-hud' },
-    context_window: { used_percentage: 38, context_window_size: 200_000 },
+    context_window: { used_percentage: 38, context_window_size: 1_048_576 },
+    agent_state: 'idle',
     cost: { total_usd: 0.42, subagent_usd: 0.11, estimated: true },
     quota: {
       'gemini-5h': { remaining_fraction: 0.82, reset_time: reset5hIso },
@@ -53,8 +55,8 @@ export function createHudPreviewFixture(termWidth: number): HudPreviewFixture {
     tps: 94.2,
     ttft: 1.4,
     cachePct: 87,
-    ctxUsed: 76_000,
-    ctxMax: 200_000,
+    ctxUsed: 194_560,
+    ctxMax: 512_000,
   };
 
   const activity: TranscriptActivity = {
@@ -123,6 +125,7 @@ export function renderHudPreviewLines(config: HudConfig, options: RenderHudPrevi
     todos: fixture.todos,
     termWidth: width,
     nowSec: PREVIEW_NOW_SEC,
+    colorLevel: options.color ? detectColorLevel(process.env) : 'none',
     modeOptions: { bypass: false, cliMode: 'plan' },
     identityOptions: {
       gitInfo: fixture.gitInfo,

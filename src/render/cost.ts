@@ -14,19 +14,19 @@ export interface CostFormatOptions {
   readonly termWidth?: number;
 }
 
-export function formatUsdAmount(usd: number, compact = false): string {
+function formatUsdAmount(usd: number, compact = false): string {
   if (compact || usd >= 10) {
     return `$${usd.toFixed(2)}`;
   }
   return `$${usd.toFixed(3)}`;
 }
 
-export function formatCnyAmount(usd: number, rate: number = DEFAULT_USD_TO_CNY_RATE): string {
+function formatCnyAmount(usd: number, rate: number = DEFAULT_USD_TO_CNY_RATE): string {
   const rounded = Math.round((usd * rate + 1e-12) * 100) / 100;
   return `¥${rounded.toFixed(2)}`;
 }
 
-export function formatCostAmount(usd: number, options: CostFormatOptions = {}): string {
+function formatCostAmount(usd: number, options: CostFormatOptions = {}): string {
   const currency = options.currency ?? 'usd';
   const rate =
     isFiniteNum(options.usdToCnyRate) && options.usdToCnyRate > 0 ? options.usdToCnyRate : DEFAULT_USD_TO_CNY_RATE;

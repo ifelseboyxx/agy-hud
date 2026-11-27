@@ -1,6 +1,8 @@
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
+import { normalizeHostAgentState } from '../core/quota-pace.ts';
+import { formatErrorReasonShortCode } from '../core/telemetry-error.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
-import type { AgentEntry, AgentsSummary, StatusLineData } from '../types.ts';
+import type { AgentEntry, AgentsSummary, SessionTelemetry, StatusLineData } from '../types.ts';
 import {
   BRIGHT_CYAN,
   BRIGHT_RED,
@@ -15,6 +17,7 @@ import {
   truncateToWidth,
   YELLOW,
 } from './ansi.ts';
+import { isActiveShimmerState } from './effort-style.ts';
 import { type ActivityLineFormatOptions, packActivityLine, type PackableLineItem } from './pack-line.ts';
 
 const AGENT_RETENTION_SECONDS = 60;
@@ -22,6 +25,7 @@ const MAX_VISIBLE_AGENTS = 8;
 
 export interface RuntimeBadgesOptions {
   hasTodosLine?: boolean;
+  telemetry?: SessionTelemetry | null;
 }
 
 export function formatRuntimeBadges(data: StatusLineData, options?: RuntimeBadgesOptions): string[] {
@@ -50,15 +54,36 @@ export function formatRuntimeBadges(data: StatusLineData, options?: RuntimeBadge
   }
 
   if (options?.hasTodosLine !== true && typeof data.task_count === 'number' && data.task_count > 0) {
-    badges.push(`${CYAN}BG ${BRIGHT_WHITE}${data.task_count}${RESET}`);
+    badges.push(`${CYAN}Bg Tasks ${BRIGHT_WHITE}${data.task_count}${RESET}`);
   }
 
   if (data.tool_confirmation_pending === true) {
     badges.push(`${BRIGHT_RED}! Approval${RESET}`);
   }
 
+  const hostState = normalizeHostAgentState(data.agent_state);
+  const activeTurn = isActiveShimmerState(data.agent_state);
+  if (hostState === 'authenticating') {
+    badges.push(`${BRIGHT_RED}! Auth${RESET}`);
+  } else if (hostState === 'reviewing' && data.tool_confirmation_pending !== true) {
+    badges.push(`${BRIGHT_CYAN}Review${RESET}`);
+  }
+
+  const tel = options?.telemetry ?? null;
+  const isErrorActive = hostState === 'error' || (!activeTurn && tel?.lastErrorCode != null);
+  if (isErrorActive) {
+    const code = tel?.lastErrorCode ? formatErrorReasonShortCode(tel.lastErrorCode) : '';
+    const suffix = code.length > 0 ? ` ${code}` : '';
+    badges.push(`${BRIGHT_RED}! Error${suffix}${RESET}`);
+  } else if (tel !== null && isFiniteNum(tel.lastRetries) && tel.lastRetries > 0) {
+    const code = tel.lastRetryReason ? formatErrorReasonShortCode(tel.lastRetryReason) : '';
+    const candidate = code.length > 0 ? `Retry ×${tel.lastRetries} ${code}` : `Retry ×${tel.lastRetries}`;
+    const label = candidate.length <= 15 ? candidate : `Retry ×${tel.lastRetries}`;
+    badges.push(`${BRIGHT_YELLOW}${label}${RESET}`);
+  }
+
   if (typeof data.pending_input_count === 'number' && data.pending_input_count > 0) {
-    badges.push(`${YELLOW}Q:${data.pending_input_count}${RESET}`);
+    badges.push(`${YELLOW}Queued ${data.pending_input_count}${RESET}`);
   }
 
   return badges;

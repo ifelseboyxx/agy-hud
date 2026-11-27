@@ -1,14 +1,13 @@
-import { pathToFileURL } from 'node:url';
-
 import { resolveCliSubdirFile, sanitizeSessionId } from '../collectors/safe-path.ts';
 import { nonEmptyStr } from '../core/guards.ts';
 import type { HudConfig } from '../types.ts';
 import { GRAY, RESET } from './ansi.ts';
+import { toSafeLocalFileUri } from './file-link.ts';
 
 const ESC = String.fromCharCode(0x1b);
 const MAX_OSC8_DATA_BYTES = 4096;
 
-export const ACTIVITY_SUMMARY_SNAPSHOT_TAIL_COLS: number = 11;
+const ACTIVITY_SUMMARY_SNAPSHOT_TAIL_COLS: number = 11;
 
 export interface SnapshotMarkdownTarget {
   absPath: string;
@@ -48,16 +47,8 @@ export function resolveSnapshotMarkdownUri(cliHome: string, convId: string): Sna
   if (absPath === null) {
     return null;
   }
-  let uri: string;
-  try {
-    uri = pathToFileURL(absPath).href;
-  } catch {
-    return null;
-  }
-  if (!uri.startsWith('file:///') || uri.includes('#') || uri.includes('?')) {
-    return null;
-  }
-  if (Buffer.byteLength(`8;;${uri}`, 'utf8') >= MAX_OSC8_DATA_BYTES) {
+  const uri = toSafeLocalFileUri(absPath, { maxBytes: MAX_OSC8_DATA_BYTES - 3 });
+  if (uri === null) {
     return null;
   }
   return { absPath, uri };

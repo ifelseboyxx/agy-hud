@@ -117,7 +117,7 @@ void describe('renderSnapshotMarkdown', () => {
 
     assert.equal(md, stripAnsi(md));
     assert.equal(EMOJI_PATTERN.test(md), false);
-    assert.ok(md.includes('# [CLI] Activity Snapshot'));
+    assert.ok(md.includes('# Activity Snapshot — conv-ful'));
     assert.ok(md.includes('Audit OSC 8 Hyperlinks'));
     assert.ok(md.includes('94.5 token/s'));
     assert.ok(md.includes('/repo/agy-hud/src/very/long/untruncated/path/file_9.ts'));
@@ -195,7 +195,6 @@ void describe('renderSnapshotMarkdown', () => {
       const session: SessionRecord = {
         convId,
         shortId: convId.slice(0, 8),
-        surface: 'cli',
         title: 'Parity Session',
         workspace: '/repo',
         workspaces: ['/repo'],
@@ -204,7 +203,7 @@ void describe('renderSnapshotMarkdown', () => {
         livePid: 1234,
         hasEnvelope: true,
         envelope: {
-          v: 1,
+          v: 2,
           convId,
           conversationTitle: 'Parity Session',
           agyPid: 1234,
@@ -425,5 +424,25 @@ void describe('renderSnapshotMarkdown', () => {
       nowMs: 1_000_000,
     });
     assert.ok(md.includes('- **Workspace**: `/repo/a|b`'));
+  });
+
+  void it('escapes untrusted quota keys and remaining_amount in Markdown without mangling pace prose', () => {
+    const md = renderSnapshotMarkdown({
+      convId: 'conv-md-quota-escape',
+      data: {
+        conversation_id: 'conv-md-quota-escape',
+        quota: {
+          'gemini-5h': { remaining_fraction: 0.42, reset_in_seconds: 11_400 },
+          '<b>pool</b> [x](https://evil)': { remaining_amount: '<img src=x> 50' },
+        },
+      },
+      activity: null,
+      agentsSummary: null,
+      nowMs: 1_780_000_000_000,
+    });
+    assert.ok(md.includes('- **Quota**: Gemini 5h 42% left! (reset '));
+    assert.ok(md.includes('\\<b\\>pool\\</b\\> \\[x\\]\\(https://evil\\) \\<img src=x\\> 50'));
+    assert.equal(md.includes('<b>pool</b>'), false);
+    assert.equal(md.includes('<img src=x>'), false);
   });
 });

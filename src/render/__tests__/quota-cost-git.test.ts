@@ -27,7 +27,7 @@ void describe('Option A quota formatting', () => {
     assert.deepEqual(formatRemainingQuotaPct(99.996), { text: '100%', isFull: true });
   });
 
-  void it('renders Gemini and 3rd-Party with left direction and day+hour resets on wide panes', () => {
+  void it('renders Gemini and Claude/GPT with left direction and day+hour resets on wide panes', () => {
     const line = stripAnsi(
       buildUsageLine(
         {
@@ -45,10 +45,10 @@ void describe('Option A quota formatting', () => {
       ),
     );
     assert.ok(line.includes('Gemini 5h: 82% left (2h15m) | 7d: 91% left (4d6h)'));
-    assert.ok(line.includes('3rd-Party 5h: 100% left'));
+    assert.ok(line.includes('Claude/GPT 5h: 100% left'));
   });
 
-  void it('uses compact Gem/3P labels without left on narrow panes and matches zen edge rounding', () => {
+  void it('uses clear Gemini/Claude/GPT labels without left on narrow panes and matches zen edge rounding', () => {
     const data: StatusLineData = {
       model: { id: 'gemini-4-argon' },
       quota: {
@@ -59,7 +59,7 @@ void describe('Option A quota formatting', () => {
       terminal_width: 90,
     };
     const narrow = stripAnsi(buildUsageLine(data, DEFAULT_HUD_CONFIG, null));
-    assert.ok(narrow.includes('Gem 5h: <1% (15m) | G 7d: 99% (1d) | 7d: 50% (2d)'));
+    assert.ok(narrow.includes('Gemini 5h: <1% (15m) | Base 7d: 99% (1d) | 7d: 50% (2d)'));
     assert.equal(narrow.includes(' left'), false);
 
     const zenTail = stripAnsi(formatCompactPrimaryQuotaTail(data, 1000));
@@ -69,6 +69,35 @@ void describe('Option A quota formatting', () => {
   void it('preserves unknown quota bucket keys sanitized', () => {
     const item = formatQuotaItem('custom-pool', { remaining_fraction: 0.64, reset_in_seconds: 1200 }, false, 1000);
     assert.equal(stripAnsi(item ?? ''), 'custom-pool: 64% left (20m)');
+  });
+
+  void it('surfaces depleting Quota Pace ETA on wide panes, bang fallback on narrow/zen, and stays quiet on muted pools', () => {
+    const depletingData: StatusLineData = {
+      model: { id: 'gemini-4-carbon' },
+      context_window: { used_percentage: 38, context_window_size: 512_000 },
+      quota: {
+        'gemini-5h': { remaining_fraction: 0.42, reset_in_seconds: 11_400 },
+        '3p-5h': { remaining_fraction: 0.42, reset_in_seconds: 11_400 },
+      },
+      terminal_width: 150,
+    };
+    const wide = stripAnsi(buildUsageLine(depletingData, DEFAULT_HUD_CONFIG, null, 1000));
+    assert.ok(wide.includes('Gemini 5h: 42% left (3h10m · ~0% 1h19m)'), wide);
+    // Muted secondary Claude/GPT bucket must not show depletion ETA or bang
+    assert.ok(wide.includes('Claude/GPT 5h: 42% left (3h10m)'), wide);
+    assert.equal(wide.includes('Claude/GPT 5h: 42%!'), false);
+
+    // Width-constrained wide pane degrades ETA cleanly to pct! (reset)
+    const constrained = stripAnsi(
+      buildUsageLine({ ...depletingData, terminal_width: 102 }, DEFAULT_HUD_CONFIG, null, 1000),
+    );
+    assert.ok(constrained.includes('5h: 42%') && (constrained.includes('42%! (3h10m)') || constrained.includes('~0%')));
+
+    const narrow = stripAnsi(buildUsageLine({ ...depletingData, terminal_width: 86 }, DEFAULT_HUD_CONFIG, null, 1000));
+    assert.ok(narrow.includes('Gemini 5h: 42%! (3h10m)'), narrow);
+
+    const zenTail = stripAnsi(formatCompactPrimaryQuotaTail(depletingData, 1000));
+    assert.equal(zenTail, '5h 42%!');
   });
 });
 

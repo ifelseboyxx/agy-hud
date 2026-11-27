@@ -1,5 +1,5 @@
-import { parseModelAndEffort } from '../collectors/telemetry.ts';
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
+import { parseModelAndEffort } from '../core/model-names.ts';
 import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
 import type {
   AgentsSummary,
@@ -32,15 +32,15 @@ import {
   renderBar,
   RESET,
   visibleLen,
-  YELLOW,
 } from './ansi.ts';
 import { formatCostSegment } from './cost.ts';
+import { type ColorLevel, detectColorLevel, formatModelSegment, isActiveShimmerState } from './effort-style.ts';
 import { formatGitSegment } from './git-render.ts';
 import { type ActivityLineFormatOptions, resolveLineBudget } from './pack-line.ts';
 import { appendQuotaUsageItems, formatCompactPrimaryQuotaTail } from './quota.ts';
 
 export { formatActivitySummaryLine, type ActivitySummaryInput } from './activity-summary.ts';
-export { formatQuotaItem, type FormatQuotaItemOptions } from './quota.ts';
+export { type FormatQuotaItemOptions } from './quota.ts';
 
 const CTX_CAPACITY_MIN_WIDTH = 95;
 const ACTIVITY_LINE_SET: ReadonlySet<HudLineId> = new Set(['activity', 'tools', 'skills', 'mcps', 'agents']);
@@ -70,6 +70,7 @@ export interface HudModuleRenderContext {
   hasTodosLine: boolean;
   termWidth: number;
   nowSec: number;
+  colorLevel?: ColorLevel;
   modeOptions?: ModeLineOptions;
   identityOptions?: IdentityLineOptions;
   activityLineOptions?: ActivityLineFormatOptions;
@@ -82,7 +83,16 @@ export function hasAnyActivityLine(lines: readonly HudLineId[]): boolean {
   return lines.some((id) => ACTIVITY_LINE_SET.has(id));
 }
 
-export function resolveContextPct(data: StatusLineData, telemetry: SessionTelemetry | null): number | null {
+function resolveContextPct(data: StatusLineData, telemetry: SessionTelemetry | null): number | null {
+  if (
+    telemetry !== null &&
+    telemetry.genCount > 0 &&
+    isFiniteNum(telemetry.ctxUsed) &&
+    isFiniteNum(telemetry.ctxMax) &&
+    telemetry.ctxMax > 0
+  ) {
+    return Math.min(100, Math.max(0, (telemetry.ctxUsed / telemetry.ctxMax) * 100));
+  }
   const ctxObj = data.context_window;
   const winSize = ctxObj?.context_window_size;
   const maxTok = isFiniteNum(winSize) && winSize > 0 ? winSize : (telemetry?.ctxMax ?? null);
@@ -90,7 +100,7 @@ export function resolveContextPct(data: StatusLineData, telemetry: SessionTeleme
   if (telemetry?.compacted === true && isFiniteNum(telemetry.ctxUsed) && isFiniteNum(maxTok) && maxTok > 0) {
     ctxPct = Math.min(100, Math.max(0, (telemetry.ctxUsed / maxTok) * 100));
   }
-  return isFiniteNum(ctxPct) ? ctxPct : null;
+  return isFiniteNum(ctxPct) ? Math.min(100, Math.max(0, ctxPct)) : null;
 }
 
 function formatCompactContextTail(data: StatusLineData, telemetry: SessionTelemetry | null): string {
@@ -152,7 +162,7 @@ export function buildModeLine(data: StatusLineData, cliSettings: CliSettings = {
   return ` ${GRAY}▸ ${cleanMode} mode${RESET}${vimTag} ${hint}`;
 }
 
-export function buildIdentityLine(ctx: HudModuleRenderContext): string {
+function buildIdentityLine(ctx: HudModuleRenderContext): string {
   const { data, config, telemetry, cliSettings, agentsSummary, hasTodosLine, identityOptions: options } = ctx;
   const sep = ` ${GRAY}│${RESET} `;
   const parts: string[] = [];
@@ -168,8 +178,15 @@ export function buildIdentityLine(ctx: HudModuleRenderContext): string {
     const parsedModel = parseModelAndEffort(data, cliSettings);
     const modelName = sanitizeTerminalLabel(parsedModel.name);
     const effort = sanitizeTerminalLabel(parsedModel.effort);
-    const effortText = effort.length > 0 ? ` ${GRAY}◑ ${YELLOW}${effort}${RESET}` : '';
-    parts.push(`${GRAY}[${BRIGHT_CYAN}${BOLD}${modelName}${RESET}${effortText}${GRAY}]${RESET}`);
+    const colorLevel = ctx.colorLevel ?? detectColorLevel(process.env);
+    parts.push(
+      formatModelSegment(modelName, effort, {
+        colorLevel,
+        active: isActiveShimmerState(data.agent_state),
+        nowSec: ctx.nowSec,
+        peakFlags: parsedModel.peakFlags,
+      }),
+    );
   }
 
   if (config.segments.git) {
@@ -194,7 +211,7 @@ export function buildIdentityLine(ctx: HudModuleRenderContext): string {
     if (agentsBadge.length > 0) {
       parts.push(agentsBadge);
     }
-    parts.push(...formatRuntimeBadges(data, { hasTodosLine }));
+    parts.push(...formatRuntimeBadges(data, { hasTodosLine, telemetry }));
   }
 
   if (config.segments.cost) {

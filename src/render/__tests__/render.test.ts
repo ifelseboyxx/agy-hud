@@ -50,6 +50,20 @@ void describe('render and hud-entry', () => {
     const segs = buildPerfSegments(tel);
     assert.equal(segs.length, 3);
     assert.ok(stripAnsi(segs.join(' ')).includes('92.4 token/s'));
+    assert.ok(stripAnsi(segs.join(' ')).includes('TTFT 1.9s'));
+
+    const subSec = stripAnsi(buildPerfSegments({ ...tel, tps: 86.0, ttft: 0.42 }).join(' '));
+    assert.ok(subSec.includes('86 token/s'), subSec);
+    assert.ok(subSec.includes('TTFT 420ms'), subSec);
+
+    const sevenOne = stripAnsi(buildPerfSegments({ ...tel, tps: 86.4, ttft: 7.1 }).join(' '));
+    assert.ok(sevenOne.includes('86.4 token/s'), sevenOne);
+    assert.ok(sevenOne.includes('TTFT 7.1s'), sevenOne);
+    assert.equal(sevenOne.includes('7.10s'), false);
+
+    const exactMin = stripAnsi(buildPerfSegments({ ...tel, tps: 100, ttft: 60 }).join(' '));
+    assert.ok(exactMin.includes('TTFT 1m'), exactMin);
+    assert.equal(exactMin.includes('1m0s'), false);
 
     const base = ' [Carbon]';
     const full = fitPerfCapsule(base, tel, 120);
@@ -61,6 +75,16 @@ void describe('render and hud-entry', () => {
 
     const tiny = fitPerfCapsule(base, tel, 12);
     assert.equal(tiny, base);
+
+    // Non-anomalous Cache 0% renders in muted GRAY; active Cache Anomaly renders BRIGHT_RED with trailing !
+    const coldZero = buildPerfSegments({ ...tel, cachePct: 0, latestCacheAnomaly: null });
+    assert.ok(coldZero.some((s) => s.includes('\x1b[90m0%') && !s.includes('0%!')));
+    const anomalyZero = buildPerfSegments({
+      ...tel,
+      cachePct: 0,
+      latestCacheAnomaly: { kind: 'cleared', prevPct: 92, curPct: 0, gapSec: 42 },
+    });
+    assert.ok(anomalyZero.some((s) => s.includes('\x1b[91m0%!')));
   });
 
   void it('renders mode line without pictographic emojis and handles quota priorities', () => {
@@ -97,7 +121,7 @@ void describe('render and hud-entry', () => {
       ),
     );
     assert.ok(line2.includes('Context ████░░░░░░ 42% (420k/1M)'));
-    assert.ok(line2.includes('3rd-Party 5h: 75% left (1h)'));
+    assert.ok(line2.includes('Claude/GPT 5h: 75% left (1h)'));
     assert.ok(line2.includes('Gemini 5h: 90% left (30m)'));
 
     const narrowLine2 = stripAnsi(
@@ -115,8 +139,7 @@ void describe('render and hud-entry', () => {
         null,
       ),
     );
-    assert.ok(narrowLine2.includes('3P 5h: 75% (1h)'));
-    assert.equal(narrowLine2.includes('Gem 5h:'), false);
+    assert.ok(narrowLine2.includes('Claude/GPT 5h: 75% (1h)'));
     assert.equal(narrowLine2.includes('Gemini 5h:'), false);
     assert.equal(narrowLine2.includes('(420k/1M)'), false);
 
@@ -205,17 +228,17 @@ void describe('render and hud-entry', () => {
     const fullOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: buildPresetConfig('full') }));
     assert.equal(EMOJI_PATTERN.test(fullOut), false);
     assert.ok(fullOut.includes('accept edits on'));
-    assert.ok(fullOut.includes('[Orchestrator (Carbon) ◑ high]'));
+    assert.ok(fullOut.includes('[Orchestrator (Carbon) ● high]'));
     assert.ok(fullOut.includes('Cost $0.425'));
     assert.ok(fullOut.includes('112 token/s'));
     assert.ok(fullOut.includes('Read ×5'));
     assert.ok(fullOut.includes('Skills (1): tdd'));
     assert.ok(fullOut.includes('MCPs (1): github'));
     assert.ok(fullOut.includes('Swarm (2/3):'));
-    assert.ok(fullOut.includes('Build tests (2/4) │ BG 2'));
-    // BG 2 is already shown on todos line, so Line 1 must not duplicate it.
+    assert.ok(fullOut.includes('Build tests (2/4) │ Bg Tasks 2'));
+    // Bg Tasks 2 is already shown on todos line, so Line 1 must not duplicate it.
     const fullLine1 = fullOut.split('\n')[1] ?? '';
-    assert.equal(fullLine1.includes('BG 2'), false);
+    assert.equal(fullLine1.includes('Bg Tasks 2'), false);
 
     const compactOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: buildPresetConfig('compact') }));
     assert.ok(compactOut.includes('accept edits on'));
@@ -228,8 +251,8 @@ void describe('render and hud-entry', () => {
     assert.equal(compactOut.includes('MCPs (1):'), false);
     assert.equal(compactOut.includes('Swarm (2/3):'), false);
     assert.equal(compactOut.includes('Build tests'), false);
-    // Todos line is hidden in compact mode, so BG 2 returns on Line 1.
-    assert.ok(compactOut.includes('BG 2'));
+    // Todos line is hidden in compact mode, so Bg Tasks 2 returns on Line 1.
+    assert.ok(compactOut.includes('Bg Tasks 2'));
 
     const swarmOut = stripAnsi(
       renderHudFromData(baseData, { ...opts, hudConfig: { preset: 'swarm', maxAgentChips: 2 } }),
@@ -241,7 +264,7 @@ void describe('render and hud-entry', () => {
     const minimalOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: { preset: 'minimal' } }));
     const minimalLines = minimalOut.split('\n');
     assert.equal(minimalLines.length, 2);
-    assert.ok(minimalLines[0]?.includes('[Orchestrator (Carbon) ◑ high]'));
+    assert.ok(minimalLines[0]?.includes('[Orchestrator (Carbon) ● high]'));
     assert.ok(minimalLines[1]?.includes('Context'));
     assert.equal(minimalOut.includes('accept edits on'), false);
     assert.equal(minimalOut.includes('Swarm (2/3):'), false);
@@ -302,7 +325,7 @@ void describe('render and hud-entry', () => {
     });
     assert.equal(validRes.status, 0);
     const clean = stripAnsi(validRes.stdout);
-    assert.ok(clean.includes('[Orchestrator (Carbon) ◑ high]'));
+    assert.ok(clean.includes('[Orchestrator (Carbon) ● high]'));
     assert.ok(clean.includes('Context ██░░░░░░░░ 20%'));
   });
 
