@@ -64,25 +64,32 @@ export function createTempDirTracker(): {
   };
 }
 
+function stripHostAgyFromPath(rawPath: string | undefined): string {
+  const nodeDir = path.dirname(process.execPath);
+  if (!rawPath) return nodeDir;
+  const agyNames = process.platform === 'win32' ? ['agy.cmd', 'agy.exe', 'agy'] : ['agy'];
+  const kept = rawPath.split(path.delimiter).filter((dir) => {
+    const trimmed = dir.trim().replace(/^"(.*)"$/, '$1');
+    if (trimmed.length === 0) return false;
+    return !agyNames.some((bin) => existsSync(path.join(trimmed, bin)));
+  });
+  if (!kept.includes(nodeDir)) kept.unshift(nodeDir);
+  return kept.join(path.delimiter);
+}
+
 export function makeIsolatedEnv(root: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     ...process.env,
     HOME: root,
     GEMINI_HOME: path.join(root, '.gemini'),
     GEMINI_CLI_HOME: root,
+    PATH: stripHostAgyFromPath(process.env.PATH),
     ...extra,
   };
 }
 
 export function makeFastIsolatedEnv(root: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  if (process.platform === 'win32' || extra.PATH !== undefined) {
-    return makeIsolatedEnv(root, extra);
-  }
-  const okBin = createFakeAgyBin(root, 'fast-ok', '  exit 0');
-  return makeIsolatedEnv(root, {
-    PATH: `${okBin}${path.delimiter}${process.env.PATH ?? ''}`,
-    ...extra,
-  });
+  return makeIsolatedEnv(root, extra);
 }
 
 export function writeJson(filePath: string, data: unknown): void {

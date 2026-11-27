@@ -8,6 +8,7 @@ import {
   createFakeAgyBin,
   createTempDirTracker,
   INSTALL_SCRIPT,
+  makeIsolatedEnv as makeFastEnv,
   makeIsolatedEnv,
   readJson,
   spawnNodeScriptAsync,
@@ -18,14 +19,6 @@ import {
 
 function runInstallAsync(args: readonly string[], env: NodeJS.ProcessEnv): Promise<ScriptResult> {
   return spawnNodeScriptAsync(INSTALL_SCRIPT, args, env);
-}
-
-function makeFastEnv(root: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const okBin = createFakeAgyBin(root, 'ok', '  exit 0');
-  return makeIsolatedEnv(root, {
-    PATH: `${okBin}${path.delimiter}${process.env.PATH ?? ''}`,
-    ...extra,
-  });
 }
 
 void describe('CLI shim rollback safety and doctor diagnostics', { concurrency: true }, () => {

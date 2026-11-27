@@ -15,10 +15,9 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
-  createFakeAgyBin,
   createTempDirTracker,
   INSTALL_SCRIPT,
-  makeIsolatedEnv,
+  makeIsolatedEnv as makeFastEnv,
   readJson,
   spawnNodeScriptAsync,
   writeJson,
@@ -27,14 +26,6 @@ import {
 
 function runInstallAsync(args: readonly string[], env: NodeJS.ProcessEnv): Promise<ScriptResult> {
   return spawnNodeScriptAsync(INSTALL_SCRIPT, args, env);
-}
-
-function makeFastEnv(root: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const okBin = createFakeAgyBin(root, 'ok', '  exit 0');
-  return makeIsolatedEnv(root, {
-    PATH: `${okBin}${path.delimiter}${process.env.PATH ?? ''}`,
-    ...extra,
-  });
 }
 
 void describe('plugin-first wire/unwire and CLI Shim lifecycle', { concurrency: true }, () => {

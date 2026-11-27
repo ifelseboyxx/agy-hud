@@ -16,7 +16,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { loadTodos, loadTranscriptActivity } from '../src/collectors/activity.ts';
 import { collectAgentsSummary } from '../src/collectors/agents.ts';
-import { detectAgyFlags, getSessionElapsedSeconds } from '../src/collectors/settings.ts';
+import { detectAgyFlags } from '../src/collectors/proc.ts';
+import { getSessionElapsedSeconds } from '../src/collectors/settings.ts';
 import { loadSessionTelemetry } from '../src/collectors/telemetry.ts';
 
 function writeDoneTranscript(

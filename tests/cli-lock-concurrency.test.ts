@@ -10,7 +10,8 @@ import { detectAgyProcess } from '../src/collectors/proc.ts';
 import { getCliHomeLockPath, getMcpConfigLockPath } from '../src/core/file-lock.ts';
 import { buildPresetConfig } from '../src/core/hud-config.ts';
 import { runHudRender } from '../src/hud-runner.ts';
-import { materializeSnapshotMarkdownIfNeeded, resolveSnapshotMarkdownUri } from '../src/render/osc8.ts';
+import { materializeSnapshotMarkdownIfNeeded } from '../src/hud-snapshot-publish.ts';
+import { resolveSnapshotMarkdownUri } from '../src/render/osc8.ts';
 import {
   createFakeAgyBin,
   createTempDirTracker,

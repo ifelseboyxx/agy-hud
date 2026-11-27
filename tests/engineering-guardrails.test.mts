@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
 
-import { collectArchitectureErrors, findDuplicateFunctionErrors } from '../scripts/validate-architecture.ts';
+import {
+  collectArchitectureErrors,
+  findDuplicateFunctionErrors,
+  validateEmbeddedClientScript,
+} from '../scripts/validate-architecture.ts';
 import { findEmojiViolations } from '../scripts/validate-no-emoji.mts';
 import { validateSourceMaintainability } from '../scripts/validate-source-maintainability.mts';
 import { findMisplacedTests } from '../scripts/validate-test-layout.mts';
@@ -13,9 +18,17 @@ import {
   findIdeOrphanedTypedSourceFiles,
   findUncoveredTypedSourceFiles,
 } from '../scripts/validate-tsconfig-coverage.mts';
-import { detectStepWarning, resolvePnpmSpawnSpec, runVerify, type StepOutcome } from '../scripts/verify.mts';
+import {
+  detectStepWarning,
+  extractSlowestSuites,
+  resolvePnpmSpawnSpec,
+  runVerify,
+  type StepOutcome,
+} from '../scripts/verify.mts';
+import { INSPECTOR_SCRIPT } from '../src/mcp/hud-inspector-script.ts';
 
 const ROOT = process.cwd();
+const execFileAsync = promisify(execFile);
 
 function writeFixtureFiles(baseDir: string, files: Record<string, string>): void {
   for (const [rel, body] of Object.entries(files)) {
@@ -25,30 +38,34 @@ function writeFixtureFiles(baseDir: string, files: Record<string, string>): void
   }
 }
 
-void test('commitlint 放行合法提交头', () => {
+async function runCommitlintMsg(msg: string): Promise<number> {
   const bin = path.join(ROOT, 'node_modules/.bin/commitlint');
-  const check = (msg: string): number | null =>
-    spawnSync(bin, ['--config', path.join(ROOT, '.commitlintrc.cjs')], {
+  try {
+    const child = execFileAsync(bin, ['--config', path.join(ROOT, '.commitlintrc.cjs')], {
       cwd: ROOT,
-      input: `${msg}\n`,
       encoding: 'utf8',
-    }).status;
+    });
+    child.child.stdin?.end(`${msg}\n`);
+    await child;
+    return 0;
+  } catch (err) {
+    const code = (err as { code?: number }).code;
+    return typeof code === 'number' && code !== 0 ? code : 1;
+  }
+}
 
-  assert.equal(check('feat(root): 补齐工程化门禁'), 0);
-  assert.equal(check('fix(collectors): 修复遥测增量读取边界'), 0);
-});
+void test('commitlint 放行合法提交头并拦截缺失或非法 scope', async () => {
+  const [okRoot, okMcp, badNoScope, badScope] = await Promise.all([
+    runCommitlintMsg('feat(root): 补齐工程化门禁'),
+    runCommitlintMsg('fix(mcp): 修复遥测增量读取边界'),
+    runCommitlintMsg('feat: 缺少 scope'),
+    runCommitlintMsg('feat(invalid): 非法 scope'),
+  ]);
 
-void test('commitlint 拦截缺失或非法 scope', () => {
-  const bin = path.join(ROOT, 'node_modules/.bin/commitlint');
-  const check = (msg: string): number | null =>
-    spawnSync(bin, ['--config', path.join(ROOT, '.commitlintrc.cjs')], {
-      cwd: ROOT,
-      input: `${msg}\n`,
-      encoding: 'utf8',
-    }).status;
-
-  assert.notEqual(check('feat: 缺少 scope'), 0);
-  assert.notEqual(check('feat(invalid): 非法 scope'), 0);
+  assert.equal(okRoot, 0);
+  assert.equal(okMcp, 0);
+  assert.notEqual(badNoScope, 0);
+  assert.notEqual(badScope, 0);
 });
 
 void test('isolate-git-env 预加载清空继承的 GIT_* 变量', () => {
@@ -238,6 +255,30 @@ void test('架构守卫拦截 collectors 导入 render 层', (t) => {
   assert.ok(errors.some((e) => e.includes('rogue-collector.ts') && e.includes('src/render/')));
 });
 
+void test('架构守卫强制保持 src/render/ 纯净并校验内嵌客户端脚本语法', (t) => {
+  assert.deepEqual(validateEmbeddedClientScript(INSPECTOR_SCRIPT), []);
+  assert.ok(validateEmbeddedClientScript('function broken( {').length > 0);
+
+  const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'arch-pure-render-')));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  writeFixtureFiles(tmp, {
+    'src/core/file-lock.ts': 'export function withFileLocksSync(): void {}\n',
+    'src/render/clean.ts': 'export const CLEAN = 1;\n',
+  });
+  assert.deepEqual(collectArchitectureErrors(tmp, { checkSkills: false, checkClientScripts: false }).errors, []);
+
+  writeFixtureFiles(tmp, {
+    'src/render/impure.ts': [
+      "import { writeFileSync } from 'node:fs';",
+      "import { withFileLocksSync } from '../core/file-lock.ts';",
+      'export function leak(): void { withFileLocksSync(); writeFileSync("/tmp/x", "1"); }',
+    ].join('\n'),
+  });
+  const { errors } = collectArchitectureErrors(tmp, { checkSkills: false, checkClientScripts: false });
+  assert.ok(errors.some((e) => e.includes('impure.ts') && e.includes('src/core/file-lock.ts')));
+  assert.ok(errors.some((e) => e.includes('impure.ts') && e.includes('writeFileSync')));
+});
+
 void test('零 Emoji 守卫同时覆盖测试文件', (t) => {
   const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'emoji-test-')));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -287,7 +328,9 @@ void test('架构守卫拦截经由 getSettingsPaths 解构或别名写入 statu
   assert.ok(errors.some((e) => e.includes('rogue-alias.ts') && e.includes('statusLine backup')));
 });
 
-void test('verify 门禁将向 stderr 输出警告的零退出码步骤判为失败', async () => {
+async function captureVerifyRun(
+  stepRunner: (name: string) => Promise<StepOutcome>,
+): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = '';
   let stderr = '';
   const code = await runVerify({
@@ -303,17 +346,22 @@ void test('verify 门禁将向 stderr 输出警告的零退出码步骤判为失
         return true;
       },
     },
-    stepRunner: (name): Promise<StepOutcome> => {
-      const stepStderr = name === 'test' ? 'Warning: simulated runtime warning on stderr\n' : '';
-      return Promise.resolve({
-        name,
-        code: 0,
-        durationMs: 12,
-        stdout: 'ok\n',
-        stderr: stepStderr,
-        warningReason: detectStepWarning(name, 'ok\n', stepStderr),
-      });
-    },
+    stepRunner,
+  });
+  return { code, stdout, stderr };
+}
+
+void test('verify 门禁将向 stderr 输出警告的零退出码步骤判为失败', async () => {
+  const { code, stdout, stderr } = await captureVerifyRun((name) => {
+    const stepStderr = name === 'test' ? 'Warning: simulated runtime warning on stderr\n' : '';
+    return Promise.resolve({
+      name,
+      code: 0,
+      durationMs: 12,
+      stdout: 'ok\n',
+      stderr: stepStderr,
+      warningReason: detectStepWarning(name, 'ok\n', stepStderr),
+    });
   });
   assert.equal(code, 1);
   assert.ok(stdout.includes('[FAIL] test (12ms) [stderr warning/diagnostic]'));
@@ -326,29 +374,19 @@ void test('verify 门禁捕获 node --test 写入 stdout 的运行时警告', as
   assert.equal(detectStepWarning('test', testStdout, ''), 'stdout runtime warning');
   assert.equal(detectStepWarning('test', 'ok 1 - verify 门禁拦截警告 (1ms)\n', ''), null);
 
-  let out = '';
-  const code = await runVerify({
-    stdout: {
-      write: (chunk: string): boolean => {
-        out += chunk;
-        return true;
-      },
-    },
-    stderr: { write: (): boolean => true },
-    stepRunner: (name): Promise<StepOutcome> => {
-      const stepStdout = name === 'test' ? testStdout : 'ok\n';
-      return Promise.resolve({
-        name,
-        code: 0,
-        durationMs: 10,
-        stdout: stepStdout,
-        stderr: '',
-        warningReason: detectStepWarning(name, stepStdout, ''),
-      });
-    },
+  const { code, stdout } = await captureVerifyRun((name) => {
+    const stepStdout = name === 'test' ? testStdout : 'ok\n';
+    return Promise.resolve({
+      name,
+      code: 0,
+      durationMs: 10,
+      stdout: stepStdout,
+      stderr: '',
+      warningReason: detectStepWarning(name, stepStdout, ''),
+    });
   });
   assert.equal(code, 1);
-  assert.ok(out.includes('[FAIL] test (10ms) [stdout runtime warning]'));
+  assert.ok(stdout.includes('[FAIL] test (10ms) [stdout runtime warning]'));
 });
 
 void test('verify 门禁在 Windows 下通过 cmd.exe 或 pnpm npm_execpath 启动 pnpm', () => {
@@ -376,4 +414,39 @@ void test('verify 门禁在 Windows 下通过 cmd.exe 或 pnpm npm_execpath 启�
 
   const viaPosix = resolvePnpmSpawnSpec(['run', 'build'], 'darwin', {});
   assert.deepEqual(viaPosix, { command: 'pnpm', args: ['--silent', 'run', 'build'] });
+});
+
+void test('extractSlowestSuites 按耗时降序提取顶层测试套件并剥离 ANSI 颜色与缩进子用例', () => {
+  const esc = String.fromCharCode(0x1b);
+  const stdout = [
+    '\u25b6 fast suite',
+    '  \u2714 child A (4000ms)',
+    '\u2714 fast suite (120.5ms)',
+    `${esc}[32m\u2714 slow ansi suite ${esc}[90m(3450.25ms)${esc}[39m`,
+    '\u2716 broken suite (1890ms)',
+    '\u2714 medium suite (600ms)',
+  ].join('\n');
+
+  assert.deepEqual(extractSlowestSuites(stdout, 2), [
+    { name: 'slow ansi suite', durationMs: 3450.25 },
+    { name: 'broken suite', durationMs: 1890 },
+  ]);
+});
+
+void test('verify 门禁在 test 耗时超过 10s 观察线时输出最慢套件提示而不阻断通过', async () => {
+  const { code, stdout } = await captureVerifyRun((name) =>
+    Promise.resolve({
+      name,
+      code: 0,
+      durationMs: name === 'test' ? 10_500 : 20,
+      stdout: name === 'test' ? '\u2714 heavy integration (4200.4ms)\n\u2714 quick unit (15ms)\n' : 'ok\n',
+      stderr: '',
+      warningReason: null,
+    }),
+  );
+
+  assert.equal(code, 0);
+  assert.ok(
+    stdout.includes('[INFO] slowest test suites (test > 10000ms): heavy integration (4200ms), quick unit (15ms)'),
+  );
 });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -221,7 +222,7 @@ void describe('runAtomicBuild', async () => {
     writeFileSync(payloadPath, payload, 'utf8');
     const env = makeIsolatedEnv(root);
 
-    await runAtomicBuild({ outDir, logLevel: 'silent' });
+    cpSync(sharedOutDir, outDir, { recursive: true });
 
     let done = false;
     let totalRuns = 0;
