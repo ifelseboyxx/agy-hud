@@ -1,6 +1,9 @@
-# Issue Tracker: Local Markdown
+# Issue Tracker: GitHub Issues & Local Markdown
 
-Issues and specs for this repo live under `.scratch/<feature-slug>/`.
+## GitHub Issues vs Local `.scratch/`
+
+- **Public user reports (`/triage`)**: Live on GitHub Issues (`ifelseboyxx/agy-hud`), using standard GitHub labels (`bug`, `enhancement`, `wontfix`). Close already-implemented feature requests as `completed` (do not label them `wontfix` or record them under `.out-of-scope/`).
+- **Internal specs & implementation tickets**: Live under `.scratch/<feature-slug>/` (gitignored), using the local Markdown layout below.
 
 ## Layout & Conventions
 

@@ -15,7 +15,13 @@ Review-stage judgement standards for `agy-hud` (enforced during `/code-review`, 
 ## Test Granularity & Lifecycle Hygiene
 
 - **One behavior per `it`**: Keep unit tests (`__tests__/`) to one behavior and one failure path per `it` (target `<= 500ms`), without chaining unrelated scenarios in one title. Keep integration tests (`tests/`) to one end-to-end invariant per `it` (target `~2s`), and always release child-process lock or flag barriers inside `try/finally`.
-- **Unreleased persistence formats**: Before the first public release, evolve owned persistence formats (backups, caches, `hud-config.json`) directly without legacy branches or migration shims; post-release compatibility branches must record their introducing version and removal condition.
+- **Released persistence formats (`v0.1.0+`)**: Evolve owned persistence formats (`hud-config.json`, `agy-hud-statusline-backup.json`, `agy_hud_*` caches) with backward compatibility or explicit schema-version fallback; record the introducing version and removal condition on every compatibility branch.
+
+## Cross-Platform Test Portability
+
+- **Inode identity replacement**: Move (`renameSync` / `mv`) the original directory aside before recreating a target path in `dev/ino` guard tests so Linux ext4 cannot recycle the freed inode.
+- **Cross-platform paths & commands**: Derive expected `statusLine` and keybinding command strings via production formatters (`formatStatusLineCommand`, `resolveKeybindingCommand`), and isolate both `HOME` and `USERPROFILE` when testing `~/` expansion.
+- **CI timing headroom**: Pass explicit `timeoutMs` on live subprocess (`git` / `node`) tests and allow 2-vCPU CI scheduling headroom on wall-clock lock or cache timing assertions.
 
 ## Architecture & Distribution Hygiene
 

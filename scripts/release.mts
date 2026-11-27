@@ -209,7 +209,7 @@ function executePrepare(args: readonly string[], opts: ReleaseCliOptions): numbe
     '  1. Review and polish ### Highlights in CHANGELOG.md (replace any <!-- TODO --> placeholders).',
     ...(!isPrerelease
       ? [
-          `  2. Audit README.md / README.zh-CN.md pinned /tree/${nextTag} examples and refresh assets/preview.png if HUD visuals changed.`,
+          `  2. Audit README.md / README.zh-CN.md pinned /tree/${nextTag} examples and refresh assets/preview.png via 'pnpm preview:screenshot' if HUD visuals changed.`,
         ]
       : []),
     `  3. Commit changes: git add -A && git commit -m "release(root): ${nextTag}"`,

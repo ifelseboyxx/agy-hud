@@ -8,7 +8,8 @@
 
 ## References
 
-- 审查判断规范（阳性对照、symlink 校验边界、并发与三端测试粒度、未发布格式策略）：`CODING_STANDARDS.md`
+- 审查判断规范（阳性对照、symlink 校验边界、并发与三端测试粒度、持久化格式兼容策略、跨平台测试可移植性）：`CODING_STANDARDS.md`
+- 发版、打 tag、提取 Release Notes 或维护 GitHub Rulesets：`RELEASING.md`
 - 维护 `.scratch/<feature>/` 规格、ticket 生命周期或 `/wayfinder`：`docs/agents/issue-tracker.md`
 - 应用或解释 issue triage 标签：`docs/agents/triage-labels.md`
 - 命名领域概念、查术语或记录 ADR：`docs/agents/domain.md` -> `GLOSSARY.md` / `docs/adr/`

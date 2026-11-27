@@ -236,8 +236,14 @@ void describe('local pnpm release CLI orchestration, security guards, and workfl
     assert.ok(releaseYml.includes('"$REMOTE_TAG_COMMIT" != "$VERIFIED_COMMIT"'));
     assert.ok(releaseYml.includes('group: release-publish-latest'));
     assert.ok(releaseYml.includes('persist-credentials: false'));
-    assert.equal(releaseYml.includes('actions/checkout@v4'), false, 'release.yml must pin checkout by commit SHA');
-    assert.equal(releaseYml.includes('actions/setup-node@v4'), false, 'release.yml must pin setup-node by commit SHA');
+    const externalUses = [...releaseYml.matchAll(/uses:\s+([^\s#]+)/g)]
+      .map((m) => m[1] ?? '')
+      .filter((ref) => !ref.startsWith('./'));
+    assert.ok(externalUses.length >= 5, 'release.yml must pin every external action across gate and publish-release');
+    for (const ref of externalUses) {
+      assert.match(ref, /@[0-9a-f]{40}$/, `release.yml must pin every external action by 40-char commit SHA: ${ref}`);
+    }
+    assert.equal(releaseYml.includes('@v4'), false, 'release.yml must not reference legacy Node 20 @v4 actions');
 
     const fallbackYml = readFileSync(path.join(REPO_ROOT, '.github', 'release.yml'), 'utf8');
     assert.ok(fallbackYml.includes('changelog:'));
