@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import { aggregateCompletedTools } from '../../collectors/activity-aggregate.ts';
 import { buildPresetConfig } from '../../core/hud-config.ts';
+import { runHudRender as renderHudLines } from '../../hud-runner.ts';
 import { type AgentsSummary, type TranscriptActivity, type TranscriptToolEntry } from '../../types.ts';
 import { computeHudVisibleToolsCap, formatNamesLine, formatToolsLine } from '../activity-lines.ts';
 import {
@@ -15,7 +16,6 @@ import {
   truncateToWidth,
   visibleLen,
 } from '../ansi.ts';
-import { renderHudLines } from '../lines.ts';
 import { formatOsc8Overflow } from '../osc8.ts';
 
 const ESC = String.fromCharCode(0x1b);

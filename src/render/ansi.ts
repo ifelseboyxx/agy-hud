@@ -173,6 +173,27 @@ export function fmtDuration(sec: number | null | undefined, spaced = true, useDa
   return `${m}m`;
 }
 
+export function fmtQuotaReset(sec: number | null | undefined): string {
+  if (!isFiniteNum(sec) || sec < 0) {
+    return '';
+  }
+  const total = Math.trunc(sec);
+  if (total < 60) {
+    return '<1m';
+  }
+  const d = Math.floor(total / 86400);
+  const rem = total % 86400;
+  const h = Math.floor(rem / 3600);
+  const m = Math.floor((rem % 3600) / 60);
+  if (d > 0) {
+    return h > 0 ? `${d}d${h}h` : `${d}d`;
+  }
+  if (h > 0) {
+    return m > 0 ? `${h}h${m}m` : `${h}h`;
+  }
+  return `${m}m`;
+}
+
 export function fmtTokens(count: number | null | undefined): string {
   if (!isFiniteNum(count) || count < 0) {
     return '';
@@ -233,6 +254,10 @@ function colorCache(pct: number, genCount: number): string {
   return BRIGHT_RED;
 }
 
+function formatTpsText(tps: number): string {
+  return tps >= 100 ? `${tps.toFixed(0)} token/s` : `${tps.toFixed(1)} token/s`;
+}
+
 export function buildPerfSegments(telemetry: SessionTelemetry | null | undefined): string[] {
   if (!telemetry) {
     return [];
@@ -241,7 +266,7 @@ export function buildPerfSegments(telemetry: SessionTelemetry | null | undefined
   const { tps, ttft, cachePct, genCount } = telemetry;
 
   if (isFiniteNum(tps) && tps > 0) {
-    const tpsStr = tps >= 100 ? `${tps.toFixed(0)} t/s` : `${tps.toFixed(1)} t/s`;
+    const tpsStr = formatTpsText(tps);
     const tpsCol = tps >= FAST_TPS_THRESHOLD ? BRIGHT_GREEN : tps < SLOW_TPS_THRESHOLD ? BRIGHT_YELLOW : BRIGHT_CYAN;
     segs.push(`${tpsCol}${tpsStr}${RESET}`);
   }
@@ -322,12 +347,7 @@ export function formatTelemetryFields(telemetry: SessionTelemetry | null | undef
     const pct = Math.min(100, Math.round((telemetry.ctxUsed / telemetry.ctxMax) * 100));
     ctx = { text: `${fmtTokens(telemetry.ctxUsed)}/${fmtTokens(telemetry.ctxMax)} (${pct}%)`, pct };
   }
-  const tpsText =
-    isFiniteNum(telemetry.tps) && telemetry.tps > 0
-      ? telemetry.tps >= 100
-        ? `${telemetry.tps.toFixed(0)} t/s`
-        : `${telemetry.tps.toFixed(1)} t/s`
-      : null;
+  const tpsText = isFiniteNum(telemetry.tps) && telemetry.tps > 0 ? formatTpsText(telemetry.tps) : null;
   const ttftText =
     isFiniteNum(telemetry.ttft) && telemetry.ttft > 0
       ? telemetry.ttft < 10

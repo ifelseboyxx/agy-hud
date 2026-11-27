@@ -1,14 +1,4 @@
-export { configureHud, type ConfigureHudOptions, type ConfigureHudResult } from './cli/configure.ts';
-export {
-  exportProfile,
-  importProfile,
-  type ExportedPluginEntry,
-  type ExportProfileOptions,
-  type ExportProfileResult,
-  type ImportMcpAction,
-  type ImportProfileOptions,
-  type ImportProfileResult,
-  type PluginsManifest,
-} from './cli/migrate.ts';
-export { renderHudFromData, type RenderHudOptions } from './hud-entry.ts';
+export { configureHud } from './cli/configure.ts';
+export { exportProfile, importProfile } from './cli/migrate.ts';
+export { renderHudFromData } from './hud-entry.ts';
 export * from './types.ts';

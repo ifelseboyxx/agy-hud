@@ -1,14 +1,12 @@
-import path from 'node:path';
-
-import { parseModelAndEffort, resolveQuotaReset } from '../collectors/telemetry.ts';
+import { parseModelAndEffort } from '../collectors/telemetry.ts';
 import { isFiniteNum, nonEmptyStr } from '../core/guards.ts';
 import { sanitizeTerminalLabel, sanitizeTerminalText } from '../core/terminal-text.ts';
 import type {
   AgentsSummary,
   CliSettings,
+  GitStatusInfo,
   HudConfig,
   HudLineId,
-  QuotaBucketItem,
   SessionTelemetry,
   StatusLineData,
   TodoSummary,
@@ -19,42 +17,32 @@ import { formatActivitySummaryLine } from './activity-summary.ts';
 import { formatAgentsBadge, formatAgentsSection, formatRuntimeBadges } from './agents-render.ts';
 import {
   BOLD,
-  BRIGHT_BLUE,
   BRIGHT_CYAN,
   BRIGHT_MAGENTA,
   BRIGHT_RED,
   BRIGHT_WHITE,
   BRIGHT_YELLOW,
   buildPerfSegments,
-  colorForRemainingPct,
   colorForUsedPct,
-  CYAN,
   DEFAULT_TERM_WIDTH,
   fitPerfCapsule,
   fmtDuration,
   formatContextCapacity,
   GRAY,
-  GREEN,
   renderBar,
   RESET,
   visibleLen,
   YELLOW,
 } from './ansi.ts';
+import { formatCostSegment } from './cost.ts';
+import { formatGitSegment } from './git-render.ts';
 import { type ActivityLineFormatOptions, resolveLineBudget } from './pack-line.ts';
+import { appendQuotaUsageItems, formatCompactPrimaryQuotaTail } from './quota.ts';
 
 export { formatActivitySummaryLine, type ActivitySummaryInput } from './activity-summary.ts';
+export { formatQuotaItem, type FormatQuotaItemOptions } from './quota.ts';
 
 const CTX_CAPACITY_MIN_WIDTH = 95;
-const SECONDARY_QUOTA_MIN_WIDTH = 120;
-
-const KNOWN_QUOTA_KEYS: ReadonlySet<string> = new Set([
-  'gemini-5h',
-  'gemini-weekly',
-  'gemini-argon-wtu-weekly',
-  '3p-5h',
-  '3p-weekly',
-]);
-
 const ACTIVITY_LINE_SET: ReadonlySet<HudLineId> = new Set(['activity', 'tools', 'skills', 'mcps', 'agents']);
 
 export interface ModeLineOptions {
@@ -65,6 +53,7 @@ export interface ModeLineOptions {
 export interface IdentityLineOptions {
   branch?: string;
   dirty?: boolean;
+  gitInfo?: GitStatusInfo;
   elapsedSeconds?: number | null;
   nowSec?: number;
 }
@@ -93,11 +82,6 @@ export function hasAnyActivityLine(lines: readonly HudLineId[]): boolean {
   return lines.some((id) => ACTIVITY_LINE_SET.has(id));
 }
 
-function isThirdPartyModel(data: StatusLineData): boolean {
-  const modelId = (nonEmptyStr(data.model?.id) ?? nonEmptyStr(data.model?.display_name) ?? '').toLowerCase();
-  return ['claude', 'opus', 'sonnet', 'haiku', 'gpt'].some((k) => modelId.includes(k));
-}
-
 export function resolveContextPct(data: StatusLineData, telemetry: SessionTelemetry | null): number | null {
   const ctxObj = data.context_window;
   const winSize = ctxObj?.context_window_size;
@@ -116,64 +100,6 @@ function formatCompactContextTail(data: StatusLineData, telemetry: SessionTeleme
   }
   const pctStr = ctxPct > 0 && ctxPct < 1 ? `${ctxPct.toFixed(1)}%` : `${ctxPct.toFixed(0)}%`;
   return `${GRAY}Ctx ${colorForUsedPct(ctxPct)}${BOLD}${pctStr}${RESET}`;
-}
-
-function formatCompactPrimaryQuotaTail(data: StatusLineData, nowSec: number): string {
-  const quota = data.quota;
-  if (!quota) {
-    return '';
-  }
-  const entry = isThirdPartyModel(data) ? quota['3p-5h'] : quota['gemini-5h'];
-  if (!entry || entry.disabled === true) {
-    return '';
-  }
-  const { windowExpired } = resolveQuotaReset(entry, nowSec);
-  if (isFiniteNum(entry.remaining_fraction)) {
-    const pct = windowExpired ? 100 : Math.max(0, Math.min(100, entry.remaining_fraction * 100));
-    const pctStr = pct >= 99.995 ? '100%' : `${pct.toFixed(0)}%`;
-    return `${GRAY}5h ${colorForRemainingPct(pct)}${pctStr}${RESET}`;
-  }
-  if (entry.remaining_amount !== undefined && entry.remaining_amount !== null) {
-    return `${GRAY}5h ${BRIGHT_WHITE}${sanitizeTerminalText(String(entry.remaining_amount))}${RESET}`;
-  }
-  return '';
-}
-
-export function formatQuotaItem(
-  label: string,
-  entry: QuotaBucketItem | undefined,
-  muted: boolean = false,
-  nowSec: number = Date.now() / 1000,
-): string | null {
-  if (!entry || entry.disabled === true) {
-    return null;
-  }
-  const { remainingSeconds, windowExpired } = resolveQuotaReset(entry, nowSec);
-  const frac = entry.remaining_fraction;
-  const amt = entry.remaining_amount;
-
-  let pctText: string;
-  let valColor: string;
-  let showReset: boolean;
-
-  if (isFiniteNum(frac)) {
-    const pct = windowExpired ? 100 : Math.max(0, Math.min(100, frac * 100));
-    const isFull = pct >= 99.995;
-    pctText = isFull ? '100%' : `${pct.toFixed(2)}%`;
-    valColor = muted ? GRAY : colorForRemainingPct(pct);
-    showReset = !isFull && isFiniteNum(remainingSeconds) && remainingSeconds > 0;
-  } else if (amt !== undefined && amt !== null) {
-    pctText = sanitizeTerminalText(String(amt));
-    valColor = muted ? GRAY : BRIGHT_WHITE;
-    showReset = isFiniteNum(remainingSeconds) && remainingSeconds > 0;
-  } else {
-    return null;
-  }
-
-  const rst = showReset ? fmtDuration(remainingSeconds, true, false) : '';
-  const labelColor = muted ? GRAY : BRIGHT_WHITE;
-  const rstPart = rst.length > 0 ? ` ${GRAY}(${rst})${RESET}` : '';
-  return `${labelColor}${sanitizeTerminalText(label)}: ${valColor}${pctText}${RESET}${rstPart}`;
 }
 
 export function buildModeLine(data: StatusLineData, cliSettings: CliSettings = {}, options?: ModeLineOptions): string {
@@ -247,25 +173,12 @@ export function buildIdentityLine(ctx: HudModuleRenderContext): string {
   }
 
   if (config.segments.git) {
-    const curDir =
-      nonEmptyStr(data.workspace?.current_dir) ??
-      nonEmptyStr(data.workspace?.project_dir) ??
-      nonEmptyStr(data.cwd) ??
-      '';
-    const dirName = curDir.length > 0 ? sanitizeTerminalLabel(path.basename(curDir.replace(/\/+$/, ''))) : '';
-    const branch = sanitizeTerminalLabel(options?.branch ?? nonEmptyStr(data.vcs?.branch) ?? '');
-    const dirty = Boolean(options?.dirty ?? data.vcs?.dirty);
-
-    const locItems: string[] = [];
-    if (dirName.length > 0) {
-      locItems.push(`${BRIGHT_BLUE}${BOLD}${dirName}${RESET}`);
-    }
-    if (branch.length > 0) {
-      const dirtyMark = dirty ? `${BRIGHT_YELLOW}*${RESET}` : '';
-      locItems.push(`${CYAN}git:(${GREEN}${branch}${dirtyMark}${CYAN})${RESET}`);
-    }
-    if (locItems.length > 0) {
-      parts.push(locItems.join(' '));
+    const resolvedGitInfo: GitStatusInfo | undefined =
+      options?.gitInfo ??
+      (options?.branch !== undefined ? { branch: options.branch, dirty: Boolean(options.dirty) } : undefined);
+    const gitPart = formatGitSegment(data, resolvedGitInfo, termWidth);
+    if (gitPart.length > 0) {
+      parts.push(gitPart);
     }
   }
 
@@ -285,11 +198,13 @@ export function buildIdentityLine(ctx: HudModuleRenderContext): string {
   }
 
   if (config.segments.cost) {
-    const rawUsd = data.cost?.total_usd;
-    const usd = isFiniteNum(rawUsd) ? rawUsd : data.cost?.total_cost_usd;
-    if (isFiniteNum(usd)) {
-      const costStr = usd >= 10 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(3)}`;
-      parts.push(`${GRAY}Cost ${BRIGHT_YELLOW}${costStr}${RESET}`);
+    const costPart = formatCostSegment(data.cost, {
+      currency: config.costCurrency,
+      usdToCnyRate: config.usdToCnyRate,
+      termWidth,
+    });
+    if (costPart.length > 0) {
+      parts.push(costPart);
     }
   }
 
@@ -357,53 +272,7 @@ export function buildUsageLine(
   }
 
   if (config.segments.quota && data.quota) {
-    const quota = data.quota;
-    const modelId = (nonEmptyStr(data.model?.id) ?? nonEmptyStr(data.model?.display_name) ?? '').toLowerCase();
-    const is3p = isThirdPartyModel(data);
-    const isArgon = modelId.includes('argon');
-
-    const gItems = [
-      formatQuotaItem('5h', quota['gemini-5h'], is3p, nowSec),
-      formatQuotaItem(isArgon ? 'G-7d' : '7d', quota['gemini-weekly'], is3p, nowSec),
-      formatQuotaItem(isArgon ? '7d' : 'Argon-7d', quota['gemini-argon-wtu-weekly'], is3p, nowSec),
-    ].filter((x): x is string => x !== null);
-
-    const p3Items = [
-      formatQuotaItem('5h', quota['3p-5h'], !is3p, nowSec),
-      formatQuotaItem('7d', quota['3p-weekly'], !is3p, nowSec),
-    ].filter((x): x is string => x !== null);
-
-    const primary =
-      is3p && p3Items.length > 0
-        ? `${BRIGHT_MAGENTA}3P${RESET} ${p3Items.join(subSep)}`
-        : !is3p && gItems.length > 0
-          ? `${BRIGHT_CYAN}G${RESET} ${gItems.join(subSep)}`
-          : '';
-
-    const secondary =
-      is3p && gItems.length > 0
-        ? `${GRAY}G${RESET} ${gItems.join(subSep)}`
-        : !is3p && p3Items.length > 0
-          ? `${GRAY}3P${RESET} ${p3Items.join(subSep)}`
-          : '';
-
-    if (primary.length > 0) {
-      items.push(primary);
-    }
-    if (secondary.length > 0 && termWidth >= SECONDARY_QUOTA_MIN_WIDTH) {
-      const candidate = `  ${[...items, secondary].join(sep)}`;
-      if (visibleLen(candidate) <= termWidth - 1) {
-        items.push(secondary);
-      }
-    }
-
-    const extra = Object.entries(quota)
-      .filter(([k]) => !KNOWN_QUOTA_KEYS.has(k))
-      .map(([k, v]) => formatQuotaItem(k, v, false, nowSec))
-      .filter((x): x is string => x !== null);
-    if (extra.length > 0) {
-      items.push(extra.join(subSep));
-    }
+    appendQuotaUsageItems(items, data, nowSec, termWidth, sep, subSep);
   }
 
   return items.length > 0 ? `  ${items.join(sep)}` : '';

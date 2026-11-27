@@ -20,7 +20,8 @@ import {
 } from '../../collectors/snapshot-envelope.ts';
 import { buildPresetConfig } from '../../core/hud-config.ts';
 import { runHudRender } from '../../hud-runner.ts';
-import { materializeSnapshotMarkdownIfNeeded, resolveSnapshotMarkdownUri } from '../osc8.ts';
+import { materializeSnapshotMarkdownIfNeeded } from '../../hud-snapshot-publish.ts';
+import { resolveSnapshotMarkdownUri } from '../osc8.ts';
 
 void describe('osc8 concurrency, TTL preservation, and required lock enforcement', () => {
   let tmpRoot = '';

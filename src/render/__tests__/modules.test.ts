@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { buildPresetConfig } from '../../core/hud-config.ts';
+import { runHudRender as renderHudLines } from '../../hud-runner.ts';
 import type {
   AgentsSummary,
   HudConfig,
@@ -14,7 +15,6 @@ import type {
   TranscriptActivity,
 } from '../../types.ts';
 import { GRAY, RESET, stripAnsi, visibleLen } from '../ansi.ts';
-import { renderHudLines } from '../lines.ts';
 import { formatActivitySummaryLine, LINE_MODULE_REGISTRY } from '../modules.ts';
 
 function makeRichData(tmpRoot: string, overrides?: Partial<StatusLineData>): StatusLineData {
@@ -122,7 +122,7 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     assert.ok(plain.includes('Ctx 42%'));
     assert.ok(plain.includes('5h 88%'));
     assert.equal(plain.includes('Cost'), false);
-    assert.equal(plain.includes('112 t/s'), false);
+    assert.equal(plain.includes('112 token/s'), false);
     assert.equal(plain.includes('2m 5s'), false);
     assert.ok(visibleLen(lines[0] ?? '') <= 139);
   });
@@ -159,10 +159,10 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     const l1 = stripAnsi(lines[1] ?? '');
     assert.ok(l0.includes('[G4 Carbon ◑ high]'));
     assert.equal(l0.includes('Cost'), false);
-    assert.equal(l0.includes('112 t/s'), false);
+    assert.equal(l0.includes('112 token/s'), false);
     assert.equal(l0.includes('Ctx 42%'), false);
     assert.ok(l1.includes('Context'));
-    assert.ok(l1.includes('G 5h: 88.00%'));
+    assert.ok(l1.includes('Gemini 5h: 88% left (15m)'));
   });
 
   await it('renders compact preset with concrete high-frequency Activity Summary and without dedicated Activity Lines', () => {
@@ -171,7 +171,7 @@ void describe('declarative Line Module registry, presets, zen folding, Activity 
     const joined = stripAnsi(lines.join('\n'));
     assert.ok(joined.includes('accept edits on'));
     assert.ok(joined.includes('Cost $0.425'));
-    assert.ok(joined.includes('112 t/s'));
+    assert.ok(joined.includes('112 token/s'));
     assert.ok(joined.includes('Context'));
     const summaryLine = stripAnsi(lines[3] ?? '');
     assert.ok(summaryLine.includes('Edit: modules.ts'));

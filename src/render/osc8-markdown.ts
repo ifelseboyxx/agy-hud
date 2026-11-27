@@ -1,10 +1,10 @@
 import { aggregateActivityTools, mergeActivityAgents } from '../collectors/activity-aggregate.ts';
-import { formatSurfaceBadge } from '../collectors/snapshot-envelope.ts';
-import { nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
+import { formatSurfaceBadge, nonEmptyStr, selectNewestFirst } from '../core/guards.ts';
 import { sanitizeTerminalLabel } from '../core/terminal-text.ts';
 import type { SessionSurface } from '../snapshot-types.ts';
-import type { AgentsSummary, SessionTelemetry, StatusLineData, TranscriptActivity } from '../types.ts';
+import type { AgentsSummary, HudCostCurrency, SessionTelemetry, StatusLineData, TranscriptActivity } from '../types.ts';
 import { formatTelemetryFields } from './ansi.ts';
+import { formatSessionCostText, formatSubagentCostText, resolveSessionCost } from './cost.ts';
 
 const HUD_RUNNING_TOOL_CAP = 2;
 const HUD_COMPLETED_TOOL_CAP = 8;
@@ -15,6 +15,8 @@ export interface SnapshotMarkdownRenderOptions {
   activity: TranscriptActivity | null;
   agentsSummary: AgentsSummary | null;
   telemetry?: SessionTelemetry | null;
+  costCurrency?: HudCostCurrency;
+  usdToCnyRate?: number;
   surface?: SessionSurface;
   nowMs?: number;
 }
@@ -60,6 +62,19 @@ export function formatMarkdownTelemetry(telemetry: SessionTelemetry | null | und
   return parts.join(' · ');
 }
 
+export function formatMarkdownCost(
+  data: StatusLineData | undefined,
+  costCurrency?: HudCostCurrency,
+  usdToCnyRate?: number,
+): string {
+  const resolved = resolveSessionCost(data?.cost);
+  if (resolved === null) return '';
+  const opts = { currency: costCurrency, usdToCnyRate };
+  const totalStr = formatSessionCostText(resolved, opts);
+  const subStr = formatSubagentCostText(resolved, opts);
+  return subStr !== null ? `${totalStr} (subagents: ${subStr})` : totalStr;
+}
+
 export function renderSnapshotMarkdown(options: SnapshotMarkdownRenderOptions): string {
   const { convId, data, activity, agentsSummary, telemetry } = options;
   const nowMs = options.nowMs ?? Date.now();
@@ -95,6 +110,10 @@ export function renderSnapshotMarkdown(options: SnapshotMarkdownRenderOptions): 
   const telLine = formatMarkdownTelemetry(telemetry);
   if (telLine.length > 0) {
     lines.push(`- **Telemetry**: ${telLine}`);
+  }
+  const costLine = formatMarkdownCost(data, options.costCurrency, options.usdToCnyRate);
+  if (costLine.length > 0) {
+    lines.push(`- **Cost**: ${costLine}`);
   }
 
   lines.push(

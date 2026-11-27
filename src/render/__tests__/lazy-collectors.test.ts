@@ -6,9 +6,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { buildPresetConfig } from '../../core/hud-config.ts';
+import { runHudRender as renderHudLines } from '../../hud-runner.ts';
 import type { HudConfig, SessionTelemetry, StatusLineData } from '../../types.ts';
 import { stripAnsi } from '../ansi.ts';
-import { renderHudLines } from '../lines.ts';
 
 function makeBaseData(tmpRoot: string, overrides?: Partial<StatusLineData>): StatusLineData {
   return {

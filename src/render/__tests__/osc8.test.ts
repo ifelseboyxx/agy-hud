@@ -5,15 +5,14 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { readSnapshotEnvelope } from '../../collectors/snapshot-envelope.ts';
+import { computeMarkdownDigest, materializeSnapshotMarkdownIfNeeded } from '../../hud-snapshot-publish.ts';
 import type { AgentsSummary } from '../../types.ts';
 import { GRAY, RESET, stripAnsi, visibleLen } from '../ansi.ts';
 import {
   canEmitOsc8Links,
-  computeMarkdownDigest,
   countEmittedOsc8Links,
   formatActivitySummarySnapshotTail,
   formatOsc8Overflow,
-  materializeSnapshotMarkdownIfNeeded,
   resolveSnapshotMarkdownUri,
   wrapOsc8Link,
 } from '../osc8.ts';

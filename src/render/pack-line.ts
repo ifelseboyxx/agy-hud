@@ -1,9 +1,8 @@
 import { isFiniteNum } from '../core/guards.ts';
+import type { ActivityLineFormatOptions } from '../types.ts';
 import { DEFAULT_TERM_WIDTH, GRAY, RESET, truncateToWidth, visibleLen } from './ansi.ts';
 
-export interface ActivityLineFormatOptions {
-  formatOverflow?: (hiddenCount: number) => string;
-}
+export type { ActivityLineFormatOptions };
 
 export interface PackableLineItem {
   render: () => string;

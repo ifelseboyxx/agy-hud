@@ -10,14 +10,10 @@ import { buildPresetConfig } from '../../core/hud-config.ts';
 import { renderHudFromData } from '../../hud-entry.ts';
 import type { AgentsSummary, HudConfig, SessionTelemetry, StatusLineData, TranscriptActivity } from '../../types.ts';
 import { DEFAULT_HUD_CONFIG } from '../../types.ts';
+import { formatToolsLine } from '../activity-lines.ts';
 import { buildPerfSegments, fitPerfCapsule, renderBar, stripAnsi, visibleLen } from '../ansi.ts';
-import {
-  buildModeLine,
-  buildUsageLine,
-  formatHudLines,
-  formatToolsLine,
-  resolveEffectiveExceeds200k,
-} from '../lines.ts';
+import { formatHudLines, resolveEffectiveExceeds200k } from '../format-hud.ts';
+import { buildModeLine, buildUsageLine } from '../modules.ts';
 
 const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
 
@@ -53,14 +49,14 @@ void describe('render and hud-entry', () => {
     };
     const segs = buildPerfSegments(tel);
     assert.equal(segs.length, 3);
-    assert.ok(stripAnsi(segs.join(' ')).includes('92.4 t/s'));
+    assert.ok(stripAnsi(segs.join(' ')).includes('92.4 token/s'));
 
     const base = ' [Carbon]';
     const full = fitPerfCapsule(base, tel, 120);
     assert.ok(stripAnsi(full).includes('Cache 91%'));
 
     const narrow = fitPerfCapsule(base, tel, 26);
-    assert.ok(stripAnsi(narrow).includes('92.4 t/s'));
+    assert.ok(stripAnsi(narrow).includes('92.4 token/s'));
     assert.equal(stripAnsi(narrow).includes('Cache'), false);
 
     const tiny = fitPerfCapsule(base, tel, 12);
@@ -101,8 +97,8 @@ void describe('render and hud-entry', () => {
       ),
     );
     assert.ok(line2.includes('Context ████░░░░░░ 42% (420k/1M)'));
-    assert.ok(line2.includes('3P 5h: 75.00% (1h 0m)'));
-    assert.ok(line2.includes('G 5h: 90.00% (30m)'));
+    assert.ok(line2.includes('3rd-Party 5h: 75% left (1h)'));
+    assert.ok(line2.includes('Gemini 5h: 90% left (30m)'));
 
     const narrowLine2 = stripAnsi(
       buildUsageLine(
@@ -119,7 +115,9 @@ void describe('render and hud-entry', () => {
         null,
       ),
     );
-    assert.equal(narrowLine2.includes('G 5h:'), false);
+    assert.ok(narrowLine2.includes('3P 5h: 75% (1h)'));
+    assert.equal(narrowLine2.includes('Gem 5h:'), false);
+    assert.equal(narrowLine2.includes('Gemini 5h:'), false);
     assert.equal(narrowLine2.includes('(420k/1M)'), false);
 
     const staleCompactData: StatusLineData = {
@@ -209,7 +207,7 @@ void describe('render and hud-entry', () => {
     assert.ok(fullOut.includes('accept edits on'));
     assert.ok(fullOut.includes('[Orchestrator (Carbon) ◑ high]'));
     assert.ok(fullOut.includes('Cost $0.425'));
-    assert.ok(fullOut.includes('112 t/s'));
+    assert.ok(fullOut.includes('112 token/s'));
     assert.ok(fullOut.includes('Read ×5'));
     assert.ok(fullOut.includes('Skills (1): tdd'));
     assert.ok(fullOut.includes('MCPs (1): github'));
@@ -259,8 +257,8 @@ void describe('render and hud-entry', () => {
       },
     };
     const strippedOut = stripAnsi(renderHudFromData(baseData, { ...opts, hudConfig: customDisabled }));
-    assert.equal(strippedOut.includes('112 t/s'), false);
-    assert.equal(strippedOut.includes('G 5h:'), false);
+    assert.equal(strippedOut.includes('112 token/s'), false);
+    assert.equal(strippedOut.includes('Gemini 5h:'), false);
     assert.equal(strippedOut.includes('Cost'), false);
     assert.equal(strippedOut.includes('Swarm (2/3):'), false);
     assert.equal(strippedOut.includes('Read ×5'), false);
@@ -362,7 +360,8 @@ void describe('render and hud-entry', () => {
       identityOptions: { branch: 'main', dirty: false, elapsedSeconds: 60, nowSec: 1000 },
     }).map(stripAnsi);
     assert.equal(narrowLines[1]?.includes('(420k/1M)'), false);
-    assert.equal(narrowLines[1]?.includes('G 5h:'), false);
+    assert.equal(narrowLines[1]?.includes('Gem 5h:'), false);
+    assert.equal(narrowLines[1]?.includes('Gemini 5h:'), false);
   });
 
   void it('falls back to data.terminal_width when explicit termWidth is non-positive', () => {

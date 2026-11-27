@@ -1,19 +1,21 @@
 import { loadTodos, loadTranscriptActivity, resolveTranscriptPath } from './collectors/activity.ts';
 import { collectAgentsSummary } from './collectors/agents.ts';
+import { detectGitStatus } from './collectors/git.ts';
 import { detectAgyFlags, detectAgyProcess } from './collectors/proc.ts';
 import { resolveConversationId } from './collectors/safe-path.ts';
-import {
-  detectGitBranch,
-  getSessionElapsedSeconds,
-  readCliSettings,
-  readHudConfig,
-  type GitBranchInfo,
-} from './collectors/settings.ts';
+import { getSessionElapsedSeconds, readCliSettings, readHudConfig } from './collectors/settings.ts';
 import { readActivePidMarker, readSnapshotEnvelope, type ActivePidMarker } from './collectors/snapshot-envelope.ts';
 import { loadSessionTelemetry } from './collectors/telemetry.ts';
 import { isFiniteNum, nonEmptyStr } from './core/guards.ts';
-import { buildPresetConfig, cloneHudConfig, PRESET_TEMPLATES } from './core/hud-config.ts';
+import {
+  buildPresetConfig,
+  cloneHudConfig,
+  cloneNarrowOverride,
+  PRESET_TEMPLATES,
+  resolveEffectiveHudConfig,
+} from './core/hud-config.ts';
 import { lstatIfPresentSync, statIfPresentSync } from './fs-utils.ts';
+import { materializeSnapshotMarkdownIfNeeded, type TranscriptStatFingerprint } from './hud-snapshot-publish.ts';
 import { DEFAULT_TERM_WIDTH } from './render/ansi.ts';
 import { formatHudLines, normalizeEffectiveStatusData } from './render/format-hud.ts';
 import { hasAnyActivityLine } from './render/modules.ts';
@@ -22,57 +24,20 @@ import {
   countEmittedOsc8Links,
   formatActivitySummarySnapshotTail,
   formatOsc8Overflow,
-  materializeSnapshotMarkdownIfNeeded,
   resolveSnapshotMarkdownUri,
-  type TranscriptStatFingerprint,
 } from './render/osc8.ts';
-import type { ActivityLineFormatOptions } from './render/pack-line.ts';
 import type { SnapshotEnvelope } from './snapshot-types.ts';
 import type {
-  ActivityAgentEntry,
-  AgentsSummary,
-  CliSettings,
+  ActivityLineFormatOptions,
+  GitStatusInfo,
+  HudCollectorOverrides,
   HudConfig,
   HudLineId,
-  SessionTelemetry,
+  RenderHudOptions,
   StatusLineData,
-  StatusLineVcs,
-  TodoSummary,
-  TranscriptActivity,
 } from './types.ts';
 
-export interface HudCollectorOverrides {
-  detectGitBranch?: (cwd: string | undefined, stdinVcs?: StatusLineVcs) => GitBranchInfo;
-  loadTodos?: (cliHome: string, data: StatusLineData) => TodoSummary | null;
-  loadSessionTelemetry?: (cliHome: string, data: StatusLineData) => SessionTelemetry;
-  loadTranscriptActivity?: (cliHome: string, data: StatusLineData) => TranscriptActivity | null;
-  collectAgentsSummary?: (
-    cliHome: string,
-    data: StatusLineData,
-    activityAgents?: readonly ActivityAgentEntry[],
-  ) => AgentsSummary;
-}
-
-export interface RenderHudOptions {
-  cliHome?: string;
-  cliSettings?: CliSettings;
-  hudConfig?: Partial<HudConfig>;
-  telemetry?: SessionTelemetry;
-  activity?: TranscriptActivity | null;
-  agentsSummary?: AgentsSummary;
-  todos?: TodoSummary | null;
-  nowSec?: number;
-  agyPid?: number | null;
-  bypass?: boolean;
-  cliMode?: string;
-  branch?: string;
-  dirty?: boolean;
-  elapsedSeconds?: number | null;
-  activityLineOptions?: ActivityLineFormatOptions;
-  formatActivitySummaryTail?: (remainingCols: number) => string;
-  collectors?: HudCollectorOverrides;
-  env?: NodeJS.ProcessEnv;
-}
+export type { HudCollectorOverrides, RenderHudOptions };
 
 function resolveRenderHudConfig(baseConfig: HudConfig, override?: Partial<HudConfig>): HudConfig {
   if (!override) {
@@ -80,8 +45,11 @@ function resolveRenderHudConfig(baseConfig: HudConfig, override?: Partial<HudCon
   }
   const maxAgentChips = override.maxAgentChips ?? baseConfig.maxAgentChips;
   const osc8Links = override.osc8Links ?? baseConfig.osc8Links;
+  const costCurrency = override.costCurrency ?? baseConfig.costCurrency;
+  const usdToCnyRate = override.usdToCnyRate ?? baseConfig.usdToCnyRate;
+  const narrow = cloneNarrowOverride(override.narrow !== undefined ? override.narrow : baseConfig.narrow);
   if (override.preset !== undefined && override.lines === undefined && override.segments === undefined) {
-    return buildPresetConfig(override.preset, { maxAgentChips, osc8Links });
+    return buildPresetConfig(override.preset, { maxAgentChips, osc8Links, costCurrency, usdToCnyRate, narrow });
   }
   const preset = override.preset ?? baseConfig.preset;
   const seeded = override.preset !== undefined ? PRESET_TEMPLATES[override.preset] : null;
@@ -97,25 +65,48 @@ function resolveRenderHudConfig(baseConfig: HudConfig, override?: Partial<HudCon
       : seeded !== null
         ? { ...seeded.segments }
         : { ...baseConfig.segments };
-  return { preset, maxAgentChips, osc8Links, lines, segments };
+  return {
+    preset,
+    maxAgentChips,
+    osc8Links,
+    costCurrency,
+    usdToCnyRate,
+    lines,
+    segments,
+    ...(narrow !== undefined ? { narrow } : {}),
+  };
 }
 
 function resolveHudGitInfo(
+  cliHome: string,
   data: StatusLineData,
   options: RenderHudOptions | undefined,
   collectors: HudCollectorOverrides | undefined,
-): { branch: string; dirty: boolean } {
+  nowMs: number,
+): GitStatusInfo {
+  if (options?.gitInfo !== undefined) {
+    return options.gitInfo;
+  }
   if (options?.branch !== undefined) {
     return { branch: options.branch, dirty: Boolean(options.dirty ?? data.vcs?.dirty) };
   }
   const curDir =
     nonEmptyStr(data.workspace?.current_dir) ?? nonEmptyStr(data.workspace?.project_dir) ?? nonEmptyStr(data.cwd) ?? '';
-  return (collectors?.detectGitBranch ?? detectGitBranch)(curDir, data.vcs);
+  if (collectors?.detectGitStatus !== undefined) {
+    return collectors.detectGitStatus(cliHome, curDir, data.vcs);
+  }
+  if (collectors?.detectGitBranch !== undefined) {
+    return collectors.detectGitBranch(curDir, data.vcs);
+  }
+  return detectGitStatus(cliHome, curDir, data.vcs, { nowMs });
 }
 
 export function runHudRender(cliHome: string, data: StatusLineData, options?: RenderHudOptions): string[] {
   const baseConfig = readHudConfig(cliHome);
-  const config = resolveRenderHudConfig(baseConfig, options?.hudConfig);
+  const rawConfig = resolveRenderHudConfig(baseConfig, options?.hudConfig);
+  const termWidth =
+    isFiniteNum(data.terminal_width) && data.terminal_width > 0 ? data.terminal_width : DEFAULT_TERM_WIDTH;
+  const config = resolveEffectiveHudConfig(rawConfig, termWidth);
   const enabledLines = new Set<HudLineId>(config.lines);
   const collectors = options?.collectors;
 
@@ -135,11 +126,16 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
   const baselinePidMarker: ActivePidMarker | null =
     convId !== null && agyPid !== null ? readActivePidMarker(cliHome, agyPid, nowMs) : null;
 
-  const needCliSettings = enabledLines.has('mode') || (enabledLines.has('identity') && config.segments.model);
+  const hasIdentity = enabledLines.has('identity');
+  const hasUsage = enabledLines.has('usage');
+  const needCliSettings = enabledLines.has('mode') || (hasIdentity && config.segments.model);
   const cliSettings =
     options?.cliSettings !== undefined ? options.cliSettings : needCliSettings ? readCliSettings(cliHome) : {};
 
-  const needTelemetry = config.segments.perf || config.segments.context || data.exceeds_200k_tokens === true;
+  const needTelemetry =
+    (hasIdentity && config.segments.perf) ||
+    ((hasUsage || hasIdentity) && config.segments.context) ||
+    data.exceeds_200k_tokens === true;
   const telemetry =
     options?.telemetry !== undefined
       ? options.telemetry
@@ -149,7 +145,8 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
 
   const effectiveData = normalizeEffectiveStatusData(data, telemetry);
 
-  const needActivity = config.segments.badges || hasAnyActivityLine(config.lines);
+  const needBadges = hasIdentity && config.segments.badges;
+  const needActivity = needBadges || hasAnyActivityLine(config.lines);
   const activity =
     options?.activity !== undefined
       ? options.activity
@@ -157,7 +154,7 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
         ? (collectors?.loadTranscriptActivity ?? loadTranscriptActivity)(cliHome, effectiveData)
         : null;
 
-  const needAgents = config.segments.badges || enabledLines.has('activity') || enabledLines.has('agents');
+  const needAgents = needBadges || enabledLines.has('activity') || enabledLines.has('agents');
   const agentsSummary =
     options?.agentsSummary !== undefined
       ? options.agentsSummary
@@ -173,11 +170,6 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
         ? (collectors?.loadTodos ?? loadTodos)(cliHome, effectiveData)
         : null;
 
-  const termWidth =
-    isFiniteNum(effectiveData.terminal_width) && effectiveData.terminal_width > 0
-      ? effectiveData.terminal_width
-      : DEFAULT_TERM_WIDTH;
-
   const env = options?.env ?? process.env;
   const osc8Target =
     convId !== null && canEmitOsc8Links(config, convId, env) ? resolveSnapshotMarkdownUri(cliHome, convId) : null;
@@ -188,7 +180,9 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
   }
 
   const gitInfo =
-    enabledLines.has('identity') && config.segments.git ? resolveHudGitInfo(effectiveData, options, collectors) : null;
+    enabledLines.has('identity') && config.segments.git
+      ? resolveHudGitInfo(cliHome, effectiveData, options, collectors, nowMs)
+      : null;
   const rawConvId = nonEmptyStr(effectiveData.conversation_id) ?? nonEmptyStr(effectiveData.session_id);
   const elapsedSeconds =
     options?.elapsedSeconds !== undefined
@@ -228,6 +222,7 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
       nowSec,
       modeOptions: { bypass: resolvedBypass, cliMode: resolvedCliMode },
       identityOptions: {
+        gitInfo: gitInfo ?? undefined,
         branch: gitInfo?.branch,
         dirty: gitInfo?.dirty,
         elapsedSeconds,
@@ -258,6 +253,16 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
         transcriptStat = { ino: st.ino, mtimeMs: st.mtimeMs, size: st.size };
       }
     }
+    // When an OSC 8 overflow link is actually emitted on narrow layouts that hid identity/usage,
+    // lazily backfill telemetry/agents so the materialized Markdown snapshot stays complete.
+    const snapshotTelemetry =
+      osc8Target !== null && emittedOsc8Count >= 1 && telemetry === null && options?.telemetry === undefined
+        ? (collectors?.loadSessionTelemetry ?? loadSessionTelemetry)(cliHome, effectiveData)
+        : telemetry;
+    const snapshotAgents =
+      osc8Target !== null && emittedOsc8Count >= 1 && agentsSummary === null && options?.agentsSummary === undefined
+        ? (collectors?.collectAgentsSummary ?? collectAgentsSummary)(cliHome, effectiveData, activity?.agents)
+        : agentsSummary;
     const matResult = materializeSnapshotMarkdownIfNeeded({
       cliHome,
       convId,
@@ -269,8 +274,10 @@ export function runHudRender(cliHome: string, data: StatusLineData, options?: Re
       baselinePidMarker,
       transcriptStat,
       activity,
-      agentsSummary,
-      telemetry,
+      agentsSummary: snapshotAgents,
+      telemetry: snapshotTelemetry,
+      costCurrency: config.costCurrency,
+      usdToCnyRate: config.usdToCnyRate,
       nowMs,
     });
     if (osc8Target !== null && emittedOsc8Count >= 1 && !matResult.written) {

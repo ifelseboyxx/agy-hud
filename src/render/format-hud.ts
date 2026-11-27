@@ -1,4 +1,5 @@
 import { isFiniteNum } from '../core/guards.ts';
+import { resolveEffectiveHudConfig } from '../core/hud-config.ts';
 import type {
   AgentsSummary,
   CliSettings,
@@ -55,17 +56,18 @@ export function normalizeEffectiveStatusData(
 }
 
 export function formatHudLines(input: FormatHudLinesInput): string[] {
-  const { config, telemetry } = input;
-  const enabledLines = new Set<HudLineId>(config.lines);
+  const { telemetry } = input;
   const effectiveData = normalizeEffectiveStatusData(input.data, telemetry);
-
-  const hasTodosLine = enabledLines.has('todos') && formatTodosLine(input.todos).length > 0;
   const termWidth =
     isFiniteNum(input.termWidth) && input.termWidth > 0
       ? input.termWidth
       : isFiniteNum(effectiveData.terminal_width) && effectiveData.terminal_width > 0
         ? effectiveData.terminal_width
         : DEFAULT_TERM_WIDTH;
+
+  const config = resolveEffectiveHudConfig(input.config, termWidth);
+  const enabledLines = new Set<HudLineId>(config.lines);
+  const hasTodosLine = enabledLines.has('todos') && formatTodosLine(input.todos).length > 0;
 
   const ctx: HudModuleRenderContext = {
     data: effectiveData,
