@@ -50,7 +50,13 @@ agy plugin install https://github.com/ifelseboyxx/agy-hud
    ```bash
    node "<PLUGIN_ROOT>/scripts/install.mjs" wire <TARGET_ARGS>
    ```
-4. **Sandbox fallback**: If sandbox policies block writes outside the workspace, print the exact OS-appropriate copy-pasteable command (using `~/` on POSIX or `%USERPROFILE%` on Windows) instead of retrying blocked writes.
+4. **Pause / resume vs. plugin `[disabled]` state**: Disabling `agy-hud` in Antigravity's plugin UI or via `agy plugin disable agy-hud` only updates `~/.gemini/config/config.json` and unloads the `/hud` skill — it does **not** disable `statusLine` in `~/.gemini/antigravity-cli/settings.json`. Use `/statusline off` / `/statusline on` to toggle only the status line, or run:
+   ```bash
+   node "<PLUGIN_ROOT>/scripts/install.mjs" off <TARGET_ARGS>
+   node "<PLUGIN_ROOT>/scripts/install.mjs" on <TARGET_ARGS>
+   ```
+   (`off` is gated by `StatusLine Ownership` and leaves foreign `statusLine` entries untouched; `on` rewires `<PLUGIN_ROOT>/dist/hud.mjs` into `<cliHome>/settings.json`, recording a `StatusLine Backup` if taking over a foreign command — note `--project` / `--target` select `<PLUGIN_ROOT>` while sharing the same `<cliHome>/settings.json`. Only on default global installs without `--no-enable` and when `agy` is on `PATH`, `off` / `on` also attempt `agy plugin disable|enable agy-hud` best-effort and print a `Note:` without failing if the host command fails.)
+5. **Sandbox fallback**: If sandbox policies block writes outside the workspace, print the exact OS-appropriate copy-pasteable command (using `~/` on POSIX or `%USERPROFILE%` on Windows) instead of retrying blocked writes.
 
 ## 3. `/hud preview`, Presets, Cost Currency & Narrow Overrides
 
@@ -72,6 +78,7 @@ agy plugin install https://github.com/ifelseboyxx/agy-hud
   node "<PLUGIN_ROOT>/dist/cli.mjs" configure --set osc8Links=false --set maxAgentChips=6
   node "<PLUGIN_ROOT>/dist/cli.mjs" configure --reset
   ```
+- **When `Cost` is hidden**: Live `Cost` renders whenever Antigravity CLI reports a finite non-negative `cost` total in `statusLine` stdin (converted offline via `costCurrency` / `usdToCnyRate`; offline `preview` uses built-in sample cost when `segments.cost` is enabled). When stdin omits `cost` or has no valid total (e.g., quota-based subscriptions or models without reported pricing), HUD, newly rendered Markdown snapshots, and CLI `snapshot` text omit it (previously materialized `.md` files refresh on the next frame emitting an OSC 8 link, and `snapshot --json` emits `cost: null` / `costDisplay: null`) instead of estimating from a local pricing table.
 - **Interactive TTY editor**: `agy-hud configure -i` (requires an interactive terminal).
 - **Sanitized profile export/import**:
   ```bash

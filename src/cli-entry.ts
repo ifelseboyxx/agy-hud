@@ -66,7 +66,7 @@ Commands:
   wire / unwire   Wire or detach host statusLine and CLI Shim in-place
   install         Install or link agy-hud plugin
   uninstall       Remove agy-hud plugin and optionally restore statusLine
-  on / off        Enable or disable agy-hud statusLine and plugin
+  on / off        Rewire/enable statusLine or disable owned statusLine (+ best-effort default global plugin toggle)
   doctor / status Check installation and live HUD health
 
 Options:

@@ -44,7 +44,7 @@ The default (`full`) layout renders active mode, identity and performance metric
 ```
 
 - **Mode (`mode`)** — active permission or agent mode (`bypass permissions`, `accept edits`, `plan`, `auto`, `default`), optional Vim tag (`[NORMAL]` / `[INSERT]`), and cycle hint
-- **Identity & Perf (`identity`)** — model and model-aware thinking effort (`◔ low` / `◑ medium` / `◕ high` / `● peak` / `✦ max`, automatically promoting each model's highest supported tier such as `xhigh` on Hydrogen/Neon and `high` on Carbon/Argon/Claude/Flash to a monochrome platinum active-turn sheen, plus `Orchestrator (Planner/Executor)`), workspace and cached enhanced Git status (`=+!->?$ ↑N↓N` + `+N -M` tracked diff lines, degrading to `git:(branch*)` below 100 cols), duration, `Swarm` / `Agents` counter, runtime badges (`@agent`, `Battle`, `Bg Tasks`, `! Approval`, `! Auth`, `Review`, `Retry`, `! Error`, `Queued`), offline USD/CNY session cost (`~` when estimated), and width-adaptive Perf Capsule (`token/s`, `TTFT`, `Cache%` with anomaly alerts)
+- **Identity & Perf (`identity`)** — model and model-aware thinking effort (`◔ low` / `◑ medium` / `◕ high` / `● peak` / `✦ max`, automatically promoting each model's highest supported tier such as `xhigh` on Hydrogen/Neon and `high` on Carbon/Argon/Claude/Flash to a monochrome platinum active-turn sheen, plus `Orchestrator (Planner/Executor)`), workspace and cached enhanced Git status (`=+!->?$ ↑N↓N` + `+N -M` tracked diff lines, degrading to `git:(branch*)` below 100 cols), duration, `Swarm` / `Agents` counter, runtime badges (`@agent`, `Battle`, `Bg Tasks`, `! Approval`, `! Auth`, `Review`, `Retry`, `! Error`, `Queued`), offline USD/CNY session cost (shown when the host reports a valid `cost` total in `statusLine` stdin, prefixed with `~` when estimated; auto-hidden when omitted, e.g. on quota subscriptions or models without reported pricing), and width-adaptive Perf Capsule (`token/s`, `TTFT`, `Cache%` with anomaly alerts)
 - **Context & Quota (`usage`)** — color-coded Context Budget bar (`used/budget`) with CJK-aware compaction estimates (`~used/max`), alongside human-readable `Gemini` / `Claude/GPT` remaining quotas (`left`, integer percentages with `<1%`/`99%`/`100%` edge accuracy, compact `4d6h` resets, and conditional Quota Pace depletion forecast `~0% <eta>` / `!`)
 - **Activity (`tools`, `skills`, `mcps`, `agents`, `todos`, or `activity`)** — running and completed tools, loaded skills and MCP servers, `/swarm` and subagent chips (`◐` working, `◌` waiting), and todo progress; width-packed with clickable OSC 8 `+N more` (or `· snapshot`) links
 
@@ -67,7 +67,7 @@ Requires **Node.js `^22.20.0 || >=24.0.0`** on macOS, Linux, or Windows. Zero bu
 agy plugin install https://github.com/ifelseboyxx/agy-hud
 
 # Or pin a specific release tag (single-segment semver tag only; never pass .zip archives)
-agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.0
+agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.1
 ```
 
 Start `agy` and activate the terminal status line in one step (hot-reloads immediately, no restart needed):
@@ -84,6 +84,8 @@ Or run the built-in statusline command directly:
 
 Pause or resume anytime inside Antigravity CLI with `/statusline`, `/statusline off`, or `/statusline on`.
 
+> **Note:** Disabling `agy-hud` in Antigravity's plugin manager (`[disabled]` or `agy plugin disable agy-hud`) only updates `~/.gemini/config/config.json` and unloads the `/hud` skill. Because Antigravity does not manage `statusLine` as a plugin component, the terminal HUD keeps running from `~/.gemini/antigravity-cli/settings.json`. Use `/statusline off` to hide only the status line; or run `node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs off` (disables only an owned `statusLine`) / `on` (rewires and enables this install, backing up any foreign `statusLine` first). On default global installs without `--no-enable` and with `agy` on `PATH`, `off` / `on` also run `agy plugin disable|enable agy-hud` best-effort (printing a fallback `Note:` without blocking exit `0` if the host plugin command fails; see [docs/host-contracts.md](docs/host-contracts.md)).
+
 <details>
 <summary><strong>Optional terminal command (<code>agy-hud</code>), diagnostics, source build &amp; Link Install migration</strong></summary>
 
@@ -96,6 +98,10 @@ node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire --no-shim
 
 # Install `agy-hud` into a custom bin directory (or set AGY_HUD_BIN_DIR)
 node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire --bin-dir ~/.bin
+
+# Disable owned statusLine / rewire & enable statusLine (+ best-effort default global plugin toggle when agy is available)
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs off
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs on
 
 # Run full health diagnostics
 node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs doctor
@@ -184,7 +190,7 @@ Settings live in `~/.gemini/antigravity-cli/hud-config.json` (respects `GEMINI_C
 | `preset` | `full` \| `compact` \| `swarm` \| `minimal` \| `zen` | `full` | Base persona preset used to seed `lines` and `segments`. |
 | `lines` | Ordered array of `mode`, `identity`, `usage`, `activity`, `tools`, `skills`, `mcps`, `agents`, `todos` | `full` lines | Explicit pluggable rows rendered in order; empty rows auto-collapse. |
 | `segments` | Booleans for `model`, `git`, `duration`, `badges`, `cost`, `perf`, `context`, `quota` | All `true` | Toggleable inline segments within `identity` and `usage` (and `zen` folded tail). |
-| `costCurrency` | `usd` \| `cny` \| `both` | `usd` | Offline cost currency format (`both` renders `$0.818 / ¥5.93`, compacting to `$0.82/¥5.93` below 100 cols). |
+| `costCurrency` | `usd` \| `cny` \| `both` | `usd` | Offline cost currency format (`both` renders `$0.818 / ¥5.93`, compacting to `$0.82/¥5.93` below 100 cols); shown when the host reports a valid `cost` total in `statusLine` stdin (`agy-hud` does not maintain a local pricing table). |
 | `usdToCnyRate` | number `0.01..1000` | `7.25` | Offline USD-to-CNY conversion rate shared across HUD, OSC 8 Markdown, and CLI `snapshot`. |
 | `narrow` | `{ lines?: HudLineId[], segments?: Partial<HudSegments> }` | *(omitted)* | Optional split-pane overrides active when `terminal_width < 100`; omitted keys inherit top-level config and skipped modules skip collectors. |
 | `osc8Links` | `boolean` | `true` | Emit OSC 8 hyperlinks on `+N more` / `snapshot` (suppressed under `NO_COLOR`, `TERM=dumb`, or SSH). |

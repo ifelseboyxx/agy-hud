@@ -44,7 +44,7 @@ Antigravity 在执行任务时，你往往想一眼看清当前模型与思考�
 ```
 
 - **模式行（`mode`）** — 当前权限或代理模式（`bypass permissions`、`accept edits`、`plan`、`auto`、`default`）、可选 Vim 标记（`[NORMAL]` / `[INSERT]`）及切换提示
-- **身份与性能（`identity`）** — 模型与按模型上限自适应的思考强度显示（`◔ low` / `◑ medium` / `◕ high` / `● 最高思考` / `✦ max`，凡达到当前模型最高思考档位——如 Hydrogen/Neon 的 `xhigh`、Carbon/Argon/Claude/Flash 的 `high`——均自动呈现满格标识与克制的铂金冰光单束扫光动效，并支持 `Orchestrator (Planner/Executor)` 双角色独立判定）、工作区与带缓存的增强 Git 状态（`=+!->?$ ↑N↓N` 与 `+N -M` 变更行数，宽度 `< 100` 自动降级为 `git:(branch*)`）、耗时、`Swarm` / `Agents` 计数、运行时徽章（`@agent`、`Battle`、`Bg Tasks`、`! Approval`、`! Auth`、`Review`、`Retry`、`! Error`、`Queued`）、纯离线美元/人民币会话费用（估算价带 `~` 前缀）与宽度自适应 **Perf Capsule**（`token/s`、`TTFT`、带异常预警的 `Cache%`）
+- **身份与性能（`identity`）** — 模型与按模型上限自适应的思考强度显示（`◔ low` / `◑ medium` / `◕ high` / `● 最高思考` / `✦ max`，凡达到当前模型最高思考档位——如 Hydrogen/Neon 的 `xhigh`、Carbon/Argon/Claude/Flash 的 `high`——均自动呈现满格标识与克制的铂金冰光单束扫光动效，并支持 `Orchestrator (Planner/Executor)` 双角色独立判定）、工作区与带缓存的增强 Git 状态（`=+!->?$ ↑N↓N` 与 `+N -M` 变更行数，宽度 `< 100` 自动降级为 `git:(branch*)`）、耗时、`Swarm` / `Agents` 计数、运行时徽章（`@agent`、`Battle`、`Bg Tasks`、`! Approval`、`! Auth`、`Review`、`Retry`、`! Error`、`Queued`）、纯离线美元/人民币会话费用（当宿主通过 `statusLine` stdin 上报有效 `cost` 总额时显示，估算价带 `~` 前缀；未上报时自动隐藏，例如配额订阅或未上报定价的模型）与宽度自适应 **Perf Capsule**（`token/s`、`TTFT`、带异常预警的 `Cache%`）
 - **上下文与配额（`usage`）** — 随占用变色的有效上下文预算进度条（支持中英混合感知的压缩估算 `~used/max`），以及直观的 `Gemini` / `Claude/GPT` 剩余配额（显式 `left`、整数百分比含 `<1%`/`99%`/`100%` 边界精度、紧凑 `4d6h` 重置倒计时及按需显示的配额消耗预测 `~0% <eta>` / `!`）
 - **活动行（`tools`、`skills`、`mcps`、`agents`、`todos`）与摘要行（`activity`）** — 运行中与已完成工具、已加载 Skills 与 MCP 服务、`/swarm` 与子代理芯片（`◐` 工作中、`◌` 等待中）及待办进度；超宽时折叠为支持 OSC 8 点击直达的 `+N more`（或 `· snapshot`）
 
@@ -67,7 +67,7 @@ Antigravity 在执行任务时，你往往想一眼看清当前模型与思考�
 agy plugin install https://github.com/ifelseboyxx/agy-hud
 
 # 或锁定到具体发布版本（仅支持单段 semver 标签，切勿向 agy plugin install 传入 .zip 压缩包）
-agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.0
+agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.1
 ```
 
 启动 `agy`，一步激活终端状态栏（热重载立即生效，无需重启）：
@@ -84,6 +84,8 @@ agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.0
 
 随时在 Antigravity CLI 会话内输入 `/statusline`、`/statusline off` 或 `/statusline on` 暂停与恢复。
 
+> **说明：** 在 Antigravity 插件列表中将 `agy-hud` 设为 `disabled`（或执行 `agy plugin disable agy-hud`）只会更新 `~/.gemini/config/config.json` 并停用 `/hud` skill。由于 Antigravity 宿主不把 `statusLine` 作为插件组件托管，已在 `~/.gemini/antigravity-cli/settings.json` 中接线的底部状态栏仍会继续运行。仅暂停状态栏请使用 `/statusline off`；如需通过安装脚本操作，运行 `node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs off`（仅停用归属本安装的 `statusLine`）或 `on`（重新接入并启用本安装，接管其他 `statusLine` 前会先备份原配置）。在默认全局安装、未传 `--no-enable` 且 `PATH` 上 `agy` 可用时，`off` / `on` 还会尽最大努力同步调用 `agy plugin disable|enable agy-hud`（宿主插件命令失败时仅输出回退提示而不阻断退出，详细边界见 [docs/host-contracts.md](docs/host-contracts.md)）。
+
 <details>
 <summary><strong>进阶选项：安装独立 <code>agy-hud</code> 终端命令、健康诊断、源码构建与 Link Install 迁移</strong></summary>
 
@@ -96,6 +98,10 @@ node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire --no-shim
 
 # 将终端命令安装到自定义目录（或设置环境变量 AGY_HUD_BIN_DIR）
 node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs wire --bin-dir ~/.bin
+
+# 停用归属本安装的 statusLine / 重新接入并启用 statusLine（默认全局且 agy 可用时尽最大努力同步开关插件）
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs off
+node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs on
 
 # 运行完整健康诊断
 node ~/.gemini/config/plugins/agy-hud/scripts/install.mjs doctor
@@ -184,7 +190,7 @@ agy-hud configure --reset
 | `preset` | `full` \| `compact` \| `swarm` \| `minimal` \| `zen` | `full` | 角色密度预设，用于初始化默认 `lines` 与 `segments`。 |
 | `lines` | `mode`、`identity`、`usage`、`activity`、`tools`、`skills`、`mcps`、`agents`、`todos` 的有序数组 | `full` 行序列 | 显式启用的行模块列表及渲染顺序；空行自动折叠。 |
 | `segments` | `model`、`git`、`duration`、`badges`、`cost`、`perf`、`context`、`quota` 的布尔开关 | 全部 `true` | 控制 `identity`、`usage`（及 `zen` 折叠尾部）的行内片段开关。 |
-| `costCurrency` | `usd` \| `cny` \| `both` | `usd` | 纯离线费用币种（`both` 宽屏显示 `$0.818 / ¥5.93`，`< 100` 列紧凑为 `$0.82/¥5.93`）。 |
+| `costCurrency` | `usd` \| `cny` \| `both` | `usd` | 纯离线费用币种（`both` 宽屏显示 `$0.818 / ¥5.93`，`< 100` 列紧凑为 `$0.82/¥5.93`）；当宿主通过 `statusLine` stdin 上报有效 `cost` 总额时显示，`agy-hud` 不维护本地模型单价表。 |
 | `usdToCnyRate` | 数值 `0.01..1000` | `7.25` | 纯离线美元兑人民币汇率，跨 HUD、OSC 8 Markdown 与 CLI `snapshot` 共享。 |
 | `narrow` | `{ lines?: HudLineId[], segments?: Partial<HudSegments> }` | *(省略)* | 可选窄分屏覆盖（`terminal_width < 100` 触发），未声明键继承顶层配置，隐藏项同步跳过采集器。 |
 | `osc8Links` | `boolean` | `true` | 是否为 `+N more` / `snapshot` 输出 OSC 8 超链接（`NO_COLOR`、`TERM=dumb`、SSH 下自动关闭）。 |
