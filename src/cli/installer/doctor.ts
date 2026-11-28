@@ -87,8 +87,8 @@ export function toggleAgyPlugin(
     timeout: AGY_COMMAND_TIMEOUT_MS,
     env,
   });
-  if (action === 'enable' && !opts.quiet && (res.error || res.status !== 0)) {
-    writeInstallerLine(`Note: enable '${PLUGIN_NAME}' in Antigravity Customizations UI if needed.`, runtime?.stdout);
+  if (!opts.quiet && (res.error || res.status !== 0)) {
+    writeInstallerLine(`Note: ${action} '${PLUGIN_NAME}' in Antigravity Customizations UI if needed.`, runtime?.stdout);
   }
 }
 

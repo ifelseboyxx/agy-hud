@@ -82,7 +82,7 @@ Commands:
   wire / unwire          Wire or detach host statusLine and CLI Shim in-place
   install / uninstall    Install or remove agy-hud plugin (link or copy)
   on|enable / off|disable
-                         Toggle statusLine.enabled and plugin state (preserves CLI Shim)
+                         Rewire/enable statusLine or disable owned statusLine (+ best-effort default global plugin toggle; preserves CLI Shim)
   doctor / status        Check installation, CLI Shim, and live health
 Options:
   --target <dir>         Custom plugin target directory (skips CLI Shim unless --bin-dir)
