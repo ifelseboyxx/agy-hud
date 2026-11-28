@@ -67,7 +67,7 @@ Antigravity 在执行任务时，你往往想一眼看清当前模型与思考�
 agy plugin install https://github.com/ifelseboyxx/agy-hud
 
 # 或锁定到具体发布版本（仅支持单段 semver 标签，切勿向 agy plugin install 传入 .zip 压缩包）
-agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.0
+agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.1
 ```
 
 启动 `agy`，一步激活终端状态栏（热重载立即生效，无需重启）：

@@ -2,7 +2,7 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "agy-hud",
   "displayName": "Agy HUD",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Native ANSI terminal HUD statusline and snapshot inspector for Antigravity CLI, with live model, quota, token/TTFT telemetry, cost, and swarm chips.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [

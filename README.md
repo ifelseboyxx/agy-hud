@@ -67,7 +67,7 @@ Requires **Node.js `^22.20.0 || >=24.0.0`** on macOS, Linux, or Windows. Zero bu
 agy plugin install https://github.com/ifelseboyxx/agy-hud
 
 # Or pin a specific release tag (single-segment semver tag only; never pass .zip archives)
-agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.0
+agy plugin install https://github.com/ifelseboyxx/agy-hud/tree/v0.1.1
 ```
 
 Start `agy` and activate the terminal status line in one step (hot-reloads immediately, no restart needed):

@@ -1,6 +1,6 @@
 {
   "name": "agy-hud",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Native ANSI terminal HUD statusline and profile portability toolkit for Antigravity CLI, featuring live model, quota, telemetry metrics, and swarm roster chips.",
   "keywords": [
     "agy",
